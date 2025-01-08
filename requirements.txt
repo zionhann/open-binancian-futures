@@ -1,0 +1,4 @@
+binance-futures-connector
+python-dotenv
+pandas
+matplotlib 
