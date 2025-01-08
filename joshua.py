@@ -108,10 +108,10 @@ class Joshua:
         klines_data = self.client.klines(symbol, self.interval)
 
         df = pd.DataFrame(data=klines_data, columns=klines_columns)
-        df[["Close"]] = df[["Close"]].astype(float)
+        df["Close"] = df["Close"].astype(float)
         df["RSI"] = rsi(df, window=self.rsi_window)
 
-        return df
+        return df[["Close", "RSI"]]
 
     def _message_handler(self, _, message) -> None:
         data = json.loads(message)
@@ -123,20 +123,23 @@ class Joshua:
     def _handle_kline(self, kline: dict, symbol: str) -> None:
         close_price = float(kline["c"])
 
-        if kline["x"]:
-            df = pd.concat(
-                [self.RSIs[symbol], pd.DataFrame({"Close": [close_price]})],
-                ignore_index=True,
-            )
-            self.RSIs[symbol]["RSI"] = rsi(df, window=self.rsi_window)
-            print("Updated RSI")
+        df = pd.concat(
+            [self.RSIs[symbol], pd.DataFrame({"Close": [close_price]})],
+            ignore_index=True,
+        )
+        df["RSI"] = rsi(df, window=self.rsi_window)
 
-        current_rsi = self.RSIs[symbol]["RSI"].iloc[-1]
+        if kline["x"]:
+            self.RSIs[symbol] = df
+
+        current_rsi = df["RSI"].iloc[-1]
+
+        print(
+            f"Symbol: {symbol}, Current Price: {close_price}, Current RSI: {current_rsi:.1f}, Candle Closed: {kline['x']}"
+        )
 
         # LONG 포지션 진입 조건
         if current_rsi <= 30 and (self.positions[symbol]["ps"] != "BUY"):
-            print(f"Buy signal detected: {current_rsi}")
-
             entry_price = round(close_price, 1)
             target_position = self.positions[symbol]
 
@@ -144,6 +147,10 @@ class Joshua:
                 self._close_position(target_position, symbol)
             elif self.client.get_orders(symbol=symbol):
                 return
+
+            print(
+                f"Buy signal detected: Current Price: {close_price}, RSI: {current_rsi}"
+            )
 
             quantity = self._calculate_quantity(close_price)
 
@@ -161,8 +168,6 @@ class Joshua:
 
         # SHORT 포지션 진입 조건
         elif current_rsi >= 70 and (self.positions[symbol]["ps"] != "SELL"):
-            print(f"Sell signal detected: {current_rsi}")
-
             entry_price = round(close_price, 1)
             target_position = self.positions[symbol]
 
@@ -170,6 +175,10 @@ class Joshua:
                 self._close_position(target_position, symbol)
             elif self.client.get_orders(symbol=symbol):
                 return
+
+            print(
+                f"Sell signal detected: Current Price: {close_price}, RSI: {current_rsi}"
+            )
 
             quantity = self._calculate_quantity(close_price)
 
