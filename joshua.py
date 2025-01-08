@@ -7,6 +7,8 @@ import pandas as pd
 from binance.um_futures import UMFutures
 from binance.websocket.um_futures.websocket_client import UMFuturesWebsocketClient
 import asyncio
+import time
+import logging as logger
 
 
 class Joshua:
@@ -52,7 +54,7 @@ class Joshua:
         self.avbl_usdt = self._init_avbl_usdt()
 
         self.positions = {s: self._init_positions(s) for s in symbols}
-        print(f"iniital positions: {self.positions}")
+        logger.info(f"iniital positions: {self.positions}")
 
         self.RSIs = {s: self._init_rsi(symbol=s) for s in symbols}
 
@@ -159,8 +161,9 @@ class Joshua:
                 side="BUY",
                 type="LIMIT",
                 quantity=quantity,
-                timeInForce="GTC",
+                timeInForce="GTD",
                 price=entry_price,
+                goodTillDate=self._gtd(),
             )
             print(
                 f"Open an order - Symbol: {symbol}, Position: LONG, Price: {entry_price}, Quantity: {quantity}"
@@ -187,8 +190,9 @@ class Joshua:
                 side="SELL",
                 type="LIMIT",
                 quantity=quantity,
-                timeInForce="GTC",
+                timeInForce="GTD",
                 price=entry_price,
+                goodTillDate=self._gtd(),
             )
             print(
                 f"Open an order - Symbol: {symbol}, Position: SHORT, Price: {entry_price}, Quantity: {quantity}"
@@ -201,6 +205,14 @@ class Joshua:
             return math.floor(quantity * 1000) / 1000
         except Exception as e:
             print("Unexpected error in calculate_quantity: {}".format(e))
+
+    def _gtd(self, line=4) -> int:
+        interval_to_seconds = {"m": 60, "h": 3600, "d": 86400}
+        unit = self.interval[-1]
+        base = interval_to_seconds[unit] * int(self.interval[:-1])
+        exp = max(base * line, 660)
+
+        return int(time.time() + exp) * 1000
 
     def _user_data_handler(self, _, message) -> None:
         try:
