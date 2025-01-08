@@ -212,20 +212,24 @@ class Joshua:
                     order = data["o"]
 
                     if order["s"] in self.symbols:
-                        if order["o"] == "LIMIT":
-                            if order["X"] == "NEW":
-                                self._set_stop_loss(
-                                    symbol=order["s"],
-                                    stop_side="SELL" if order["S"] == "BUY" else "BUY",
-                                    price=float(order["p"]),
-                                    quantity=float(order["q"]),
-                                )
-                                self._set_take_profit(
-                                    symbol=order["s"],
-                                    take_side="SELL" if order["S"] == "BUY" else "BUY",
-                                    price=float(order["p"]),
-                                    quantity=float(order["q"]),
-                                )
+                        if order["o"] == "LIMIT" and order["X"] == "NEW":
+                            self._set_stop_loss(
+                                symbol=order["s"],
+                                stop_side="SELL" if order["S"] == "BUY" else "BUY",
+                                price=float(order["p"]),
+                                quantity=float(order["q"]),
+                            )
+                            self._set_take_profit(
+                                symbol=order["s"],
+                                take_side="SELL" if order["S"] == "BUY" else "BUY",
+                                price=float(order["p"]),
+                                quantity=float(order["q"]),
+                            )
+                        elif (
+                            order["o"] in ["STOP_MARKET", "TAKE_PROFIT_MARKET"]
+                            and order["X"] == "FILLED"
+                        ):
+                            self.client.cancel_open_orders(order["s"])
 
                 if data["e"] == "ACCOUNT_UPDATE":
                     account_update = data["a"]
