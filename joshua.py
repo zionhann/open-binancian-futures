@@ -211,6 +211,12 @@ class Joshua:
                                     price=float(order["p"]),
                                     quantity=float(order["q"]),
                                 )
+                                self._set_take_profit(
+                                    symbol=order["s"],
+                                    take_side="SELL" if order["S"] == "BUY" else "BUY",
+                                    price=float(order["p"]),
+                                    quantity=float(order["q"]),
+                                )
 
                 if data["e"] == "ACCOUNT_UPDATE":
                     account_update = data["a"]
@@ -267,6 +273,27 @@ class Joshua:
             side=stop_side,
             type="STOP_MARKET",
             stopPrice=stop_price,
+            closePosition=True,
+        )
+
+    def _set_take_profit(
+        self, symbol: str, take_side: str, price: float, quantity: float
+    ) -> None:
+        print(f"Set Take Profit of {symbol} - Side: {take_side}, Quantity: {quantity}")
+        weight = 0.18
+        factor = (
+            1 + (weight / self.leverage)
+            if take_side == "SELL"
+            else 1 - (weight / self.leverage)
+        )
+        take_price = round(price * factor, 1)
+
+        self.client.new_order(
+            symbol=symbol,
+            side=take_side,
+            type="TAKE_PROFIT_MARKET",
+            stopPrice=take_price,
+            closePosition=True,
         )
 
     def run(self) -> None:
