@@ -254,7 +254,7 @@ class Joshua:
         self, symbol: str, stop_side: str, price: float, quantity: float
     ) -> None:
         print(f"Set Stop Loss of {symbol} - Side: {stop_side}, Quantity: {quantity}")
-        weight = 0.05
+        weight = 0.12
         factor = (
             1 - (weight / self.leverage)
             if stop_side == "SELL"
@@ -265,9 +265,7 @@ class Joshua:
         self.client.new_order(
             symbol=symbol,
             side=stop_side,
-            type="STOP",
-            quantity=quantity,
-            price=stop_price,
+            type="STOP_MARKET",
             stopPrice=stop_price,
         )
 
@@ -288,9 +286,24 @@ class Joshua:
             self.client_ws = UMFuturesWebsocketClient(
                 stream_url=self.steram_url, on_message=self._message_handler
             )
-            self.listen_key = self.client.renew_listen_key(listenKey=self.listen_key)[
-                "listenKey"
-            ]
+
+            self.client_ws_user.stop()
+            self.client_ws_user = UMFuturesWebsocketClient(
+                stream_url=self.steram_url,
+                on_message=self._user_data_handler,
+            )
+            self._renew_listen_key()
+
+    def _renew_listen_key(self):
+        response = self.client.renew_listen_key(listenKey=self.listen_key)
+
+        if "code" in response and response["code"] == -1125:
+            self.client.close_listen_key(self.listen_key)
+            self.listen_key = self.client.new_listen_key()["listenKey"]
+            self.client_ws_user.user_data(listen_key=self.listen_key)
+            return
+
+        self.listen_key = response["listenKey"]
 
     def close(self):
         print("Closing...")
@@ -305,7 +318,7 @@ class Joshua:
                 symbol=symbol,
                 side="SELL" if position["ps"] == "BUY" else "BUY",
                 type="MARKET",
-                quantity=float(position["pa"]),
+                quantity=abs(float(position["pa"])),
             )
             self.client.cancel_open_orders(symbol)
             print(f"Position closed - Side: {position['ps']}")
