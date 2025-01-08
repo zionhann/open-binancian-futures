@@ -51,8 +51,6 @@ class Joshua:
 
         self.avbl_usdt = self._init_avbl_usdt()
 
-        self.latest_open_order_id = {s: self._init_open_orders(s) for s in symbols}
-        print(f"initial latest_order_ids: {self.latest_open_order_id}")
         self.positions = {s: self._init_positions(s) for s in symbols}
         print(f"iniital positions: {self.positions}")
 
@@ -143,23 +141,13 @@ class Joshua:
             target_position = self.positions[symbol]
 
             if target_position["ps"] == "SELL":
-                self._close_position(target_position, symbol, entry_price)
-            elif self.latest_open_order_id[symbol]:
-                open_order = self.client.get_open_orders(
-                    symbol=symbol, orderId=self.latest_open_order_id[symbol]
-                )
-
-                if open_order:
-                    if float(open_order["price"]) <= entry_price:
-                        return
-                    print(
-                        "Entry price is lower than the open order price. Canceling..."
-                    )
-                    self.client.cancel_open_orders(symbol=symbol)
+                self._close_position(target_position, symbol)
+            elif self.client.get_orders(symbol=symbol):
+                return
 
             quantity = self._calculate_quantity(close_price)
 
-            res = self.client.new_order(
+            self.client.new_order(
                 symbol=symbol,
                 side="BUY",
                 type="LIMIT",
@@ -167,7 +155,6 @@ class Joshua:
                 timeInForce="GTC",
                 price=entry_price,
             )
-            self.latest_open_order_id[symbol] = res["orderId"]
             print(
                 f"Open an order - Symbol: {symbol}, Position: LONG, Price: {entry_price}, Quantity: {quantity}"
             )
@@ -180,23 +167,13 @@ class Joshua:
             target_position = self.positions[symbol]
 
             if target_position["ps"] == "BUY":
-                self._close_position(target_position, symbol, entry_price)
-            elif self.latest_open_order_id[symbol]:
-                open_order = self.client.get_open_orders(
-                    symbol=symbol, orderId=self.latest_open_order_id[symbol]
-                )
-
-                if open_order:
-                    if float(open_order["price"]) >= entry_price:
-                        return
-                    print(
-                        "Entry price is higher than the open order price. Canceling..."
-                    )
-                    self.client.cancel_open_orders(symbol)
+                self._close_position(target_position, symbol)
+            elif self.client.get_orders(symbol=symbol):
+                return
 
             quantity = self._calculate_quantity(close_price)
 
-            res = self.client.new_order(
+            self.client.new_order(
                 symbol=symbol,
                 side="SELL",
                 type="LIMIT",
@@ -204,8 +181,6 @@ class Joshua:
                 timeInForce="GTC",
                 price=entry_price,
             )
-            self.latest_open_order_id[symbol] = res["orderId"]
-            print(f"res: {res} and orderId: {self.latest_open_order_id[symbol]}")
             print(
                 f"Open an order - Symbol: {symbol}, Position: SHORT, Price: {entry_price}, Quantity: {quantity}"
             )
@@ -236,8 +211,6 @@ class Joshua:
                                     price=float(order["p"]),
                                     quantity=float(order["q"]),
                                 )
-                            elif order["X"] == "FILLED":
-                                self.latest_open_order_id[order["s"]] = 0
 
                 if data["e"] == "ACCOUNT_UPDATE":
                     account_update = data["a"]
@@ -325,7 +298,7 @@ class Joshua:
         self.client_ws_user.stop()
         self.client_ws.stop()
 
-    def _close_position(self, position: dict, symbol: str, price: float) -> None:
+    def _close_position(self, position: dict, symbol: str) -> None:
         print(f"Close position: {position}")
         try:
             self.client.new_order(
@@ -335,7 +308,6 @@ class Joshua:
                 quantity=float(position["pa"]),
             )
             self.client.cancel_open_orders(symbol)
-            self.latest_open_order_id[symbol] = 0
             print(f"Position closed - Side: {position['ps']}")
         except Exception as e:
             print(f"Position closing error: {e}")
