@@ -179,7 +179,7 @@ class Joshua:
 
             if target_position["ps"] == const.OrderSide.SELL.value:
                 logger.info(f"Found {target_position['ps']} position for {symbol}.")
-                self._close_position(target_position, symbol)
+                self._close_position(target_position, symbol, entry_price)
             elif self.client.get_orders(symbol=symbol):
                 logger.info(f"Found open orders for {symbol}. Skipping...")
                 return
@@ -210,9 +210,17 @@ class Joshua:
 
             if target_position["ps"] == const.OrderSide.BUY.value:
                 logger.info(f"Found {target_position['ps']} position for {symbol}.")
-                self._close_position(target_position, symbol)
-            elif self.client.get_orders(symbol=symbol):
-                logger.info(f"Found open orders for {symbol}. Skipping...")
+                self._close_position(target_position, symbol, entry_price)
+            elif open_orders := self.client.get_orders(symbol=symbol):
+                limit_orders = [
+                    order
+                    for order in open_orders
+                    if order["type"] == const.OrderType.LIMIT.value
+                ]
+                logger.info(
+                    f"Found open orders for {symbol}:\n{json.dumps(limit_orders, indent=2)}"
+                )
+                logger.info(f"Skipping...")
                 return
 
             quantity = self._calculate_quantity(close_price)
@@ -248,45 +256,95 @@ class Joshua:
             data = json.loads(message)
 
             if "e" in data:
-                logger.info(
-                    f"Received {data['e']} event:\n{json.dumps(data, indent=2)}"
-                )
-
                 if data["e"] == const.EventType.ORDER_TRADE_UPDATE.value:
                     order = data["o"]
                     symbol = order["s"]
+                    order_type = order["ot"]
+                    status = order["X"]
+                    side = order["S"]
+                    price = order["p"]
+                    quantity = order["q"]
+                    realized_profit = order["rp"]
+                    is_maker = order["m"]
 
                     if symbol in self.symbols:
-                        if (
-                            order["o"] == const.OrderType.LIMIT.value
-                            and order["X"] == "NEW"
-                        ):
-                            self._set_stop_loss(
-                                symbol=symbol,
-                                stop_side=(
-                                    const.OrderSide.SELL.value
-                                    if order["S"] == const.OrderSide.BUY.value
-                                    else const.OrderSide.BUY.value
-                                ),
-                                price=float(order["p"]),
-                                quantity=float(order["q"]),
-                            )
-                            self._set_take_profit(
-                                symbol=symbol,
-                                take_side=(
-                                    const.OrderSide.SELL.value
-                                    if order["S"] == const.OrderSide.BUY.value
-                                    else const.OrderSide.BUY.value
-                                ),
-                                price=float(order["p"]),
-                                quantity=float(order["q"]),
-                            )
+                        if order_type == const.OrderType.LIMIT.value:
+                            if status == const.OrderStatus.NEW.value:
+                                self._set_stop_loss(
+                                    symbol=symbol,
+                                    stop_side=(
+                                        const.OrderSide.SELL.value
+                                        if side == const.OrderSide.BUY.value
+                                        else const.OrderSide.BUY.value
+                                    ),
+                                    price=float(price),
+                                    quantity=float(quantity),
+                                )
+                                self._set_take_profit(
+                                    symbol=symbol,
+                                    take_side=(
+                                        const.OrderSide.SELL.value
+                                        if side == const.OrderSide.BUY.value
+                                        else const.OrderSide.BUY.value
+                                    ),
+                                    price=float(price),
+                                    quantity=float(quantity),
+                                )
+                            elif status in [
+                                const.OrderStatus.PARTIALLY_FILLED.value,
+                                const.OrderStatus.FILLED.value,
+                            ]:
+                                filled_quantity = order["z"]
+                                percentage_filled = (
+                                    float(filled_quantity) / float(quantity)
+                                ) * 100
+                                logger.info(
+                                    f"Order for {symbol} filled: Type={order_type}, Side={side}, Price={price}, Quantity={filled_quantity}/{quantity} ({percentage_filled:.2f}%)"
+                                )
                         elif (
-                            order["o"] == const.OrderType.MARKET.value
-                            and order["X"] == const.OrderStatus.FILLED.value
+                            order_type
+                            in [
+                                const.OrderType.MARKET.value,
+                                *[typ.value for typ in const.OrderType.TPSL],
+                            ]
+                            and status
+                            in [
+                                const.OrderStatus.FILLED.value,
+                                const.OrderStatus.PARTIALLY_FILLED.value,
+                            ]
+                            and not is_maker  # Taker
                         ):
-                            logger.info(f"Cancelling open orders for {symbol}...")
-                            self.client.cancel_open_orders(symbol)
+                            logger.info(
+                                f"Realized profit/loss for {symbol}: {realized_profit}"
+                            )
+
+                            if status == const.OrderStatus.FILLED.value:
+                                open_orders = self.client.get_orders(symbol=symbol)
+                                tpsl_orders = [
+                                    order
+                                    for order in open_orders
+                                    if order["type"]
+                                    in [typ.value for typ in const.OrderType.TPSL]
+                                ]
+
+                                if tpsl_orders:
+                                    logger.info(
+                                        f"Cancelling orders for {symbol}:\n{json.dumps(tpsl_orders, indent=2)}"
+                                    )
+                                    self.client.cancel_batch_order(
+                                        symbol=symbol,
+                                        orderIdList=[
+                                            order["orderId"] for order in tpsl_orders
+                                        ],
+                                        origClientOrderIdList=[],
+                                    )
+                        elif status in [
+                            const.OrderStatus.CANCELLED.value,
+                            const.OrderStatus.EXPIRED.value,
+                        ]:
+                            logger.info(
+                                f"Order for {symbol} cancelled or expired: Type={order_type}, Side={side}, Status={status}"
+                            )
 
                 if data["e"] == const.EventType.ACCOUNT_UPDATE.value:
                     account_update = data["a"]
@@ -352,9 +410,10 @@ class Joshua:
         self.client.new_order(
             symbol=symbol,
             side=stop_side,
-            type=const.OrderType.STOP_MARKET.value,
+            type=const.OrderType.TPSL.STOP.value,
             stopPrice=stop_price,
-            closePosition=True,
+            price=stop_price,
+            quantity=quantity,
         )
 
     def _set_take_profit(
@@ -374,9 +433,10 @@ class Joshua:
         self.client.new_order(
             symbol=symbol,
             side=take_side,
-            type=const.OrderType.TAKE_PROFIT_MARKET.value,
+            type=const.OrderType.TPSL.TAKE_PROFIT.value,
             stopPrice=take_price,
-            closePosition=True,
+            price=take_price,
+            quantity=quantity,
         )
 
     def run(self) -> None:
@@ -421,19 +481,27 @@ class Joshua:
         self.client_ws.stop()
         logger.info("Shutdown process completed successfully.")
 
-    def _close_position(self, position: dict, symbol: str) -> None:
+    def _close_position(self, position: dict, symbol: str, price: float) -> None:
         logger.info(f"Closing {position['ps']} position for {symbol}...")
 
         try:
+            stop_side = (
+                const.OrderSide.SELL.value
+                if position["ps"] == const.OrderSide.BUY.value
+                else const.OrderSide.BUY.value
+            )
+            price_weight = 0.999 if stop_side == const.OrderSide.BUY.value else 1.001
+            stop_price = round(price * price_weight, 1)
+
             self.client.new_order(
                 symbol=symbol,
-                side=(
-                    const.OrderSide.SELL.value
-                    if position["ps"] == const.OrderSide.BUY.value
-                    else const.OrderSide.BUY.value
-                ),
-                type=const.OrderType.MARKET.value,
+                side=stop_side,
+                type=const.OrderType.TPSL.STOP.value,
                 quantity=abs(float(position["pa"])),
+                priceMatch="OPPONENT",
+                stopPrice=stop_price,
+                timeInForce=const.TimeInForce.GTD.value,
+                goodTillDate=self._gtd(),
             )
         except Exception as e:
             logger.error(f"Position closing error: {e}")

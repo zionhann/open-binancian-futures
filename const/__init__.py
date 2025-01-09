@@ -28,10 +28,12 @@ class BaseUrl(Enum):
 class OrderType(Enum):
     LIMIT = "LIMIT"
     MARKET = "MARKET"
-    TAKE_PROFIT = "TAKE_PROFIT"
-    STOP = "STOP"
-    STOP_MARKET = "STOP_MARKET"
-    TAKE_PROFIT_MARKET = "TAKE_PROFIT_MARKET"
+
+    class TPSL(Enum):
+        TAKE_PROFIT = "TAKE_PROFIT"
+        STOP = "STOP"
+        STOP_MARKET = "STOP_MARKET"
+        TAKE_PROFIT_MARKET = "TAKE_PROFIT_MARKET"
 
 
 class OrderSide(Enum):
@@ -56,3 +58,4 @@ class OrderStatus(Enum):
     PARTIALLY_FILLED = "PARTIALLY_FILLED"
     FILLED = "FILLED"
     CANCELLED = "CANCELLED"
+    EXPIRED = "EXPIRED"
