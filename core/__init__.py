@@ -327,6 +327,11 @@ class Joshua:
                             )
                             logger.info(f"Updated available USDT: {self.avbl_usdt:.2f}")
 
+                if data["e"] == const.EventType.LISTEN_KEY_EXPIRED.value:
+                    logger.info("Listen key expired. Recreating listen key...")
+                    self.listen_key = self.client.new_listen_key()[const.LISTEN_KEY]
+                    self.client_ws_user.user_data(listen_key=self.listen_key)
+
         except Exception as e:
             logger.error(f"An error occurred in the user data handler: {e}")
 
@@ -384,7 +389,7 @@ class Joshua:
             self.client.change_leverage(symbol=s, leverage=self.leverage)
             self._subscribe_to_stream(symbol=s)
 
-        asyncio.gather(self._keepalive_stream(), self._renew_listen_key())
+        asyncio.run(self._keepalive_stream())
 
     def _subscribe_to_stream(self, symbol: str):
         logger.info(f"Subscribing to {symbol} klines by {self.interval}...")
@@ -408,31 +413,6 @@ class Joshua:
             for s in self.symbols:
                 self._subscribe_to_stream(symbol=s)
             self.client_ws_user.user_data(listen_key=self.listen_key)
-
-    async def _renew_listen_key(self):
-        while True:
-            await asyncio.sleep(const.LISTEN_KEY_RENEW_INTERVAL)
-            logger.info("Renewing listen key...")
-            response = self.client.renew_listen_key(listenKey=self.listen_key)
-            data = json.loads(response)
-
-            self.listen_key = (
-                self._recreate_listen_key()
-                if self._is_listen_key_expired(data)
-                else str(data[const.LISTEN_KEY])
-            )
-            self.client_ws_user.user_data(listen_key=self.listen_key)
-
-    def _is_listen_key_expired(self, data: dict) -> bool:
-        return const.CODE in data and data[const.CODE] == -1125
-
-    def _recreate_listen_key(self) -> str:
-        logger.info("Recreating listen key...")
-        self.client.close_listen_key(self.listen_key)
-        new_listen_key = self.client.new_listen_key()[const.LISTEN_KEY]
-        self.client_ws_user.user_data(listen_key=new_listen_key)
-
-        return new_listen_key
 
     def close(self):
         logger.info("Initiating shutdown process...")

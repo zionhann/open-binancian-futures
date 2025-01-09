@@ -9,7 +9,6 @@ USDT = "USDT"
 CODE = "code"
 
 KEEPALIVE_INTERVAL = 3600 * 23 + 60 * 55
-LISTEN_KEY_RENEW_INTERVAL = 60 * 55
 
 
 class ApiKey(Enum):
@@ -49,6 +48,7 @@ class EventType(Enum):
     KLINE = "kline"
     ORDER_TRADE_UPDATE = "ORDER_TRADE_UPDATE"
     ACCOUNT_UPDATE = "ACCOUNT_UPDATE"
+    LISTEN_KEY_EXPIRED = "listenKeyExpired"
 
 
 class OrderStatus(Enum):
