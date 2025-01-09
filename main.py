@@ -1,10 +1,20 @@
 from joshua import Joshua
 import logging
+from datetime import datetime
+
+LOG_FORMAT = "[%(asctime)s] %(levelname)-10s [%(name)10s] %(module)s.%(funcName)s:%(lineno)d --- %(message)s"
+
+logging.basicConfig(
+    format=LOG_FORMAT,
+    level=logging.INFO,
+    filename=f".log/{datetime.now().strftime('%Y%m%d')}.log",
+)
+
+logger = logging.getLogger(__name__)
 
 if __name__ == "__main__":
-    print("Start running...")
+    logger.info("Boot process initiated. Preparing to start the application...")
 
-    # logging.basicConfig(level=logging.DEBUG)
     try:
         app = Joshua(
             symbols=["BTCUSDT", "ETHUSDT"],
@@ -16,4 +26,5 @@ if __name__ == "__main__":
         )
         app.run()
     except KeyboardInterrupt:
+        logger.info("Application terminated by KeyboardInterrupt")
         app.close()

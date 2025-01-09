@@ -1,5 +1,7 @@
 import json
 import math
+
+from matplotlib.pylab import f
 from indicator import rsi
 from const import KEY, KEY_TEST
 from pandas import DataFrame
@@ -8,7 +10,9 @@ from binance.um_futures import UMFutures
 from binance.websocket.um_futures.websocket_client import UMFuturesWebsocketClient
 import asyncio
 import time
-import logging as logger
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 class Joshua:
@@ -54,15 +58,18 @@ class Joshua:
         self.avbl_usdt = self._init_avbl_usdt()
 
         self.positions = {s: self._init_positions(s) for s in symbols}
-        logger.info(f"iniital positions: {self.positions}")
+        logger.info(f"Loaded positions:\n{json.dumps(self.positions, indent=2)}")
 
         self.RSIs = {s: self._init_rsi(symbol=s) for s in symbols}
 
     def _init_avbl_usdt(self) -> float:
+        logger.info("Fetching available USDT balance...")
         res = self.client.balance()
         df = pd.DataFrame(res)
         usdt_balance = df[df["asset"] == "USDT"]
+
         available = float(usdt_balance["availableBalance"].iloc[0])
+        logger.info(f'Available USDT balance: "{available:.2f}"')
 
         return math.floor(available * 100) / 100
 
@@ -76,6 +83,7 @@ class Joshua:
         return int(limit_orders[0]["orderId"]) if limit_orders else 0
 
     def _init_positions(self, symbol: str) -> dict[str, str | None]:
+        logger.info(f"Fetching positions for {symbol}...")
         positions = self.client.get_position_risk(symbol=symbol)
 
         if not positions:
@@ -107,13 +115,18 @@ class Joshua:
             "Taker_buy_quote_volume",
             "Ignore",
         ]
+        logger.info(f"Fetching {symbol} klines by {self.interval}...")
         klines_data = self.client.klines(symbol, self.interval)
 
         df = pd.DataFrame(data=klines_data, columns=klines_columns)
         df["Close"] = df["Close"].astype(float)
         df["RSI"] = rsi(df, window=self.rsi_window)
+        initial_rsi = df[["Close", "RSI"]]
 
-        return df[["Close", "RSI"]]
+        logger.info(
+            f"Loaded RSI for {symbol}:\n{initial_rsi.tail().to_string(index=False)}"
+        )
+        return initial_rsi
 
     def _message_handler(self, _, message) -> None:
         data = json.loads(message)
@@ -132,13 +145,13 @@ class Joshua:
         df["RSI"] = rsi(df, window=self.rsi_window)
 
         if kline["x"]:
+            logger.info(f"{self.interval} candle closed for {symbol}.")
             self.RSIs[symbol] = df
+            logger.info(
+                f"Updated RSI for {symbol}: {self.RSIs[symbol].tail().to_string(index=False)}"
+            )
 
         current_rsi = df["RSI"].iloc[-1]
-
-        print(
-            f"Symbol: {symbol}, Current Price: {close_price}, Current RSI: {current_rsi:.1f}, Candle Closed: {kline['x']}"
-        )
 
         # LONG 포지션 진입 조건
         if current_rsi <= 30 and (self.positions[symbol]["ps"] != "BUY"):
@@ -146,12 +159,14 @@ class Joshua:
             target_position = self.positions[symbol]
 
             if target_position["ps"] == "SELL":
+                logger.info(f"Found {target_position['ps']} position for {symbol}.")
                 self._close_position(target_position, symbol)
             elif self.client.get_orders(symbol=symbol):
+                logger.info(f"Found open orders for {symbol}. Skipping...")
                 return
 
-            print(
-                f"Buy signal detected: Current Price: {close_price}, RSI: {current_rsi}"
+            logger.info(
+                f"Buy signal for {symbol} detected: Current Price: {close_price}, RSI: {current_rsi}"
             )
 
             quantity = self._calculate_quantity(close_price)
@@ -165,9 +180,6 @@ class Joshua:
                 price=entry_price,
                 goodTillDate=self._gtd(),
             )
-            print(
-                f"Open an order - Symbol: {symbol}, Position: LONG, Price: {entry_price}, Quantity: {quantity}"
-            )
 
         # SHORT 포지션 진입 조건
         elif current_rsi >= 70 and (self.positions[symbol]["ps"] != "SELL"):
@@ -175,11 +187,13 @@ class Joshua:
             target_position = self.positions[symbol]
 
             if target_position["ps"] == "BUY":
+                logger.info(f"Found {target_position['ps']} position for {symbol}.")
                 self._close_position(target_position, symbol)
             elif self.client.get_orders(symbol=symbol):
+                logger.info(f"Found open orders for {symbol}. Skipping...")
                 return
 
-            print(
+            logger.info(
                 f"Sell signal detected: Current Price: {close_price}, RSI: {current_rsi}"
             )
 
@@ -193,9 +207,6 @@ class Joshua:
                 timeInForce="GTD",
                 price=entry_price,
                 goodTillDate=self._gtd(),
-            )
-            print(
-                f"Open an order - Symbol: {symbol}, Position: SHORT, Price: {entry_price}, Quantity: {quantity}"
             )
 
     def _calculate_quantity(self, entry_price: float):
@@ -217,31 +228,33 @@ class Joshua:
     def _user_data_handler(self, _, message) -> None:
         try:
             data = json.loads(message)
-            print(data)
 
             if "e" in data:
+                logger.info(
+                    f"Received {data['e']} event:\n{json.dumps(data, indent=2)}"
+                )
+
                 if data["e"] == "ORDER_TRADE_UPDATE":
                     order = data["o"]
+                    symbol = order["s"]
 
-                    if order["s"] in self.symbols:
+                    if symbol in self.symbols:
                         if order["o"] == "LIMIT" and order["X"] == "NEW":
                             self._set_stop_loss(
-                                symbol=order["s"],
+                                symbol=symbol,
                                 stop_side="SELL" if order["S"] == "BUY" else "BUY",
                                 price=float(order["p"]),
                                 quantity=float(order["q"]),
                             )
                             self._set_take_profit(
-                                symbol=order["s"],
+                                symbol=symbol,
                                 take_side="SELL" if order["S"] == "BUY" else "BUY",
                                 price=float(order["p"]),
                                 quantity=float(order["q"]),
                             )
-                        elif (
-                            order["o"] in ["STOP_MARKET", "TAKE_PROFIT_MARKET"]
-                            and order["X"] == "FILLED"
-                        ):
-                            self.client.cancel_open_orders(order["s"])
+                        elif order["o"] == "MARKET" and order["X"] == "FILLED":
+                            logger.info(f"Cancelling open orders for {symbol}...")
+                            self.client.cancel_open_orders(symbol)
 
                 if data["e"] == "ACCOUNT_UPDATE":
                     account_update = data["a"]
@@ -266,7 +279,9 @@ class Joshua:
                                     ),
                                 }
                             )
-                        print(f"Positions updated: {self.positions}")
+                        logger.info(
+                            f"Updated positions:\n{json.dumps(self.positions, indent=2)}"
+                        )
 
                     if "B" in account_update and account_update["B"]:
                         usdt_balance = list(
@@ -276,15 +291,17 @@ class Joshua:
                             self.avbl_usdt = (
                                 math.floor(float(usdt_balance[0]["cw"]) * 100) / 100
                             )
-                            print(f"Available USDT Updated: {self.avbl_usdt}")
+                            logger.info(f"Updated available USDT: {self.avbl_usdt:.2f}")
 
         except Exception as e:
-            print(f"Error in user data handler: {e}")
+            logger.error(f"An error occurred in the user data handler: {e}")
 
     def _set_stop_loss(
         self, symbol: str, stop_side: str, price: float, quantity: float
     ) -> None:
-        print(f"Set Stop Loss of {symbol} - Side: {stop_side}, Quantity: {quantity}")
+        logger.info(
+            f"Setting Stop Loss for {symbol}: Price={price}, Quantity={quantity}, Side={stop_side}"
+        )
         weight = 0.12
         factor = (
             1 - (weight / self.leverage)
@@ -304,7 +321,9 @@ class Joshua:
     def _set_take_profit(
         self, symbol: str, take_side: str, price: float, quantity: float
     ) -> None:
-        print(f"Set Take Profit of {symbol} - Side: {take_side}, Quantity: {quantity}")
+        logger.info(
+            f"Setting Take Profit for {symbol}; Price={price}, Quantity={quantity}, Side={take_side}"
+        )
         weight = 0.18
         factor = (
             1 + (weight / self.leverage)
@@ -322,10 +341,15 @@ class Joshua:
         )
 
     def run(self) -> None:
+        logger.info("Starting to run...")
+        logger.info(f"Connecting to User Data Stream...")
         self.client_ws_user.user_data(listen_key=self.listen_key)
 
         for s in self.symbols:
+            logger.info(f"Subscribing to {s} klines by {self.interval}...")
             self.client_ws.kline(symbol=s, interval=self.interval)
+
+            logger.info(f"Setting leverage to {self.leverage} for {s}...")
             self.client.change_leverage(symbol=s, leverage=self.leverage)
 
         asyncio.run(self._keepalive_stream())
@@ -333,38 +357,47 @@ class Joshua:
     async def _keepalive_stream(self):
         while True:
             await asyncio.sleep(60 * 55)
-            print("Keeping alive stream...")
+            logger.info("Reconnecting to the stream to maintain the connection...")
+
             self.client_ws.stop()
+            self.client_ws_user.stop()
+
             self.client_ws = UMFuturesWebsocketClient(
                 stream_url=self.steram_url, on_message=self._message_handler
             )
+            for s in self.symbols:
+                self.client_ws.kline(symbol=s, interval=self.interval)
 
-            self.client_ws_user.stop()
+            self._renew_listen_key()
+
+    def _renew_listen_key(self):
+        logger.info("Renewing listen key...")
+        response = self.client.renew_listen_key(listenKey=self.listen_key)
+
+        if "code" in response and response["code"] == -1125:
+            logger.info("Listen key expired. Recreating...")
+            self.client.close_listen_key(self.listen_key)
+            self.listen_key = self.client.new_listen_key()["listenKey"]
+
             self.client_ws_user = UMFuturesWebsocketClient(
                 stream_url=self.steram_url,
                 on_message=self._user_data_handler,
             )
-            self._renew_listen_key()
-
-    def _renew_listen_key(self):
-        response = self.client.renew_listen_key(listenKey=self.listen_key)
-
-        if "code" in response and response["code"] == -1125:
-            self.client.close_listen_key(self.listen_key)
-            self.listen_key = self.client.new_listen_key()["listenKey"]
             self.client_ws_user.user_data(listen_key=self.listen_key)
             return
 
         self.listen_key = response["listenKey"]
 
     def close(self):
-        print("Closing...")
+        logger.info("Initiating shutdown process...")
         self.client.close_listen_key(self.listen_key)
         self.client_ws_user.stop()
         self.client_ws.stop()
+        logger.info("Shutdown process completed successfully.")
 
     def _close_position(self, position: dict, symbol: str) -> None:
-        print(f"Close position: {position}")
+        logger.info(f"Closing {position['ps']} position for {symbol}...")
+
         try:
             self.client.new_order(
                 symbol=symbol,
@@ -372,7 +405,5 @@ class Joshua:
                 type="MARKET",
                 quantity=abs(float(position["pa"])),
             )
-            self.client.cancel_open_orders(symbol)
-            print(f"Position closed - Side: {position['ps']}")
         except Exception as e:
-            print(f"Position closing error: {e}")
+            logger.error(f"Position closing error: {e}")
