@@ -158,16 +158,16 @@ class Joshua:
             entry_price = round(close_price, 1)
             target_position = self.positions[symbol]
 
+            logger.info(
+                f"Buy signal for {symbol} detected: Current Price: {close_price}, RSI: {current_rsi}"
+            )
+
             if target_position["ps"] == "SELL":
                 logger.info(f"Found {target_position['ps']} position for {symbol}.")
                 self._close_position(target_position, symbol)
             elif self.client.get_orders(symbol=symbol):
                 logger.info(f"Found open orders for {symbol}. Skipping...")
                 return
-
-            logger.info(
-                f"Buy signal for {symbol} detected: Current Price: {close_price}, RSI: {current_rsi}"
-            )
 
             quantity = self._calculate_quantity(close_price)
 
@@ -186,16 +186,16 @@ class Joshua:
             entry_price = round(close_price, 1)
             target_position = self.positions[symbol]
 
+            logger.info(
+                f"Sell signal for {symbol} detected: Current Price: {close_price}, RSI: {current_rsi}"
+            )
+
             if target_position["ps"] == "BUY":
                 logger.info(f"Found {target_position['ps']} position for {symbol}.")
                 self._close_position(target_position, symbol)
             elif self.client.get_orders(symbol=symbol):
                 logger.info(f"Found open orders for {symbol}. Skipping...")
                 return
-
-            logger.info(
-                f"Sell signal detected: Current Price: {close_price}, RSI: {current_rsi}"
-            )
 
             quantity = self._calculate_quantity(close_price)
 
@@ -342,21 +342,23 @@ class Joshua:
 
     def run(self) -> None:
         logger.info("Starting to run...")
-        logger.info(f"Connecting to User Data Stream...")
+        logger.info("Connecting to User Data Stream...")
         self.client_ws_user.user_data(listen_key=self.listen_key)
 
         for s in self.symbols:
-            logger.info(f"Subscribing to {s} klines by {self.interval}...")
-            self.client_ws.kline(symbol=s, interval=self.interval)
-
             logger.info(f"Setting leverage to {self.leverage} for {s}...")
             self.client.change_leverage(symbol=s, leverage=self.leverage)
+            self._subscribe_to_stream(symbol=s)
 
-        asyncio.run(self._keepalive_stream())
+        asyncio.gather(self._keepalive_stream(), self._renew_listen_key())
+
+    def _subscribe_to_stream(self, symbol: str):
+        logger.info(f"Subscribing to {symbol} klines by {self.interval}...")
+        self.client_ws.kline(symbol=symbol, interval=self.interval)
 
     async def _keepalive_stream(self):
         while True:
-            await asyncio.sleep(60 * 55)
+            await asyncio.sleep(3600 * 23 + 60 * 55)
             logger.info("Reconnecting to the stream to maintain the connection...")
 
             self.client_ws.stop()
@@ -365,28 +367,38 @@ class Joshua:
             self.client_ws = UMFuturesWebsocketClient(
                 stream_url=self.steram_url, on_message=self._message_handler
             )
-            for s in self.symbols:
-                self.client_ws.kline(symbol=s, interval=self.interval)
-
-            self._renew_listen_key()
-
-    def _renew_listen_key(self):
-        logger.info("Renewing listen key...")
-        response = self.client.renew_listen_key(listenKey=self.listen_key)
-
-        if "code" in response and response["code"] == -1125:
-            logger.info("Listen key expired. Recreating...")
-            self.client.close_listen_key(self.listen_key)
-            self.listen_key = self.client.new_listen_key()["listenKey"]
-
             self.client_ws_user = UMFuturesWebsocketClient(
-                stream_url=self.steram_url,
-                on_message=self._user_data_handler,
+                stream_url=self.steram_url, on_message=self._user_data_handler
+            )
+
+            for s in self.symbols:
+                self._subscribe_to_stream(symbol=s)
+            self.client_ws_user.user_data(listen_key=self.listen_key)
+
+    async def _renew_listen_key(self):
+        while True:
+            await asyncio.sleep(60 * 55)
+            logger.info("Renewing listen key...")
+            response = self.client.renew_listen_key(listenKey=self.listen_key)
+            data = json.loads(response)
+
+            self.listen_key = (
+                self._recreate_listen_key()
+                if self._is_listen_key_expired(data)
+                else str(data["listenKey"])
             )
             self.client_ws_user.user_data(listen_key=self.listen_key)
-            return
 
-        self.listen_key = response["listenKey"]
+    def _is_listen_key_expired(self, data: dict) -> bool:
+        return "code" in data and data["code"] == -1125
+
+    def _recreate_listen_key(self) -> str:
+        logger.info("Recreating listen key...")
+        self.client.close_listen_key(self.listen_key)
+        new_listen_key = self.client.new_listen_key()["listenKey"]
+        self.client_ws_user.user_data(listen_key=new_listen_key)
+
+        return new_listen_key
 
     def close(self):
         logger.info("Initiating shutdown process...")
