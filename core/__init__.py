@@ -1,9 +1,9 @@
+from dataclasses import dataclass
 import json
 import math
 
 from matplotlib.pylab import f
 from indicator import rsi
-from const import KEY, KEY_TEST
 from pandas import DataFrame
 import pandas as pd
 from binance.um_futures import UMFutures
@@ -11,6 +11,8 @@ from binance.websocket.um_futures.websocket_client import UMFuturesWebsocketClie
 import asyncio
 import time
 import logging
+import const
+import utils
 
 logger = logging.getLogger(__name__)
 
@@ -26,23 +28,27 @@ class Joshua:
         is_testnet: bool,
     ) -> None:
         api_key, api_secret = (
-            (KEY_TEST["client"], KEY_TEST["secret"])
+            (const.ApiKey.CLIENT_TEST.value, const.ApiKey.SECRET_TEST.value)
             if is_testnet
-            else (KEY["client"], KEY["secret"])
+            else (const.ApiKey.CLIENT.value, const.ApiKey.SECRET.value)
         )
-        base_url = "https://testnet.binancefuture.com" if is_testnet else None
+        base_url = (
+            const.BaseUrl.REST_TEST.value if is_testnet else const.BaseUrl.REST.value
+        )
         stream_url = (
-            "wss://stream.binancefuture.com"
-            if is_testnet
-            else "wss://fstream.binance.com"
+            const.BaseUrl.WS_TEST.value if is_testnet else const.BaseUrl.WS.value
         )
+
+        utils.check_required_params(base_url=base_url, stream_url=stream_url)
+        assert base_url is not None
+        assert stream_url is not None
 
         self.client = UMFutures(key=api_key, secret=api_secret, base_url=base_url)
         self.client_ws = UMFuturesWebsocketClient(
             stream_url=stream_url, on_message=self._message_handler
         )
 
-        self.listen_key = self.client.new_listen_key()["listenKey"]
+        self.listen_key = self.client.new_listen_key()[const.LISTEN_KEY]
         self.client_ws_user = UMFuturesWebsocketClient(
             stream_url=stream_url,
             on_message=self._user_data_handler,
@@ -66,7 +72,7 @@ class Joshua:
         logger.info("Fetching available USDT balance...")
         res = self.client.balance()
         df = pd.DataFrame(res)
-        usdt_balance = df[df["asset"] == "USDT"]
+        usdt_balance = df[df["asset"] == const.USDT]
 
         available = float(usdt_balance["availableBalance"].iloc[0])
         logger.info(f'Available USDT balance: "{available:.2f}"')
@@ -79,7 +85,9 @@ class Joshua:
         if not orders:
             return 0
 
-        limit_orders = list(filter(lambda o: o["type"] == "LIMIT", orders))
+        limit_orders = list(
+            filter(lambda o: o["type"] == const.OrderType.LIMIT.value, orders)
+        )
         return int(limit_orders[0]["orderId"]) if limit_orders else 0
 
     def _init_positions(self, symbol: str) -> dict[str, str | None]:
@@ -95,7 +103,11 @@ class Joshua:
 
         position = positions[0]
         return {
-            "ps": "BUY" if float(position["positionAmt"]) > 0 else "SELL",
+            "ps": (
+                const.OrderSide.BUY.value
+                if float(position["positionAmt"]) > 0
+                else const.OrderSide.SELL.value
+            ),
             "ep": position["entryPrice"],
             "pa": position["positionAmt"],
         }
@@ -132,7 +144,7 @@ class Joshua:
         data = json.loads(message)
 
         if "e" in data:
-            if data["e"] == "kline":
+            if data["e"] == const.EventType.KLINE.value:
                 self._handle_kline(kline=data["k"], symbol=data["s"])
 
     def _handle_kline(self, kline: dict, symbol: str) -> None:
@@ -148,13 +160,16 @@ class Joshua:
             logger.info(f"{self.interval} candle closed for {symbol}.")
             self.RSIs[symbol] = df
             logger.info(
-                f"Updated RSI for {symbol}: {self.RSIs[symbol].tail().to_string(index=False)}"
+                f"Updated RSI for {symbol}:\n{self.RSIs[symbol].tail().to_string(index=False)}"
             )
 
         current_rsi = df["RSI"].iloc[-1]
 
         # LONG 포지션 진입 조건
-        if current_rsi <= 30 and (self.positions[symbol]["ps"] != "BUY"):
+        if (
+            current_rsi <= 30
+            and self.positions[symbol]["ps"] != const.OrderSide.BUY.value
+        ):
             entry_price = round(close_price, 1)
             target_position = self.positions[symbol]
 
@@ -162,7 +177,7 @@ class Joshua:
                 f"Buy signal for {symbol} detected: Current Price: {close_price}, RSI: {current_rsi}"
             )
 
-            if target_position["ps"] == "SELL":
+            if target_position["ps"] == const.OrderSide.SELL.value:
                 logger.info(f"Found {target_position['ps']} position for {symbol}.")
                 self._close_position(target_position, symbol)
             elif self.client.get_orders(symbol=symbol):
@@ -173,16 +188,19 @@ class Joshua:
 
             self.client.new_order(
                 symbol=symbol,
-                side="BUY",
-                type="LIMIT",
+                side=const.OrderSide.BUY.value,
+                type=const.OrderType.LIMIT.value,
                 quantity=quantity,
-                timeInForce="GTD",
+                timeInForce=const.TimeInForce.GTD.value,
                 price=entry_price,
                 goodTillDate=self._gtd(),
             )
 
         # SHORT 포지션 진입 조건
-        elif current_rsi >= 70 and (self.positions[symbol]["ps"] != "SELL"):
+        elif (
+            current_rsi >= 70
+            and self.positions[symbol]["ps"] != const.OrderSide.SELL.value
+        ):
             entry_price = round(close_price, 1)
             target_position = self.positions[symbol]
 
@@ -190,7 +208,7 @@ class Joshua:
                 f"Sell signal for {symbol} detected: Current Price: {close_price}, RSI: {current_rsi}"
             )
 
-            if target_position["ps"] == "BUY":
+            if target_position["ps"] == const.OrderSide.BUY.value:
                 logger.info(f"Found {target_position['ps']} position for {symbol}.")
                 self._close_position(target_position, symbol)
             elif self.client.get_orders(symbol=symbol):
@@ -201,10 +219,10 @@ class Joshua:
 
             self.client.new_order(
                 symbol=symbol,
-                side="SELL",
-                type="LIMIT",
+                side=const.OrderSide.SELL.value,
+                type=const.OrderType.LIMIT.value,
                 quantity=quantity,
-                timeInForce="GTD",
+                timeInForce=const.TimeInForce.GTD.value,
                 price=entry_price,
                 goodTillDate=self._gtd(),
             )
@@ -234,29 +252,43 @@ class Joshua:
                     f"Received {data['e']} event:\n{json.dumps(data, indent=2)}"
                 )
 
-                if data["e"] == "ORDER_TRADE_UPDATE":
+                if data["e"] == const.EventType.ORDER_TRADE_UPDATE.value:
                     order = data["o"]
                     symbol = order["s"]
 
                     if symbol in self.symbols:
-                        if order["o"] == "LIMIT" and order["X"] == "NEW":
+                        if (
+                            order["o"] == const.OrderType.LIMIT.value
+                            and order["X"] == "NEW"
+                        ):
                             self._set_stop_loss(
                                 symbol=symbol,
-                                stop_side="SELL" if order["S"] == "BUY" else "BUY",
+                                stop_side=(
+                                    const.OrderSide.SELL.value
+                                    if order["S"] == const.OrderSide.BUY.value
+                                    else const.OrderSide.BUY.value
+                                ),
                                 price=float(order["p"]),
                                 quantity=float(order["q"]),
                             )
                             self._set_take_profit(
                                 symbol=symbol,
-                                take_side="SELL" if order["S"] == "BUY" else "BUY",
+                                take_side=(
+                                    const.OrderSide.SELL.value
+                                    if order["S"] == const.OrderSide.BUY.value
+                                    else const.OrderSide.BUY.value
+                                ),
                                 price=float(order["p"]),
                                 quantity=float(order["q"]),
                             )
-                        elif order["o"] == "MARKET" and order["X"] == "FILLED":
+                        elif (
+                            order["o"] == const.OrderType.MARKET.value
+                            and order["X"] == const.OrderStatus.FILLED.value
+                        ):
                             logger.info(f"Cancelling open orders for {symbol}...")
                             self.client.cancel_open_orders(symbol)
 
-                if data["e"] == "ACCOUNT_UPDATE":
+                if data["e"] == const.EventType.ACCOUNT_UPDATE.value:
                     account_update = data["a"]
 
                     if "P" in account_update and account_update["P"]:
@@ -275,7 +307,9 @@ class Joshua:
                                     "pa": position["pa"],
                                     "ep": position["ep"],
                                     "ps": (
-                                        "BUY" if float(position["pa"]) > 0 else "SELL"
+                                        const.OrderSide.BUY.value
+                                        if float(position["pa"]) > 0
+                                        else const.OrderSide.SELL.value
                                     ),
                                 }
                             )
@@ -285,7 +319,7 @@ class Joshua:
 
                     if "B" in account_update and account_update["B"]:
                         usdt_balance = list(
-                            filter(lambda b: b["a"] == "USDT", account_update["B"])
+                            filter(lambda b: b["a"] == const.USDT, account_update["B"])
                         )
                         if usdt_balance:
                             self.avbl_usdt = (
@@ -305,7 +339,7 @@ class Joshua:
         weight = 0.12
         factor = (
             1 - (weight / self.leverage)
-            if stop_side == "SELL"
+            if stop_side == const.OrderSide.SELL.value
             else 1 + (weight / self.leverage)
         )
         stop_price = round(price * factor, 1)
@@ -313,7 +347,7 @@ class Joshua:
         self.client.new_order(
             symbol=symbol,
             side=stop_side,
-            type="STOP_MARKET",
+            type=const.OrderType.STOP_MARKET.value,
             stopPrice=stop_price,
             closePosition=True,
         )
@@ -327,7 +361,7 @@ class Joshua:
         weight = 0.18
         factor = (
             1 + (weight / self.leverage)
-            if take_side == "SELL"
+            if take_side == const.OrderSide.SELL.value
             else 1 - (weight / self.leverage)
         )
         take_price = round(price * factor, 1)
@@ -335,7 +369,7 @@ class Joshua:
         self.client.new_order(
             symbol=symbol,
             side=take_side,
-            type="TAKE_PROFIT_MARKET",
+            type=const.OrderType.TAKE_PROFIT_MARKET.value,
             stopPrice=take_price,
             closePosition=True,
         )
@@ -358,7 +392,7 @@ class Joshua:
 
     async def _keepalive_stream(self):
         while True:
-            await asyncio.sleep(3600 * 23 + 60 * 55)
+            await asyncio.sleep(const.KEEPALIVE_INTERVAL)
             logger.info("Reconnecting to the stream to maintain the connection...")
 
             self.client_ws.stop()
@@ -377,7 +411,7 @@ class Joshua:
 
     async def _renew_listen_key(self):
         while True:
-            await asyncio.sleep(60 * 55)
+            await asyncio.sleep(const.LISTEN_KEY_RENEW_INTERVAL)
             logger.info("Renewing listen key...")
             response = self.client.renew_listen_key(listenKey=self.listen_key)
             data = json.loads(response)
@@ -385,17 +419,17 @@ class Joshua:
             self.listen_key = (
                 self._recreate_listen_key()
                 if self._is_listen_key_expired(data)
-                else str(data["listenKey"])
+                else str(data[const.LISTEN_KEY])
             )
             self.client_ws_user.user_data(listen_key=self.listen_key)
 
     def _is_listen_key_expired(self, data: dict) -> bool:
-        return "code" in data and data["code"] == -1125
+        return const.CODE in data and data[const.CODE] == -1125
 
     def _recreate_listen_key(self) -> str:
         logger.info("Recreating listen key...")
         self.client.close_listen_key(self.listen_key)
-        new_listen_key = self.client.new_listen_key()["listenKey"]
+        new_listen_key = self.client.new_listen_key()[const.LISTEN_KEY]
         self.client_ws_user.user_data(listen_key=new_listen_key)
 
         return new_listen_key
@@ -413,8 +447,12 @@ class Joshua:
         try:
             self.client.new_order(
                 symbol=symbol,
-                side="SELL" if position["ps"] == "BUY" else "BUY",
-                type="MARKET",
+                side=(
+                    const.OrderSide.SELL.value
+                    if position["ps"] == const.OrderSide.BUY.value
+                    else const.OrderSide.BUY.value
+                ),
+                type=const.OrderType.MARKET.value,
                 quantity=abs(float(position["pa"])),
             )
         except Exception as e:

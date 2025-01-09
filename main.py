@@ -1,4 +1,4 @@
-from joshua import Joshua
+from core import Joshua
 import logging
 from datetime import datetime
 
@@ -25,6 +25,6 @@ if __name__ == "__main__":
             is_testnet=True,
         )
         app.run()
-    except KeyboardInterrupt:
-        logger.info("Application terminated by KeyboardInterrupt")
+    except Exception as e:
+        logger.error(f"Application terminated by {e}")
         app.close()
