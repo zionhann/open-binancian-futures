@@ -275,6 +275,7 @@ class Joshua:
                     price = order["p"]
                     quantity = order["q"]
                     realized_profit = order["rp"]
+                    tif = order["f"]
 
                     if symbol in self.symbols:
                         if order_type == const.OrderType.LIMIT.value:
@@ -310,6 +311,29 @@ class Joshua:
                                 logger.info(
                                     f"Order for {symbol} filled: Type={order_type}, Side={side}, Price={price}, Quantity={filled_quantity}/{quantity} ({percentage_filled:.2f}%)"
                                 )
+                            elif (
+                                status == const.OrderStatus.CANCELLED.value
+                                and tif == const.TimeInForce.GTD.value
+                                and self.positions[symbol]["ps"] is None
+                            ):
+                                logger.info(
+                                    f"{order_type} order for {symbol} is cancelled since TIF is expired."
+                                )
+                                open_orders = self.client.get_orders(symbol=symbol)
+                                logger.info(
+                                    f"Cancelling {len(open_orders)} open orders for {symbol}..."
+                                )
+                                logger.debug(
+                                    f"Open orders:\n{json.dumps(open_orders, indent=2)}"
+                                )
+                                self.client.cancel_batch_order(
+                                    symbol=symbol,
+                                    orderIdList=[
+                                        order["orderId"] for order in open_orders
+                                    ],
+                                    origClientOrderIdList=[],
+                                )
+
                         elif order_type in (
                             [const.OrderType.MARKET.value]
                             + [typ.value for typ in const.OrderType.TPSL]
