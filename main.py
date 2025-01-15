@@ -1,19 +1,12 @@
 from core import Joshua
 import logging
-from datetime import datetime
 import const
-
-log_subdir = "test" if const.TradeConfig.IS_TESTNET.value else "main"
-
-logging.basicConfig(
-    format=const.LOG_FORMAT,
-    level=logging.INFO,
-    filename=f"{const.LOG_BASEDIR}/{log_subdir}/{datetime.now().strftime('%Y%m%d-%H%M%S')}.log",
-)
+import loggin
 
 logger = logging.getLogger(__name__)
 
 if __name__ == "__main__":
+    loggin.init()
     logger.info("Boot process initiated. Preparing to start the application...")
 
     try:
