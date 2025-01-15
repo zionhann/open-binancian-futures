@@ -15,27 +15,25 @@ KEEPALIVE_INTERVAL = 3600 * 23 + 60 * 55
 TO_MILLI = 1000
 MIN_EXP = 660
 
-LOG_FORMAT = "[%(asctime)s] %(levelname)s [%(name)s] %(module)s.%(funcName)s:%(lineno)d --- %(message)s"
-LOG_BASEDIR = ".log"
-
 
 class TradeConfig(Enum):
     SYMBOLS = [symbol.strip() for symbol in os.getenv("SYMBOLS", "BTCUSDT").split(",")]
     INTERVAL = os.getenv("INTERVAL", "1d")
-    LEVERAGE = int(os.getenv("LEVERAGE", "1"))
-    SIZE = float(os.getenv("SIZE", "0.05"))
-    RSI_WINDOW = int(os.getenv("RSI_WINDOW", "14"))
-    IS_TESTNET = True if os.getenv("IS_TESTNET", "false") == "true" else False
+    LEVERAGE = int(os.getenv("LEVERAGE", 1))
+    SIZE = float(os.getenv("SIZE", 0.05))
+    RSI_WINDOW = int(os.getenv("RSI_WINDOW", 14))
+    IS_TESTNET = os.getenv("IS_TESTNET", "false") == "true"
 
 
 class RSI(Enum):
-    OVERSOLD_THRESHOLD = int(os.getenv("RSI_OVERSOLD_THRESHOLD", "30"))
-    OVERBOUGHT_THRESHOLD = int(os.getenv("RSI_OVERBOUGHT_THRESHOLD", "70"))
+    OVERSOLD_THRESHOLD = int(os.getenv("RSI_OVERSOLD_THRESHOLD", 30))
+    OVERBOUGHT_THRESHOLD = int(os.getenv("RSI_OVERBOUGHT_THRESHOLD", 70))
 
 
 class TPSL(Enum):
-    TAKE_PROFIT = float(os.getenv("TPSL_TAKE_PROFIT", "0.05"))
-    STOP_LOSS = float(os.getenv("TPSL_STOP_LOSS", "0.05"))
+    TAKE_PROFIT = float(os.getenv("TPSL_TAKE_PROFIT", 0.05))
+    STOP_LOSS = float(os.getenv("TPSL_STOP_LOSS", 0.05))
+    TRAILING_STOP_DELTA = float(os.getenv("TPSL_TRAILING_STOP_DELTA", 1))
 
 
 class ApiKey(Enum):
@@ -61,6 +59,7 @@ class OrderType(Enum):
         STOP = "STOP"
         STOP_MARKET = "STOP_MARKET"
         TAKE_PROFIT_MARKET = "TAKE_PROFIT_MARKET"
+        TRAILING_STOP_MARKET = "TRAILING_STOP_MARKET"
 
 
 class PositionSide(Enum):

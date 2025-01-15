@@ -177,15 +177,14 @@ class Joshua:
             if open_orders := self.client.get_orders(symbol=symbol):
                 if target_position[
                     const.POSITION_SIDE
-                ] == const.PositionSide.SELL.value and [
-                    order
+                ] == const.PositionSide.SELL.value and not any(
+                    order["origType"] == const.OrderType.TPSL.TRAILING_STOP_MARKET.value
                     for order in open_orders
-                    if order["origType"] in [typ.value for typ in const.OrderType.TPSL]
-                ]:
+                ):
                     logger.info(
-                        f"Found {target_position[const.POSITION_SIDE]} position for {symbol}. Preparing to switch position..."
+                        f"Found {target_position[const.POSITION_SIDE]} position for {symbol}. Opening a trailing stop order..."
                     )
-                    self._close_position(target_position, symbol)
+                    self._open_trailing_stop(target_position, symbol)
 
                 logger.info(f"Found open orders for {symbol}. Skipping...")
                 return
@@ -218,15 +217,14 @@ class Joshua:
             if open_orders := self.client.get_orders(symbol=symbol):
                 if target_position[
                     const.POSITION_SIDE
-                ] == const.PositionSide.BUY.value and [
-                    order
+                ] == const.PositionSide.BUY.value and not any(
+                    order["origType"] == const.OrderType.TPSL.TRAILING_STOP_MARKET.value
                     for order in open_orders
-                    if order["origType"] in [typ.value for typ in const.OrderType.TPSL]
-                ]:
+                ):
                     logger.info(
-                        f"Found {target_position[const.POSITION_SIDE]} position for {symbol}. Preparing to switch position..."
+                        f"Found {target_position[const.POSITION_SIDE]} position for {symbol}. Opening a trailing stop order..."
                     )
-                    self._close_position(target_position, symbol)
+                    self._open_trailing_stop(target_position, symbol)
 
                 logger.info(f"Found open orders for {symbol}. Skipping...")
                 return
@@ -245,7 +243,7 @@ class Joshua:
 
     def _calculate_quantity(self, entry_price: float):
         try:
-            quantity = (self.avbl_usdt * self.leverage * self.size) / entry_price
+            quantity = (self.avbl_usdt * (self.size / self.leverage)) / entry_price
 
             return math.floor(quantity * 1000) / 1000
         except Exception as e:
@@ -534,8 +532,8 @@ class Joshua:
         self.client_ws.stop()
         logger.info("Shutdown process completed successfully.")
 
-    def _close_position(self, position: dict, symbol: str) -> None:
-        logger.info(f"Closing {position['ps']} position for {symbol}...")
+    def _open_trailing_stop(self, position: dict, symbol: str) -> None:
+        logger.info(f"Opening a trailing stop order for {symbol}...")
 
         try:
             stop_side = (
@@ -547,8 +545,9 @@ class Joshua:
             self.client.new_order(
                 symbol=symbol,
                 side=stop_side,
-                type=const.OrderType.MARKET.value,
+                type=const.OrderType.TPSL.TRAILING_STOP_MARKET.value,
                 quantity=position[const.POSITION_AMOUNT],
+                callbackRate=const.TPSL.TRAILING_STOP_DELTA.value / self.leverage,
             )
         except Exception as e:
-            logger.error(f"Position closing error: {e}")
+            logger.error(f"Opening a trailing stop order error: {e}")
