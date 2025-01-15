@@ -18,15 +18,7 @@ logger = logging.getLogger(__name__)
 
 
 class Joshua:
-    def __init__(
-        self,
-        symbols: list[str],
-        interval: str,
-        leverage: int,
-        size: int,
-        rsi_window: int,
-        is_testnet: bool,
-    ) -> None:
+    def __init__(self, is_testnet: bool) -> None:
         api_key, api_secret = (
             (const.ApiKey.CLIENT_TEST.value, const.ApiKey.SECRET_TEST.value)
             if is_testnet
@@ -54,19 +46,19 @@ class Joshua:
             on_message=self._user_data_handler,
         )
 
-        self.symbols = symbols
-        self.interval = interval
-        self.leverage = leverage
-        self.size = size
-        self.rsi_window = rsi_window
+        self.symbols = const.TradeConfig.SYMBOLS.value
+        self.interval = const.TradeConfig.INTERVAL.value
+        self.leverage = const.TradeConfig.LEVERAGE.value
+        self.size = const.TradeConfig.SIZE.value
+        self.rsi_window = const.TradeConfig.RSI_WINDOW.value
         self.steram_url = stream_url
 
         self.avbl_usdt = self._init_avbl_usdt()
 
-        self.positions = {s: self._init_positions(s) for s in symbols}
+        self.positions = {s: self._init_positions(s) for s in self.symbols}
         logger.info(f"Loaded positions:\n{json.dumps(self.positions, indent=2)}")
 
-        self.RSIs = {s: self._init_rsi(symbol=s) for s in symbols}
+        self.RSIs = {s: self._init_rsi(symbol=s) for s in self.symbols}
 
     def _init_avbl_usdt(self) -> float:
         logger.info("Fetching available USDT balance...")
@@ -90,26 +82,30 @@ class Joshua:
         )
         return int(limit_orders[0]["orderId"]) if limit_orders else 0
 
-    def _init_positions(self, symbol: str) -> dict[str, str | None]:
+    def _init_positions(self, symbol: str) -> dict[str, str | float | None]:
         logger.info(f"Fetching positions for {symbol}...")
         positions = self.client.get_position_risk(symbol=symbol)
 
         if not positions:
             return {
-                "ps": None,
-                "ep": None,
-                "pa": None,
+                const.POSITION_SIDE: None,
+                const.ENTRY_PRICE: None,
+                const.POSITION_AMOUNT: None,
             }
 
         position = positions[0]
+        position_amount = float(position["positionAmt"])
+        entry_price = float(position["entryPrice"])
+        is_long_position = position_amount > 0
+
         return {
-            "ps": (
-                const.OrderSide.BUY.value
-                if float(position["positionAmt"]) > 0
-                else const.OrderSide.SELL.value
+            const.POSITION_SIDE: (
+                const.PositionSide.BUY.value
+                if is_long_position
+                else const.PositionSide.SELL.value
             ),
-            "ep": position["entryPrice"],
-            "pa": position["positionAmt"],
+            const.ENTRY_PRICE: entry_price,
+            const.POSITION_AMOUNT: abs(position_amount),
         }
 
     def _init_rsi(self, symbol: str) -> DataFrame:
@@ -167,8 +163,9 @@ class Joshua:
 
         # LONG 포지션 진입 조건
         if (
-            current_rsi <= 30
-            and self.positions[symbol]["ps"] != const.OrderSide.BUY.value
+            current_rsi <= const.RSI.OVERSOLD_THRESHOLD.value
+            and self.positions[symbol][const.POSITION_SIDE]
+            != const.PositionSide.BUY.value
         ):
             entry_price = round(close_price, 1)
             target_position = self.positions[symbol]
@@ -178,13 +175,15 @@ class Joshua:
             )
 
             if open_orders := self.client.get_orders(symbol=symbol):
-                if target_position["ps"] == const.OrderSide.SELL.value and [
+                if target_position[
+                    const.POSITION_SIDE
+                ] == const.PositionSide.SELL.value and [
                     order
                     for order in open_orders
                     if order["origType"] in [typ.value for typ in const.OrderType.TPSL]
                 ]:
                     logger.info(
-                        f"Found {target_position['ps']} position for {symbol}. Preparing to switch position..."
+                        f"Found {target_position[const.POSITION_SIDE]} position for {symbol}. Preparing to switch position..."
                     )
                     self._close_position(target_position, symbol)
 
@@ -195,7 +194,7 @@ class Joshua:
 
             self.client.new_order(
                 symbol=symbol,
-                side=const.OrderSide.BUY.value,
+                side=const.PositionSide.BUY.value,
                 type=const.OrderType.LIMIT.value,
                 quantity=quantity,
                 timeInForce=const.TimeInForce.GTD.value,
@@ -205,8 +204,9 @@ class Joshua:
 
         # SHORT 포지션 진입 조건
         elif (
-            current_rsi >= 70
-            and self.positions[symbol]["ps"] != const.OrderSide.SELL.value
+            current_rsi >= const.RSI.OVERBOUGHT_THRESHOLD.value
+            and self.positions[symbol][const.POSITION_SIDE]
+            != const.PositionSide.SELL.value
         ):
             entry_price = round(close_price, 1)
             target_position = self.positions[symbol]
@@ -216,13 +216,15 @@ class Joshua:
             )
 
             if open_orders := self.client.get_orders(symbol=symbol):
-                if target_position["ps"] == const.OrderSide.BUY.value and [
+                if target_position[
+                    const.POSITION_SIDE
+                ] == const.PositionSide.BUY.value and [
                     order
                     for order in open_orders
                     if order["origType"] in [typ.value for typ in const.OrderType.TPSL]
                 ]:
                     logger.info(
-                        f"Found {target_position['ps']} position for {symbol}. Preparing to switch position..."
+                        f"Found {target_position[const.POSITION_SIDE]} position for {symbol}. Preparing to switch position..."
                     )
                     self._close_position(target_position, symbol)
 
@@ -233,7 +235,7 @@ class Joshua:
 
             self.client.new_order(
                 symbol=symbol,
-                side=const.OrderSide.SELL.value,
+                side=const.PositionSide.SELL.value,
                 type=const.OrderType.LIMIT.value,
                 quantity=quantity,
                 timeInForce=const.TimeInForce.GTD.value,
@@ -243,7 +245,7 @@ class Joshua:
 
     def _calculate_quantity(self, entry_price: float):
         try:
-            quantity = self.avbl_usdt * self.leverage * (self.size / 100) / entry_price
+            quantity = (self.avbl_usdt * self.leverage * self.size) / entry_price
 
             return math.floor(quantity * 1000) / 1000
         except Exception as e:
@@ -253,9 +255,9 @@ class Joshua:
         interval_to_seconds = {"m": 60, "h": 3600, "d": 86400}
         unit = self.interval[-1]
         base = interval_to_seconds[unit] * int(self.interval[:-1])
-        exp = max(base * line, 660)
+        exp = max(base * line, const.MIN_EXP)
 
-        return int(time.time() + exp) * 1000
+        return int(time.time() + exp) * const.TO_MILLI
 
     def _user_data_handler(self, _, message) -> None:
         try:
@@ -283,9 +285,9 @@ class Joshua:
                                 self._set_stop_loss(
                                     symbol=symbol,
                                     stop_side=(
-                                        const.OrderSide.SELL.value
-                                        if side == const.OrderSide.BUY.value
-                                        else const.OrderSide.BUY.value
+                                        const.PositionSide.SELL.value
+                                        if side == const.PositionSide.BUY.value
+                                        else const.PositionSide.BUY.value
                                     ),
                                     price=float(price),
                                     quantity=float(quantity),
@@ -293,9 +295,9 @@ class Joshua:
                                 self._set_take_profit(
                                     symbol=symbol,
                                     take_side=(
-                                        const.OrderSide.SELL.value
-                                        if side == const.OrderSide.BUY.value
-                                        else const.OrderSide.BUY.value
+                                        const.PositionSide.SELL.value
+                                        if side == const.PositionSide.BUY.value
+                                        else const.PositionSide.BUY.value
                                     ),
                                     price=float(price),
                                     quantity=float(quantity),
@@ -314,7 +316,7 @@ class Joshua:
                             elif (
                                 status == const.OrderStatus.CANCELLED.value
                                 and tif == const.TimeInForce.GTD.value
-                                and self.positions[symbol]["ps"] is None
+                                and self.positions[symbol][const.POSITION_SIDE] is None
                             ):
                                 logger.info(
                                     f"{order_type} order for {symbol} is cancelled since TIF is expired."
@@ -374,7 +376,7 @@ class Joshua:
                                 )
                             elif (
                                 status == const.OrderStatus.EXPIRED.value
-                                and self.positions[symbol]["ps"] is None
+                                and self.positions[symbol][const.POSITION_SIDE] is None
                             ):
                                 logger.warning(
                                     f"{order_type} for {symbol} is triggered but no existing position found. This can cause unexpected behavior."
@@ -401,22 +403,26 @@ class Joshua:
                     if "P" in account_update and account_update["P"]:
                         for position in account_update["P"]:
                             symbol = position["s"]
-                            is_closed = position["pa"] == "0"
+                            position_amount = float(position["pa"])
+                            entry_price = float(position["ep"])
+
+                            is_closed = position_amount == 0
+                            is_long_position = position_amount > 0
 
                             self.positions[symbol] = (
                                 {
-                                    "pa": None,
-                                    "ep": None,
-                                    "ps": None,
+                                    const.POSITION_AMOUNT: None,
+                                    const.ENTRY_PRICE: None,
+                                    const.POSITION_SIDE: None,
                                 }
                                 if is_closed
                                 else {
-                                    "pa": position["pa"],
-                                    "ep": position["ep"],
-                                    "ps": (
-                                        const.OrderSide.BUY.value
-                                        if float(position["pa"]) > 0
-                                        else const.OrderSide.SELL.value
+                                    const.POSITION_AMOUNT: abs(position_amount),
+                                    const.ENTRY_PRICE: entry_price,
+                                    const.POSITION_SIDE: (
+                                        const.PositionSide.BUY.value
+                                        if is_long_position
+                                        else const.PositionSide.SELL.value
                                     ),
                                 }
                             )
@@ -445,11 +451,10 @@ class Joshua:
     def _set_stop_loss(
         self, symbol: str, stop_side: str, price: float, quantity: float
     ) -> None:
-        weight = 0.10
         factor = (
-            1 - (weight / self.leverage)
-            if stop_side == const.OrderSide.SELL.value
-            else 1 + (weight / self.leverage)
+            1 - (const.TPSL.STOP_LOSS.value / self.leverage)
+            if stop_side == const.PositionSide.SELL.value
+            else 1 + (const.TPSL.STOP_LOSS.value / self.leverage)
         )
         stop_price = round(price * factor, 1)
 
@@ -468,11 +473,10 @@ class Joshua:
     def _set_take_profit(
         self, symbol: str, take_side: str, price: float, quantity: float
     ) -> None:
-        weight = 0.20
         factor = (
-            1 + (weight / self.leverage)
-            if take_side == const.OrderSide.SELL.value
-            else 1 - (weight / self.leverage)
+            1 + (const.TPSL.TAKE_PROFIT.value / self.leverage)
+            if take_side == const.PositionSide.SELL.value
+            else 1 - (const.TPSL.TAKE_PROFIT.value / self.leverage)
         )
         take_price = round(price * factor, 1)
 
@@ -535,16 +539,16 @@ class Joshua:
 
         try:
             stop_side = (
-                const.OrderSide.SELL.value
-                if position["ps"] == const.OrderSide.BUY.value
-                else const.OrderSide.BUY.value
+                const.PositionSide.SELL.value
+                if position[const.POSITION_SIDE] == const.PositionSide.BUY.value
+                else const.PositionSide.BUY.value
             )
 
             self.client.new_order(
                 symbol=symbol,
                 side=stop_side,
                 type=const.OrderType.MARKET.value,
-                quantity=abs(float(position["pa"])),
+                quantity=position[const.POSITION_AMOUNT],
             )
         except Exception as e:
             logger.error(f"Position closing error: {e}")
