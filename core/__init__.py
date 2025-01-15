@@ -1,8 +1,6 @@
-from dataclasses import dataclass
 import json
 import math
 
-from matplotlib.pylab import f
 from indicator import rsi
 from pandas import DataFrame
 import pandas as pd
@@ -11,7 +9,7 @@ from binance.websocket.um_futures.websocket_client import UMFuturesWebsocketClie
 import asyncio
 import time
 import logging
-import const
+import core.constants as const
 import utils
 
 logger = logging.getLogger(__name__)
@@ -37,20 +35,20 @@ class Joshua:
 
         self.client = UMFutures(key=api_key, secret=api_secret, base_url=base_url)
         self.client_ws = UMFuturesWebsocketClient(
-            stream_url=stream_url, on_message=self._message_handler
+            stream_url=stream_url, on_message=self._market_stream_handler
         )
 
         self.listen_key = self.client.new_listen_key()[const.LISTEN_KEY]
         self.client_ws_user = UMFuturesWebsocketClient(
             stream_url=stream_url,
-            on_message=self._user_data_handler,
+            on_message=self._user_stream_handler,
         )
 
-        self.symbols = const.TradeConfig.SYMBOLS.value
-        self.interval = const.TradeConfig.INTERVAL.value
-        self.leverage = const.TradeConfig.LEVERAGE.value
-        self.size = const.TradeConfig.SIZE.value
-        self.rsi_window = const.TradeConfig.RSI_WINDOW.value
+        self.symbols = const.TradingConfig.SYMBOLS.value
+        self.interval = const.TradingConfig.INTERVAL.value
+        self.leverage = const.TradingConfig.LEVERAGE.value
+        self.size = const.TradingConfig.SIZE.value
+        self.rsi_window = const.RSI.WINDOW.value
         self.steram_url = stream_url
 
         self.avbl_usdt = self._init_avbl_usdt()
@@ -136,7 +134,42 @@ class Joshua:
         )
         return initial_rsi
 
-    def _message_handler(self, _, message) -> None:
+    def run(self) -> None:
+        logger.info("Starting to run...")
+        logger.info("Connecting to User Data Stream...")
+        self.client_ws_user.user_data(listen_key=self.listen_key)
+
+        for s in self.symbols:
+            logger.info(f"Setting leverage to {self.leverage} for {s}...")
+            self.client.change_leverage(symbol=s, leverage=self.leverage)
+            self._subscribe_to_stream(symbol=s)
+
+        asyncio.run(self._keepalive_stream())
+
+    def _subscribe_to_stream(self, symbol: str):
+        logger.info(f"Subscribing to {symbol} klines by {self.interval}...")
+        self.client_ws.kline(symbol=symbol, interval=self.interval)
+
+    async def _keepalive_stream(self):
+        while True:
+            await asyncio.sleep(const.KEEPALIVE_INTERVAL)
+            logger.info("Reconnecting to the stream to maintain the connection...")
+
+            self.client_ws.stop()
+            self.client_ws_user.stop()
+
+            self.client_ws = UMFuturesWebsocketClient(
+                stream_url=self.steram_url, on_message=self._market_stream_handler
+            )
+            self.client_ws_user = UMFuturesWebsocketClient(
+                stream_url=self.steram_url, on_message=self._user_stream_handler
+            )
+
+            for s in self.symbols:
+                self._subscribe_to_stream(symbol=s)
+            self.client_ws_user.user_data(listen_key=self.listen_key)
+
+    def _market_stream_handler(self, _, message) -> None:
         data = json.loads(message)
 
         if "e" in data:
@@ -241,6 +274,26 @@ class Joshua:
                 goodTillDate=self._gtd(),
             )
 
+    def _open_trailing_stop(self, position: dict, symbol: str) -> None:
+        logger.info(f"Opening a trailing stop order for {symbol}...")
+
+        try:
+            stop_side = (
+                const.PositionSide.SELL.value
+                if position[const.POSITION_SIDE] == const.PositionSide.BUY.value
+                else const.PositionSide.BUY.value
+            )
+
+            self.client.new_order(
+                symbol=symbol,
+                side=stop_side,
+                type=const.OrderType.TPSL.TRAILING_STOP_MARKET.value,
+                quantity=position[const.POSITION_AMOUNT],
+                callbackRate=const.TPSL.TRAILING_STOP_DELTA.value / self.leverage,
+            )
+        except Exception as e:
+            logger.error(f"Opening a trailing stop order error: {e}")
+
     def _calculate_quantity(self, entry_price: float):
         try:
             quantity = (self.avbl_usdt * (self.size / self.leverage)) / entry_price
@@ -257,7 +310,7 @@ class Joshua:
 
         return int(time.time() + exp) * const.TO_MILLI
 
-    def _user_data_handler(self, _, message) -> None:
+    def _user_stream_handler(self, _, message) -> None:
         try:
             data = json.loads(message)
 
@@ -490,64 +543,9 @@ class Joshua:
             f"Setting Take Profit for {symbol}; Price={take_price}, Quantity={quantity}, Side={take_side}"
         )
 
-    def run(self) -> None:
-        logger.info("Starting to run...")
-        logger.info("Connecting to User Data Stream...")
-        self.client_ws_user.user_data(listen_key=self.listen_key)
-
-        for s in self.symbols:
-            logger.info(f"Setting leverage to {self.leverage} for {s}...")
-            self.client.change_leverage(symbol=s, leverage=self.leverage)
-            self._subscribe_to_stream(symbol=s)
-
-        asyncio.run(self._keepalive_stream())
-
-    def _subscribe_to_stream(self, symbol: str):
-        logger.info(f"Subscribing to {symbol} klines by {self.interval}...")
-        self.client_ws.kline(symbol=symbol, interval=self.interval)
-
-    async def _keepalive_stream(self):
-        while True:
-            await asyncio.sleep(const.KEEPALIVE_INTERVAL)
-            logger.info("Reconnecting to the stream to maintain the connection...")
-
-            self.client_ws.stop()
-            self.client_ws_user.stop()
-
-            self.client_ws = UMFuturesWebsocketClient(
-                stream_url=self.steram_url, on_message=self._message_handler
-            )
-            self.client_ws_user = UMFuturesWebsocketClient(
-                stream_url=self.steram_url, on_message=self._user_data_handler
-            )
-
-            for s in self.symbols:
-                self._subscribe_to_stream(symbol=s)
-            self.client_ws_user.user_data(listen_key=self.listen_key)
-
     def close(self):
         logger.info("Initiating shutdown process...")
         self.client.close_listen_key(self.listen_key)
         self.client_ws_user.stop()
         self.client_ws.stop()
         logger.info("Shutdown process completed successfully.")
-
-    def _open_trailing_stop(self, position: dict, symbol: str) -> None:
-        logger.info(f"Opening a trailing stop order for {symbol}...")
-
-        try:
-            stop_side = (
-                const.PositionSide.SELL.value
-                if position[const.POSITION_SIDE] == const.PositionSide.BUY.value
-                else const.PositionSide.BUY.value
-            )
-
-            self.client.new_order(
-                symbol=symbol,
-                side=stop_side,
-                type=const.OrderType.TPSL.TRAILING_STOP_MARKET.value,
-                quantity=position[const.POSITION_AMOUNT],
-                callbackRate=const.TPSL.TRAILING_STOP_DELTA.value / self.leverage,
-            )
-        except Exception as e:
-            logger.error(f"Opening a trailing stop order error: {e}")

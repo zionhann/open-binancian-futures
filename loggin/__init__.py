@@ -2,10 +2,10 @@ import logging
 from logging.handlers import TimedRotatingFileHandler
 from datetime import datetime
 import os
-from const import TradeConfig
+from core.constants import TradingConfig
 
 BASE_DIR = ".log"
-SUB_DIR = "test" if TradeConfig.IS_TESTNET.value else "main"
+SUB_DIR = "test" if TradingConfig.IS_TESTNET.value else "main"
 
 FILE_HANDLER_INTERVAL = 1
 FILE_HANDLER_BACKUP_COUNT = 7
@@ -21,9 +21,10 @@ file_handler = TimedRotatingFileHandler(
 stream_handler = logging.StreamHandler()
 
 
-def init() -> None:
+def init(name: str) -> logging.Logger:
     logging.basicConfig(
         format="[%(asctime)s] %(levelname)s [%(name)s] %(module)s.%(funcName)s:%(lineno)d --- %(message)s",
         level=int(os.getenv("LOGGING_LEVEL", logging.INFO)),
         handlers=[file_handler, stream_handler],
     )
+    return logging.getLogger(name)

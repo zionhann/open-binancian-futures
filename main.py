@@ -1,16 +1,16 @@
 from core import Joshua
-import logging
-import const
+from core.constants import TradingConfig
 import loggin
+from dotenv import load_dotenv
 
-logger = logging.getLogger(__name__)
+load_dotenv()
+logger = loggin.init(__name__)
 
 if __name__ == "__main__":
-    loggin.init()
     logger.info("Boot process initiated. Preparing to start the application...")
 
     try:
-        app = Joshua(is_testnet=const.TradeConfig.IS_TESTNET.value)
+        app = Joshua(is_testnet=TradingConfig.IS_TESTNET.value)
         app.run()
     except Exception as e:
         logger.error(f"Application terminated by {e}")

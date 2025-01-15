@@ -2,8 +2,6 @@ from enum import Enum
 from dotenv import load_dotenv
 import os
 
-load_dotenv()
-
 LISTEN_KEY = "listenKey"
 USDT = "USDT"
 CODE = "code"
@@ -16,16 +14,16 @@ TO_MILLI = 1000
 MIN_EXP = 660
 
 
-class TradeConfig(Enum):
+class TradingConfig(Enum):
     SYMBOLS = [symbol.strip() for symbol in os.getenv("SYMBOLS", "BTCUSDT").split(",")]
     INTERVAL = os.getenv("INTERVAL", "1d")
     LEVERAGE = int(os.getenv("LEVERAGE", 1))
     SIZE = float(os.getenv("SIZE", 0.05))
-    RSI_WINDOW = int(os.getenv("RSI_WINDOW", 14))
     IS_TESTNET = os.getenv("IS_TESTNET", "false") == "true"
 
 
 class RSI(Enum):
+    WINDOW = int(os.getenv("RSI_WINDOW", 14))
     OVERSOLD_THRESHOLD = int(os.getenv("RSI_OVERSOLD_THRESHOLD", 30))
     OVERBOUGHT_THRESHOLD = int(os.getenv("RSI_OVERBOUGHT_THRESHOLD", 70))
 
