@@ -4,11 +4,6 @@ import os
 
 LISTEN_KEY = "listenKey"
 USDT = "USDT"
-CODE = "code"
-MESSAGE = "msg"
-POSITION_SIDE = "ps"  # BUY | SELL
-ENTRY_PRICE = "ep"
-POSITION_AMOUNT = "pa"
 
 KEEPALIVE_INTERVAL = 3600 * 23 + 60 * 55
 TO_MILLI = 1000
@@ -63,11 +58,6 @@ class OrderType(Enum):
         TRAILING_STOP_MARKET = "TRAILING_STOP_MARKET"
 
 
-class PositionSide(Enum):
-    BUY = "BUY"
-    SELL = "SELL"
-
-
 class TimeInForce(Enum):
     GTC = "GTC"
     GTD = "GTD"
@@ -86,3 +76,21 @@ class OrderStatus(Enum):
     FILLED = "FILLED"
     CANCELLED = "CANCELLED"
     EXPIRED = "EXPIRED"
+
+
+class OpenOrder(Enum):
+    ID = "id"
+    TYPE = "typ"
+    SIDE = "ps"
+    PRICE = "prc"
+    AMOUNT = "qty"
+
+
+class Position(Enum):
+    SIDE = "ps"
+    ENTRY_PRICE = "ep"
+    AMOUNT = "pa"
+
+    class Side(Enum):
+        BUY = "BUY"
+        SELL = "SELL"

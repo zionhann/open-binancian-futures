@@ -55,8 +55,11 @@ class Joshua:
 
         self.avbl_usdt = self._init_avbl_usdt()
 
+        self.open_orders = {s: self._init_open_orders(s) for s in self.symbols}
+        logger.debug(f"Loaded open orders:\n{json.dumps(self.open_orders, indent=2)}")
+
         self.positions = {s: self._init_positions(s) for s in self.symbols}
-        logger.info(f"Loaded positions:\n{json.dumps(self.positions, indent=2)}")
+        logger.debug(f"Loaded positions:\n{json.dumps(self.positions, indent=2)}")
 
         self.RSIs = {s: self._init_rsi(symbol=s) for s in self.symbols}
 
@@ -71,16 +74,22 @@ class Joshua:
 
         return math.floor(available * 100) / 100
 
-    def _init_open_orders(self, symbol: str) -> int:
-        orders = fetch(self.client.get_orders, symbol=symbol)
+    def _init_open_orders(self, symbol: str) -> list[dict[str, str | int | None]]:
+        orders = fetch(self.client.get_orders, symbol=symbol)["data"]
 
         if not orders:
-            return 0
+            return []
 
-        limit_orders = list(
-            filter(lambda o: o["origType"] == const.OrderType.LIMIT.value, orders)
-        )
-        return int(limit_orders[0]["orderId"]) if limit_orders else 0
+        return [
+            {
+                const.OpenOrder.ID.value: order["orderId"],
+                const.OpenOrder.TYPE.value: order["origType"],
+                const.OpenOrder.SIDE.value: order["side"],
+                const.OpenOrder.PRICE.value: order["price"],
+                const.OpenOrder.AMOUNT.value: order["origQty"],
+            }
+            for order in orders
+        ]
 
     def _init_positions(self, symbol: str) -> dict[str, str | float | None]:
         logger.info(f"Fetching positions for {symbol}...")
@@ -88,9 +97,9 @@ class Joshua:
 
         if not positions:
             return {
-                const.POSITION_SIDE: None,
-                const.ENTRY_PRICE: None,
-                const.POSITION_AMOUNT: None,
+                const.Position.SIDE.value: None,
+                const.Position.ENTRY_PRICE.value: None,
+                const.Position.AMOUNT.value: None,
             }
 
         position = positions[0]
@@ -99,13 +108,13 @@ class Joshua:
         is_long_position = position_amount > 0
 
         return {
-            const.POSITION_SIDE: (
-                const.PositionSide.BUY.value
+            const.Position.SIDE.value: (
+                const.Position.Side.BUY.value
                 if is_long_position
-                else const.PositionSide.SELL.value
+                else const.Position.Side.SELL.value
             ),
-            const.ENTRY_PRICE: entry_price,
-            const.POSITION_AMOUNT: abs(position_amount),
+            const.Position.ENTRY_PRICE.value: entry_price,
+            const.Position.AMOUNT.value: abs(position_amount),
         }
 
     def _init_rsi(self, symbol: str) -> DataFrame:
@@ -204,29 +213,25 @@ class Joshua:
         # LONG 포지션 진입 조건
         if (
             current_rsi <= const.RSI.OVERSOLD_THRESHOLD.value
-            and self.positions[symbol][const.POSITION_SIDE]
-            != const.PositionSide.BUY.value
+            and self.positions[symbol][const.Position.SIDE.value]
+            != const.Position.Side.BUY.value
         ):
             entry_price = round(close_price, 1)
-            target_position = self.positions[symbol]
+
+            position = self.positions[symbol]
+            position_side = position[const.Position.SIDE.value]
 
             logger.info(
-                f"Buy signal for {symbol} detected: Current Price: {close_price}, RSI: {current_rsi}"
+                f"Buy signal for {symbol} detected: Current Price: {entry_price}, RSI: {current_rsi}"
             )
 
-            if target_position[
-                const.POSITION_SIDE
-            ] == const.PositionSide.SELL.value and (
-                open_orders := fetch(self.client.get_orders, symbol=symbol)["data"]
-            ):
-                if not any(
-                    order["origType"] == const.OrderType.TPSL.TRAILING_STOP_MARKET.value
-                    for order in open_orders
-                ):
-                    logger.info(
-                        f"Found {target_position[const.POSITION_SIDE]} position for {symbol}."
-                    )
-                    self._open_trailing_stop(target_position, symbol)
+            if position_side == const.Position.Side.SELL.value:
+                if const.OrderType.TPSL.TRAILING_STOP_MARKET.value not in [
+                    order[const.OpenOrder.TYPE.value]
+                    for order in self.open_orders[symbol]
+                ]:
+                    logger.info(f"Found {position_side} position for {symbol}.")
+                    self._open_trailing_stop(position, symbol)
 
                 logger.info(f"Found open orders for {symbol}. Skipping...")
                 return
@@ -236,7 +241,7 @@ class Joshua:
             fetch(
                 self.client.new_order,
                 symbol=symbol,
-                side=const.PositionSide.BUY.value,
+                side=const.Position.Side.BUY.value,
                 type=const.OrderType.LIMIT.value,
                 quantity=quantity,
                 timeInForce=const.TimeInForce.GTD.value,
@@ -247,29 +252,25 @@ class Joshua:
         # SHORT 포지션 진입 조건
         elif (
             current_rsi >= const.RSI.OVERBOUGHT_THRESHOLD.value
-            and self.positions[symbol][const.POSITION_SIDE]
-            != const.PositionSide.SELL.value
+            and self.positions[symbol][const.Position.SIDE.value]
+            != const.Position.Side.SELL.value
         ):
             entry_price = round(close_price, 1)
-            target_position = self.positions[symbol]
+
+            position = self.positions[symbol]
+            position_side = position[const.Position.SIDE.value]
 
             logger.info(
-                f"Sell signal for {symbol} detected: Current Price: {close_price}, RSI: {current_rsi}"
+                f"Sell signal for {symbol} detected: Current Price: {entry_price}, RSI: {current_rsi}"
             )
 
-            if target_position[
-                const.POSITION_SIDE
-            ] == const.PositionSide.BUY.value and (
-                open_orders := fetch(self.client.get_orders, symbol=symbol)["data"]
-            ):
-                if not any(
-                    order["origType"] == const.OrderType.TPSL.TRAILING_STOP_MARKET.value
-                    for order in open_orders
-                ):
-                    logger.info(
-                        f"Found {target_position[const.POSITION_SIDE]} position for {symbol}."
-                    )
-                    self._open_trailing_stop(target_position, symbol)
+            if position_side == const.Position.Side.BUY.value:
+                if const.OrderType.TPSL.TRAILING_STOP_MARKET.value not in [
+                    order[const.OpenOrder.TYPE.value]
+                    for order in self.open_orders[symbol]
+                ]:
+                    logger.info(f"Found {position_side} position for {symbol}.")
+                    self._open_trailing_stop(position, symbol)
 
                 logger.info(f"Found open orders for {symbol}. Skipping...")
                 return
@@ -279,7 +280,7 @@ class Joshua:
             fetch(
                 self.client.new_order,
                 symbol=symbol,
-                side=const.PositionSide.SELL.value,
+                side=const.Position.Side.SELL.value,
                 type=const.OrderType.LIMIT.value,
                 quantity=quantity,
                 timeInForce=const.TimeInForce.GTD.value,
@@ -301,9 +302,9 @@ class Joshua:
                 ) * 100
 
             stop_side = (
-                const.PositionSide.SELL.value
-                if position[const.POSITION_SIDE] == const.PositionSide.BUY.value
-                else const.PositionSide.BUY.value
+                const.Position.Side.SELL.value
+                if position[const.Position.SIDE.value] == const.Position.Side.BUY.value
+                else const.Position.Side.BUY.value
             )
             estimated_delta = round(
                 (unrealized_profit_percentage * const.TPSL.TRAILING_STOP.value)
@@ -318,7 +319,7 @@ class Joshua:
                 symbol=symbol,
                 side=stop_side,
                 type=const.OrderType.TPSL.TRAILING_STOP_MARKET.value,
-                quantity=position[const.POSITION_AMOUNT],
+                quantity=position[const.Position.AMOUNT.value],
                 callbackRate=delta,
             )
         except Exception as e:
@@ -374,24 +375,44 @@ class Joshua:
 
                 if data["e"] == const.EventType.ORDER_TRADE_UPDATE.value:
                     order = data["o"]
-                    symbol = order["s"]
-                    order_type = order["ot"]
-                    status = order["X"]
+
+                    order_id = order["i"]
+                    og_order_type = order["ot"]
+                    curr_order_type = order["o"]
                     side = order["S"]
                     price = order["p"]
                     quantity = order["q"]
+                    status = order["X"]
+                    symbol = order["s"]
                     realized_profit = order["rp"]
                     tif = order["f"]
+                    filled = order["z"]
 
                     if symbol in self.symbols:
-                        if order_type == const.OrderType.LIMIT.value:
-                            if status == const.OrderStatus.NEW.value:
+                        if (
+                            status == const.OrderStatus.NEW.value
+                            and og_order_type == curr_order_type
+                        ):
+                            self.open_orders[symbol].append(
+                                {
+                                    const.OpenOrder.ID.value: order_id,
+                                    const.OpenOrder.TYPE.value: og_order_type,
+                                    const.OpenOrder.SIDE.value: side,
+                                    const.OpenOrder.PRICE.value: price,
+                                    const.OpenOrder.AMOUNT.value: quantity,
+                                }
+                            )
+                            logger.debug(
+                                f"Updated open orders: {self.open_orders[symbol]}"
+                            )
+
+                            if og_order_type == const.OrderType.LIMIT.value:
                                 self._set_stop_loss(
                                     symbol=symbol,
                                     stop_side=(
-                                        const.PositionSide.SELL.value
-                                        if side == const.PositionSide.BUY.value
-                                        else const.PositionSide.BUY.value
+                                        const.Position.Side.SELL.value
+                                        if side == const.Position.Side.BUY.value
+                                        else const.Position.Side.BUY.value
                                     ),
                                     price=float(price),
                                     quantity=float(quantity),
@@ -399,116 +420,110 @@ class Joshua:
                                 self._set_take_profit(
                                     symbol=symbol,
                                     take_side=(
-                                        const.PositionSide.SELL.value
-                                        if side == const.PositionSide.BUY.value
-                                        else const.PositionSide.BUY.value
+                                        const.Position.Side.SELL.value
+                                        if side == const.Position.Side.BUY.value
+                                        else const.Position.Side.BUY.value
                                     ),
                                     price=float(price),
                                     quantity=float(quantity),
                                 )
-                            elif status in [
-                                const.OrderStatus.PARTIALLY_FILLED.value,
-                                const.OrderStatus.FILLED.value,
-                            ]:
-                                filled_quantity = order["z"]
-                                percentage_filled = (
-                                    float(filled_quantity) / float(quantity)
-                                ) * 100
-                                logger.info(
-                                    f"Order for {symbol} filled: Type={order_type}, Side={side}, Price={price}, Quantity={filled_quantity}/{quantity} ({percentage_filled:.2f}%)"
-                                )
-                            elif (
-                                status == const.OrderStatus.CANCELLED.value
-                                and tif == const.TimeInForce.GTD.value
-                                and self.positions[symbol][const.POSITION_SIDE] is None
-                            ):
-                                logger.info(
-                                    f"{order_type} order for {symbol} is cancelled since TIF is expired."
-                                )
-                                open_orders = fetch(
-                                    self.client.get_orders, symbol=symbol
-                                )["data"]
-                                logger.info(
-                                    f"Cancelling {len(open_orders)} open orders for {symbol}..."
-                                )
-                                logger.debug(
-                                    f"Open orders:\n{json.dumps(open_orders, indent=2)}"
-                                )
-                                fetch(
-                                    self.client.cancel_batch_order,
-                                    symbol=symbol,
-                                    orderIdList=[
-                                        order["orderId"] for order in open_orders
-                                    ],
-                                    origClientOrderIdList=[],
-                                )
 
-                        elif order_type in (
-                            [const.OrderType.MARKET.value]
-                            + [typ.value for typ in const.OrderType.TPSL]
-                        ):
+                        elif status in [
+                            const.OrderStatus.PARTIALLY_FILLED.value,
+                            const.OrderStatus.FILLED.value,
+                        ]:
+                            filled_percentage = float(filled) / float(quantity) * 100
+                            logger.info(
+                                f"Order for {symbol} filled: Type={og_order_type}, Side={side}, Price={price}, Quantity={filled}/{quantity} ({filled_percentage:.2f}%)"
+                            )
+
+                            logger.info(
+                                f"Realized profit/loss for {symbol}: {realized_profit}"
+                            )
 
                             if status == const.OrderStatus.FILLED.value:
-                                logger.info(
-                                    f"Realized profit/loss for {symbol}: {realized_profit}"
-                                )
-                                logger.info(
-                                    f"Position for {symbol} is closed by {order_type}."
+                                order_to_remove = next(
+                                    (
+                                        order
+                                        for order in self.open_orders[symbol]
+                                        if order[const.OpenOrder.ID.value] == order_id
+                                    ),
+                                    None,
                                 )
 
-                                open_orders = fetch(
-                                    self.client.get_orders, symbol=symbol
-                                )["data"]
+                                if order_to_remove:
+                                    self.open_orders[symbol].remove(order_to_remove)
+                                    logger.debug(
+                                        f"Updated open orders: {self.open_orders[symbol]}"
+                                    )
 
-                                if tpsl_orders := [
-                                    order
-                                    for order in open_orders
-                                    if order["origType"]
-                                    in [typ.value for typ in const.OrderType.TPSL]
+                                if og_order_type in [
+                                    typ.value for typ in const.OrderType.TPSL
                                 ]:
+                                    tpsl_orders = [
+                                        order
+                                        for order in self.open_orders[symbol]
+                                        if order[const.OpenOrder.TYPE.value]
+                                        != og_order_type
+                                    ]
                                     logger.info(
-                                        f"Cancelling {len(tpsl_orders)} TP/SL orders..."
+                                        f"Closing {len(tpsl_orders)} TP/SL orders..."
                                     )
                                     logger.debug(
-                                        f"Open orders:\n{json.dumps(open_orders, indent=2)}"
+                                        f"Open orders:\n{json.dumps(self.open_orders[symbol], indent=2)}"
                                     )
                                     fetch(
                                         self.client.cancel_batch_order,
                                         symbol=symbol,
                                         orderIdList=[
-                                            order["orderId"] for order in tpsl_orders
+                                            order[const.OpenOrder.ID.value]
+                                            for order in tpsl_orders
                                         ],
-                                        origClientOrderIdList=[],
                                     )
-                            elif status == const.OrderStatus.PARTIALLY_FILLED.value:
-                                logger.info(
-                                    f"Realized profit/loss for {symbol}: {realized_profit}"
-                                )
-                            elif (
-                                status == const.OrderStatus.EXPIRED.value
-                                and self.positions[symbol][const.POSITION_SIDE] is None
-                            ):
-                                logger.warning(
-                                    f"{order_type} for {symbol} is triggered but no existing position found. This can cause unexpected behavior."
+
+                        elif status == const.OrderStatus.CANCELLED.value:
+                            order_to_remove = next(
+                                (
+                                    order
+                                    for order in self.open_orders[symbol]
+                                    if order[const.OpenOrder.ID.value] == order_id
+                                ),
+                                None,
+                            )
+
+                            if order_to_remove:
+                                self.open_orders[symbol].remove(order_to_remove)
+                                logger.debug(
+                                    f"Updated open orders: {self.open_orders[symbol]}"
                                 )
 
-                                open_orders = fetch(
-                                    self.client.get_orders, symbol=symbol
-                                )["data"]
+                            if (
+                                tif == const.TimeInForce.GTD.value
+                                and self.positions[symbol][const.Position.SIDE.value]
+                                is None
+                            ):
                                 logger.info(
-                                    f"Cancelling {len(open_orders)} open orders for {symbol}..."
+                                    f"{og_order_type} order for {symbol} is cancelled since TIF is expired."
                                 )
+                                logger.info("Closing all open orders...")
                                 logger.debug(
-                                    f"Open orders:\n{json.dumps(open_orders, indent=2)}"
+                                    f"Open orders:\n{json.dumps(self.open_orders[symbol], indent=2)}"
                                 )
-                                fetch(
-                                    self.client.cancel_batch_order,
-                                    symbol=symbol,
-                                    orderIdList=[
-                                        order["orderId"] for order in open_orders
-                                    ],
-                                    origClientOrderIdList=[],
-                                )
+                                fetch(self.client.cancel_open_orders, symbol=symbol)
+
+                        elif (
+                            status == const.OrderStatus.EXPIRED.value
+                            and self.positions[symbol][const.Position.SIDE.value]
+                            is None
+                        ):
+                            logger.info(
+                                f"{og_order_type} for {symbol} is triggered but no existing position found."
+                            )
+                            logger.info("Closing all open orders...")
+                            logger.debug(
+                                f"Open orders:\n{json.dumps(self.open_orders[symbol], indent=2)}"
+                            )
+                            fetch(self.client.cancel_open_orders, symbol=symbol)
 
                 if data["e"] == const.EventType.ACCOUNT_UPDATE.value:
                     account_update = data["a"]
@@ -524,18 +539,18 @@ class Joshua:
 
                             self.positions[symbol] = (
                                 {
-                                    const.POSITION_AMOUNT: None,
-                                    const.ENTRY_PRICE: None,
-                                    const.POSITION_SIDE: None,
+                                    const.Position.AMOUNT.value: None,
+                                    const.Position.ENTRY_PRICE.value: None,
+                                    const.Position.SIDE.value: None,
                                 }
                                 if is_closed
                                 else {
-                                    const.POSITION_AMOUNT: abs(position_amount),
-                                    const.ENTRY_PRICE: entry_price,
-                                    const.POSITION_SIDE: (
-                                        const.PositionSide.BUY.value
+                                    const.Position.AMOUNT.value: abs(position_amount),
+                                    const.Position.ENTRY_PRICE.value: entry_price,
+                                    const.Position.SIDE.value: (
+                                        const.Position.Side.BUY.value
                                         if is_long_position
-                                        else const.PositionSide.SELL.value
+                                        else const.Position.Side.SELL.value
                                     ),
                                 }
                             )
@@ -569,7 +584,7 @@ class Joshua:
     ) -> None:
         factor = (
             1 - (const.TPSL.STOP_LOSS.value / self.leverage)
-            if stop_side == const.PositionSide.SELL.value
+            if stop_side == const.Position.Side.SELL.value
             else 1 + (const.TPSL.STOP_LOSS.value / self.leverage)
         )
         stop_price = round(price * factor, 1)
@@ -592,7 +607,7 @@ class Joshua:
     ) -> None:
         factor = (
             1 + (const.TPSL.TAKE_PROFIT.value / self.leverage)
-            if take_side == const.PositionSide.SELL.value
+            if take_side == const.Position.Side.SELL.value
             else 1 - (const.TPSL.TAKE_PROFIT.value / self.leverage)
         )
         take_price = round(price * factor, 1)
