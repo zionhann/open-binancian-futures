@@ -30,8 +30,10 @@ class RSI(Enum):
 
 
 class TPSL(Enum):
-    TAKE_PROFIT = float(os.getenv("TPSL_TAKE_PROFIT", 0.05))
-    STOP_LOSS = float(os.getenv("TPSL_STOP_LOSS", 0.05))
+    TAKE_PROFIT = float(
+        os.getenv("TPSL_TAKE_PROFIT", 0.01 * TradingConfig.LEVERAGE.value)
+    )
+    STOP_LOSS = float(os.getenv("TPSL_STOP_LOSS", 0.005 * TradingConfig.LEVERAGE.value))
     TRAILING_STOP = float(os.getenv("TPSL_TRAILING_STOP", 0.5))
 
 

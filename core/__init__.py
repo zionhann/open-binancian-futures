@@ -224,7 +224,7 @@ class Joshua:
                     for order in open_orders
                 ):
                     logger.info(
-                        f"Found {target_position[const.POSITION_SIDE]} position for {symbol}. Opening a trailing stop order..."
+                        f"Found {target_position[const.POSITION_SIDE]} position for {symbol}."
                     )
                     self._open_trailing_stop(target_position, symbol)
 
@@ -267,7 +267,7 @@ class Joshua:
                     for order in open_orders
                 ):
                     logger.info(
-                        f"Found {target_position[const.POSITION_SIDE]} position for {symbol}. Opening a trailing stop order..."
+                        f"Found {target_position[const.POSITION_SIDE]} position for {symbol}."
                     )
                     self._open_trailing_stop(target_position, symbol)
 
@@ -293,21 +293,25 @@ class Joshua:
 
         try:
             if positions := fetch(self.client.get_position_risk, symbol=symbol)["data"]:
-                unrealized_profit = positions[0]["unRealizedProfit"]
-                initial_margin = positions[0]["initialMargin"]
+                unrealized_profit = float(positions[0]["unRealizedProfit"])
+                initial_margin = float(positions[0]["initialMargin"])
 
-                unrealized_profit_percentage = unrealized_profit / initial_margin * 100
+                unrealized_profit_percentage = (
+                    unrealized_profit / initial_margin
+                ) * 100
 
             stop_side = (
                 const.PositionSide.SELL.value
                 if position[const.POSITION_SIDE] == const.PositionSide.BUY.value
                 else const.PositionSide.BUY.value
             )
-            delta = max(
-                0.1,
+            estimated_delta = round(
                 (unrealized_profit_percentage * const.TPSL.TRAILING_STOP.value)
                 / self.leverage,
+                1,
             )
+            delta = min(max(estimated_delta, 0.1), 5)
+            logger.info(f"Delta: {delta}")
 
             fetch(
                 self.client.new_order,
@@ -315,18 +319,40 @@ class Joshua:
                 side=stop_side,
                 type=const.OrderType.TPSL.TRAILING_STOP_MARKET.value,
                 quantity=position[const.POSITION_AMOUNT],
-                callbackRate=min(delta, 5),
+                callbackRate=delta,
             )
         except Exception as e:
             logger.error(f"Opening a trailing stop order error: {e}")
 
     def _calculate_quantity(self, entry_price: float):
-        try:
-            quantity = (self.avbl_usdt * self.size * self.leverage) / entry_price
+        logger.info(f"Available USDT: {self.avbl_usdt}, Size: {self.size}")
 
-            return math.floor(quantity * 1000) / 1000
+        try:
+            while True:
+                if self.size > 1:
+                    raise ValueError("Size cannot be greater than 1.")
+
+                initial_margin = self.avbl_usdt * self.size
+                quantity = initial_margin * self.leverage / entry_price
+                position_amount = math.floor(quantity * 1000) / 1000
+
+                if not position_amount:
+                    self.size += 0.01
+                    logger.info(
+                        f"Not enough margin to open an order. Increasing the size to {int(self.size * 100)}%."
+                    )
+                    continue
+                elif position_amount * entry_price < 100:
+                    self.size += 0.01
+                    logger.info(
+                        f"Not enough notional to open an order. Increasing the size to {int(self.size * 100)}%."
+                    )
+                    continue
+
+                self.size = const.TradingConfig.SIZE.value
+                return position_amount
         except Exception as e:
-            print("Unexpected error in calculate_quantity: {}".format(e))
+            logger.error(f"Unexpected error in calculate_quantity: {e}")
 
     def _gtd(self, line=2, to_milli=True) -> int:
         interval_to_seconds = {"m": 60, "h": 3600, "d": 86400}
