@@ -1,5 +1,6 @@
 import json
 import math
+from typing import Iterable
 
 from indicator import rsi
 from pandas import DataFrame
@@ -10,6 +11,7 @@ import asyncio
 import time
 import logging
 import core.constants as const
+from utils import fetch
 import utils
 
 logger = logging.getLogger(__name__)
@@ -38,7 +40,7 @@ class Joshua:
             stream_url=stream_url, on_message=self._market_stream_handler
         )
 
-        self.listen_key = self.client.new_listen_key()[const.LISTEN_KEY]
+        self.listen_key = fetch(self.client.new_listen_key).get(const.LISTEN_KEY)
         self.client_ws_user = UMFuturesWebsocketClient(
             stream_url=stream_url,
             on_message=self._user_stream_handler,
@@ -60,7 +62,7 @@ class Joshua:
 
     def _init_avbl_usdt(self) -> float:
         logger.info("Fetching available USDT balance...")
-        res = self.client.balance()
+        res = fetch(self.client.balance)["data"]
         df = pd.DataFrame(res)
         usdt_balance = df[df["asset"] == const.USDT]
 
@@ -70,7 +72,7 @@ class Joshua:
         return math.floor(available * 100) / 100
 
     def _init_open_orders(self, symbol: str) -> int:
-        orders = self.client.get_orders(symbol=symbol)
+        orders = fetch(self.client.get_orders, symbol=symbol)
 
         if not orders:
             return 0
@@ -82,7 +84,7 @@ class Joshua:
 
     def _init_positions(self, symbol: str) -> dict[str, str | float | None]:
         logger.info(f"Fetching positions for {symbol}...")
-        positions = self.client.get_position_risk(symbol=symbol)
+        positions = fetch(self.client.get_position_risk, symbol=symbol)["data"]
 
         if not positions:
             return {
@@ -122,7 +124,7 @@ class Joshua:
             "Ignore",
         ]
         logger.info(f"Fetching {symbol} klines by {self.interval}...")
-        klines_data = self.client.klines(symbol, self.interval)
+        klines_data = fetch(self.client.klines, symbol=symbol, interval=self.interval)["data"]
 
         df = pd.DataFrame(data=klines_data, columns=klines_columns)
         df["Close"] = df["Close"].astype(float)
@@ -137,26 +139,26 @@ class Joshua:
     def run(self) -> None:
         logger.info("Starting to run...")
         logger.info("Connecting to User Data Stream...")
-        self.client_ws_user.user_data(listen_key=self.listen_key)
+        fetch(self.client_ws_user.user_data, listen_key=self.listen_key)
 
         for s in self.symbols:
             logger.info(f"Setting leverage to {self.leverage} for {s}...")
-            self.client.change_leverage(symbol=s, leverage=self.leverage)
+            fetch(self.client.change_leverage, symbol=s, leverage=self.leverage)
             self._subscribe_to_stream(symbol=s)
 
         asyncio.run(self._keepalive_stream())
 
     def _subscribe_to_stream(self, symbol: str):
         logger.info(f"Subscribing to {symbol} klines by {self.interval}...")
-        self.client_ws.kline(symbol=symbol, interval=self.interval)
+        fetch(self.client_ws.kline, symbol=symbol, interval=self.interval)
 
     async def _keepalive_stream(self):
         while True:
             await asyncio.sleep(const.KEEPALIVE_INTERVAL)
             logger.info("Reconnecting to the stream to maintain the connection...")
 
-            self.client_ws.stop()
-            self.client_ws_user.stop()
+            fetch(self.client_ws.stop)
+            fetch(self.client_ws_user.stop)
 
             self.client_ws = UMFuturesWebsocketClient(
                 stream_url=self.steram_url, on_message=self._market_stream_handler
@@ -167,14 +169,17 @@ class Joshua:
 
             for s in self.symbols:
                 self._subscribe_to_stream(symbol=s)
-            self.client_ws_user.user_data(listen_key=self.listen_key)
+            fetch(self.client_ws_user.user_data, listen_key=self.listen_key)
 
-    def _market_stream_handler(self, _, message) -> None:
-        data = json.loads(message)
+    def _market_stream_handler(self, _, stream) -> None:
+        try:
+            data = json.loads(stream)
 
-        if "e" in data:
-            if data["e"] == const.EventType.KLINE.value:
-                self._handle_kline(kline=data["k"], symbol=data["s"])
+            if "e" in data:
+                if data["e"] == const.EventType.KLINE.value:
+                    self._handle_kline(kline=data["k"], symbol=data["s"])
+        except Exception as e:
+            logger.error(f"An error occurred in the market stream handler: {e}")
 
     def _handle_kline(self, kline: dict, symbol: str) -> None:
         close_price = float(kline["c"])
@@ -207,7 +212,7 @@ class Joshua:
                 f"Buy signal for {symbol} detected: Current Price: {close_price}, RSI: {current_rsi}"
             )
 
-            if open_orders := self.client.get_orders(symbol=symbol):
+            if open_orders := fetch(self.client.get_orders, symbol=symbol)["data"]:
                 if target_position[
                     const.POSITION_SIDE
                 ] == const.PositionSide.SELL.value and not any(
@@ -224,7 +229,8 @@ class Joshua:
 
             quantity = self._calculate_quantity(close_price)
 
-            self.client.new_order(
+            fetch(
+                self.client.new_order,
                 symbol=symbol,
                 side=const.PositionSide.BUY.value,
                 type=const.OrderType.LIMIT.value,
@@ -247,7 +253,7 @@ class Joshua:
                 f"Sell signal for {symbol} detected: Current Price: {close_price}, RSI: {current_rsi}"
             )
 
-            if open_orders := self.client.get_orders(symbol=symbol):
+            if open_orders := fetch(self.client.get_orders, symbol=symbol)["data"]:
                 if target_position[
                     const.POSITION_SIDE
                 ] == const.PositionSide.BUY.value and not any(
@@ -264,7 +270,8 @@ class Joshua:
 
             quantity = self._calculate_quantity(close_price)
 
-            self.client.new_order(
+            fetch(
+                self.client.new_order,
                 symbol=symbol,
                 side=const.PositionSide.SELL.value,
                 type=const.OrderType.LIMIT.value,
@@ -284,7 +291,8 @@ class Joshua:
                 else const.PositionSide.BUY.value
             )
 
-            self.client.new_order(
+            fetch(
+                self.client.new_order,
                 symbol=symbol,
                 side=stop_side,
                 type=const.OrderType.TPSL.TRAILING_STOP_MARKET.value,
@@ -310,9 +318,9 @@ class Joshua:
 
         return int(time.time() + exp) * const.TO_MILLI
 
-    def _user_stream_handler(self, _, message) -> None:
+    def _user_stream_handler(self, _, stream) -> None:
         try:
-            data = json.loads(message)
+            data = json.loads(stream)
 
             if "e" in data:
                 logger.debug(
@@ -372,14 +380,17 @@ class Joshua:
                                 logger.info(
                                     f"{order_type} order for {symbol} is cancelled since TIF is expired."
                                 )
-                                open_orders = self.client.get_orders(symbol=symbol)
+                                open_orders = fetch(
+                                    self.client.get_orders, symbol=symbol
+                                )["data"]
                                 logger.info(
                                     f"Cancelling {len(open_orders)} open orders for {symbol}..."
                                 )
                                 logger.debug(
                                     f"Open orders:\n{json.dumps(open_orders, indent=2)}"
                                 )
-                                self.client.cancel_batch_order(
+                                fetch(
+                                    self.client.cancel_batch_order,
                                     symbol=symbol,
                                     orderIdList=[
                                         order["orderId"] for order in open_orders
@@ -400,7 +411,9 @@ class Joshua:
                                     f"Position for {symbol} is closed by {order_type}."
                                 )
 
-                                open_orders = self.client.get_orders(symbol=symbol)
+                                open_orders = fetch(
+                                    self.client.get_orders, symbol=symbol
+                                )["data"]
 
                                 if tpsl_orders := [
                                     order
@@ -414,7 +427,8 @@ class Joshua:
                                     logger.debug(
                                         f"Open orders:\n{json.dumps(open_orders, indent=2)}"
                                     )
-                                    self.client.cancel_batch_order(
+                                    fetch(
+                                        self.client.cancel_batch_order,
                                         symbol=symbol,
                                         orderIdList=[
                                             order["orderId"] for order in tpsl_orders
@@ -433,14 +447,17 @@ class Joshua:
                                     f"{order_type} for {symbol} is triggered but no existing position found. This can cause unexpected behavior."
                                 )
 
-                                open_orders = self.client.get_orders(symbol=symbol)
+                                open_orders = fetch(
+                                    self.client.get_orders, symbol=symbol
+                                )["data"]
                                 logger.info(
                                     f"Cancelling {len(open_orders)} open orders for {symbol}..."
                                 )
                                 logger.debug(
                                     f"Open orders:\n{json.dumps(open_orders, indent=2)}"
                                 )
-                                self.client.cancel_batch_order(
+                                fetch(
+                                    self.client.cancel_batch_order,
                                     symbol=symbol,
                                     orderIdList=[
                                         order["orderId"] for order in open_orders
@@ -493,8 +510,11 @@ class Joshua:
 
                 if data["e"] == const.EventType.LISTEN_KEY_EXPIRED.value:
                     logger.info("Listen key expired. Recreating listen key...")
-                    self.listen_key = self.client.new_listen_key()[const.LISTEN_KEY]
-                    self.client_ws_user.user_data(listen_key=self.listen_key)
+                    self.listen_key = fetch(self.client.new_listen_key).get(
+                        const.LISTEN_KEY
+                    )
+
+                    fetch(self.client_ws_user.user_data, listen_key=self.listen_key)
 
         except Exception as e:
             logger.error(f"An error occurred in the user data handler: {e}")
@@ -509,7 +529,8 @@ class Joshua:
         )
         stop_price = round(price * factor, 1)
 
-        self.client.new_order(
+        fetch(
+            self.client.new_order,
             symbol=symbol,
             side=stop_side,
             type=const.OrderType.TPSL.STOP.value,
@@ -531,7 +552,8 @@ class Joshua:
         )
         take_price = round(price * factor, 1)
 
-        self.client.new_order(
+        fetch(
+            self.client.new_order,
             symbol=symbol,
             side=take_side,
             type=const.OrderType.TPSL.TAKE_PROFIT.value,
@@ -545,7 +567,7 @@ class Joshua:
 
     def close(self):
         logger.info("Initiating shutdown process...")
-        self.client.close_listen_key(self.listen_key)
-        self.client_ws_user.stop()
-        self.client_ws.stop()
+        fetch(self.client.close_listen_key, listenKey=self.listen_key)
+        fetch(self.client_ws_user.stop)
+        fetch(self.client_ws.stop)
         logger.info("Shutdown process completed successfully.")

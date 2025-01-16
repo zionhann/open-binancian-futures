@@ -5,6 +5,7 @@ import os
 LISTEN_KEY = "listenKey"
 USDT = "USDT"
 CODE = "code"
+MESSAGE = "msg"
 POSITION_SIDE = "ps"  # BUY | SELL
 ENTRY_PRICE = "ep"
 POSITION_AMOUNT = "pa"
