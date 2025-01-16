@@ -31,9 +31,9 @@ class RSI(Enum):
 
 class TPSL(Enum):
     TAKE_PROFIT = float(
-        os.getenv("TPSL_TAKE_PROFIT", 0.01 * TradingConfig.LEVERAGE.value)
+        os.getenv("TPSL_TAKE_PROFIT", 0.02 * TradingConfig.LEVERAGE.value)
     )
-    STOP_LOSS = float(os.getenv("TPSL_STOP_LOSS", 0.005 * TradingConfig.LEVERAGE.value))
+    STOP_LOSS = float(os.getenv("TPSL_STOP_LOSS", 0.01 * TradingConfig.LEVERAGE.value))
     TRAILING_STOP = float(os.getenv("TPSL_TRAILING_STOP", 0.5))
 
 
@@ -79,7 +79,7 @@ class OrderStatus(Enum):
     NEW = "NEW"
     PARTIALLY_FILLED = "PARTIALLY_FILLED"
     FILLED = "FILLED"
-    CANCELLED = "CANCELLED"
+    CANCELED = "CANCELED"
     EXPIRED = "EXPIRED"
 
 

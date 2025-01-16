@@ -332,9 +332,7 @@ class Joshua:
 
         while True:
             if round(self.size, 2) > 1:
-                logger.info(
-                    f"Size cannot be greater than 1. Skipping..."
-                )
+                logger.info(f"Size cannot be greater than 1. Skipping...")
                 self.size = const.TradingConfig.SIZE.value
                 return 0.0
 
@@ -468,6 +466,7 @@ class Joshua:
                                         for order in self.open_orders[symbol]
                                         if order[const.OpenOrder.TYPE.value]
                                         != og_order_type
+                                        and order[const.OpenOrder.SIDE.value] != side
                                     ]
                                     logger.info(
                                         f"Closing {len(tpsl_orders)} TP/SL orders..."
@@ -485,7 +484,7 @@ class Joshua:
                                         origClientOrderIdList=[],
                                     )
 
-                        elif status == const.OrderStatus.CANCELLED.value:
+                        elif status == const.OrderStatus.CANCELED.value:
                             order_to_remove = next(
                                 (
                                     order
