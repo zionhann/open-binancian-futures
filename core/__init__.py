@@ -236,18 +236,19 @@ class Joshua:
                 logger.info(f"Found open orders for {symbol}. Skipping...")
                 return
 
-            quantity = self._calculate_quantity(close_price)
+            if quantity := self._calculate_quantity(close_price, symbol):
+                logger.info(f"Opening a limit order for {symbol}...")
 
-            fetch(
-                self.client.new_order,
-                symbol=symbol,
-                side=const.Position.Side.BUY.value,
-                type=const.OrderType.LIMIT.value,
-                quantity=quantity,
-                timeInForce=const.TimeInForce.GTD.value,
-                price=entry_price,
-                goodTillDate=self._gtd(),
-            )
+                fetch(
+                    self.client.new_order,
+                    symbol=symbol,
+                    side=const.Position.Side.BUY.value,
+                    type=const.OrderType.LIMIT.value,
+                    quantity=quantity,
+                    timeInForce=const.TimeInForce.GTD.value,
+                    price=entry_price,
+                    goodTillDate=self._gtd(),
+                )
 
         # SHORT 포지션 진입 조건
         elif (
@@ -275,18 +276,19 @@ class Joshua:
                 logger.info(f"Found open orders for {symbol}. Skipping...")
                 return
 
-            quantity = self._calculate_quantity(close_price)
+            if quantity := self._calculate_quantity(close_price, symbol):
+                logger.info(f"Opening a limit order for {symbol}...")
 
-            fetch(
-                self.client.new_order,
-                symbol=symbol,
-                side=const.Position.Side.SELL.value,
-                type=const.OrderType.LIMIT.value,
-                quantity=quantity,
-                timeInForce=const.TimeInForce.GTD.value,
-                price=entry_price,
-                goodTillDate=self._gtd(),
-            )
+                fetch(
+                    self.client.new_order,
+                    symbol=symbol,
+                    side=const.Position.Side.SELL.value,
+                    type=const.OrderType.LIMIT.value,
+                    quantity=quantity,
+                    timeInForce=const.TimeInForce.GTD.value,
+                    price=entry_price,
+                    goodTillDate=self._gtd(),
+                )
 
     def _open_trailing_stop(self, position: dict, symbol: str) -> None:
         logger.info(f"Opening a trailing stop order for {symbol}...")
@@ -325,35 +327,36 @@ class Joshua:
         except Exception as e:
             logger.error(f"Opening a trailing stop order error: {e}")
 
-    def _calculate_quantity(self, entry_price: float):
+    def _calculate_quantity(self, entry_price: float, symbol: str):
         logger.info(f"Available USDT: {self.avbl_usdt}, Size: {self.size}")
 
-        try:
-            while True:
-                if self.size > 1:
-                    raise ValueError("Size cannot be greater than 1.")
-
-                initial_margin = self.avbl_usdt * self.size
-                quantity = initial_margin * self.leverage / entry_price
-                position_amount = math.floor(quantity * 1000) / 1000
-
-                if not position_amount:
-                    self.size += 0.01
-                    logger.info(
-                        f"Not enough margin to open an order. Increasing the size to {int(self.size * 100)}%."
-                    )
-                    continue
-                elif position_amount * entry_price < 100:
-                    self.size += 0.01
-                    logger.info(
-                        f"Not enough notional to open an order. Increasing the size to {int(self.size * 100)}%."
-                    )
-                    continue
-
+        while True:
+            if round(self.size, 2) > 1:
+                logger.info(
+                    f"Size cannot be greater than 1. Skipping..."
+                )
                 self.size = const.TradingConfig.SIZE.value
-                return position_amount
-        except Exception as e:
-            logger.error(f"Unexpected error in calculate_quantity: {e}")
+                return 0.0
+
+            initial_margin = self.avbl_usdt * self.size
+            quantity = initial_margin * self.leverage / entry_price
+            position_amount = math.floor(quantity * 1000) / 1000
+
+            if not position_amount:
+                self.size += 0.01
+                logger.info(
+                    f"Not enough margin to open an order. Increasing the size to {int(self.size * 100)}%."
+                )
+                continue
+            elif position_amount * entry_price < const.NOTIONAL[symbol]:
+                self.size += 0.01
+                logger.info(
+                    f"Not enough notional to open an order. Increasing the size to {int(self.size * 100)}%."
+                )
+                continue
+
+            self.size = const.TradingConfig.SIZE.value
+            return position_amount
 
     def _gtd(self, line=2, to_milli=True) -> int:
         interval_to_seconds = {"m": 60, "h": 3600, "d": 86400}
@@ -403,7 +406,7 @@ class Joshua:
                                 }
                             )
                             logger.debug(
-                                f"Updated open orders: {self.open_orders[symbol]}"
+                                f"Updated open orders:\n{json.dumps(self.open_orders[symbol], indent=2)}"
                             )
 
                             if og_order_type == const.OrderType.LIMIT.value:
@@ -454,7 +457,7 @@ class Joshua:
                                 if order_to_remove:
                                     self.open_orders[symbol].remove(order_to_remove)
                                     logger.debug(
-                                        f"Updated open orders: {self.open_orders[symbol]}"
+                                        f"Updated open orders:\n{json.dumps(self.open_orders[symbol], indent=2)}"
                                     )
 
                                 if og_order_type in [
@@ -479,6 +482,7 @@ class Joshua:
                                             order[const.OpenOrder.ID.value]
                                             for order in tpsl_orders
                                         ],
+                                        origClientOrderIdList=[],
                                     )
 
                         elif status == const.OrderStatus.CANCELLED.value:
@@ -494,7 +498,7 @@ class Joshua:
                             if order_to_remove:
                                 self.open_orders[symbol].remove(order_to_remove)
                                 logger.debug(
-                                    f"Updated open orders: {self.open_orders[symbol]}"
+                                    f"Updated open orders:\n{json.dumps(self.open_orders[symbol], indent=2)}"
                                 )
 
                             if (

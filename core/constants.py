@@ -9,6 +9,11 @@ KEEPALIVE_INTERVAL = 3600 * 23 + 60 * 55
 TO_MILLI = 1000
 MIN_EXP = 660
 
+NOTIONAL = {
+    "BTCUSDT": 100,
+    "ETHUSDT": 20,
+}
+
 
 class TradingConfig(Enum):
     SYMBOLS = [symbol.strip() for symbol in os.getenv("SYMBOLS", "BTCUSDT").split(",")]
