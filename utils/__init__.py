@@ -1,8 +1,11 @@
 import time
 from typing import Callable
 import logging
-from core import constants as const
 import json
+
+CODE = "code"
+MESSAGE = "msg"
+OK = 200
 
 logger = logging.getLogger(__name__)
 
@@ -38,8 +41,8 @@ def fetch(request: Callable, base_delay=0.25, max_retries=3, **kwargs) -> dict:
             if isinstance(res, list):
                 return {"data": res}
 
-            if const.CODE in res:
-                raise Exception(res[const.MESSAGE])
+            if CODE in res and res[CODE] != OK:
+                raise Exception(res[MESSAGE])
 
             return res
 
