@@ -32,7 +32,7 @@ class RSI(Enum):
 class TPSL(Enum):
     TAKE_PROFIT = float(os.getenv("TPSL_TAKE_PROFIT", 0.05))
     STOP_LOSS = float(os.getenv("TPSL_STOP_LOSS", 0.05))
-    TRAILING_STOP_DELTA = float(os.getenv("TPSL_TRAILING_STOP_DELTA", 1))
+    TRAILING_STOP = float(os.getenv("TPSL_TRAILING_STOP", 0.5))
 
 
 class ApiKey(Enum):

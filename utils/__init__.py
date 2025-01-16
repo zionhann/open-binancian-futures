@@ -26,7 +26,7 @@ def fetch(request: Callable, base_delay=0.25, max_retries=3, **kwargs) -> dict:
     """
     retries = 0
 
-    while retries < max_retries:
+    while True:
         try:
             res = request(**kwargs)
 

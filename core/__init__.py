@@ -124,7 +124,9 @@ class Joshua:
             "Ignore",
         ]
         logger.info(f"Fetching {symbol} klines by {self.interval}...")
-        klines_data = fetch(self.client.klines, symbol=symbol, interval=self.interval)["data"]
+        klines_data = fetch(self.client.klines, symbol=symbol, interval=self.interval)[
+            "data"
+        ]
 
         df = pd.DataFrame(data=klines_data, columns=klines_columns)
         df["Close"] = df["Close"].astype(float)
@@ -212,10 +214,12 @@ class Joshua:
                 f"Buy signal for {symbol} detected: Current Price: {close_price}, RSI: {current_rsi}"
             )
 
-            if open_orders := fetch(self.client.get_orders, symbol=symbol)["data"]:
-                if target_position[
-                    const.POSITION_SIDE
-                ] == const.PositionSide.SELL.value and not any(
+            if target_position[
+                const.POSITION_SIDE
+            ] == const.PositionSide.SELL.value and (
+                open_orders := fetch(self.client.get_orders, symbol=symbol)["data"]
+            ):
+                if not any(
                     order["origType"] == const.OrderType.TPSL.TRAILING_STOP_MARKET.value
                     for order in open_orders
                 ):
@@ -253,10 +257,12 @@ class Joshua:
                 f"Sell signal for {symbol} detected: Current Price: {close_price}, RSI: {current_rsi}"
             )
 
-            if open_orders := fetch(self.client.get_orders, symbol=symbol)["data"]:
-                if target_position[
-                    const.POSITION_SIDE
-                ] == const.PositionSide.BUY.value and not any(
+            if target_position[
+                const.POSITION_SIDE
+            ] == const.PositionSide.BUY.value and (
+                open_orders := fetch(self.client.get_orders, symbol=symbol)["data"]
+            ):
+                if not any(
                     order["origType"] == const.OrderType.TPSL.TRAILING_STOP_MARKET.value
                     for order in open_orders
                 ):
@@ -283,12 +289,24 @@ class Joshua:
 
     def _open_trailing_stop(self, position: dict, symbol: str) -> None:
         logger.info(f"Opening a trailing stop order for {symbol}...")
+        unrealized_profit_percentage = 0
 
         try:
+            if positions := fetch(self.client.get_position_risk, symbol=symbol)["data"]:
+                unrealized_profit = positions[0]["unRealizedProfit"]
+                initial_margin = positions[0]["initialMargin"]
+
+                unrealized_profit_percentage = unrealized_profit / initial_margin * 100
+
             stop_side = (
                 const.PositionSide.SELL.value
                 if position[const.POSITION_SIDE] == const.PositionSide.BUY.value
                 else const.PositionSide.BUY.value
+            )
+            delta = max(
+                0.1,
+                (unrealized_profit_percentage * const.TPSL.TRAILING_STOP.value)
+                / self.leverage,
             )
 
             fetch(
@@ -297,26 +315,27 @@ class Joshua:
                 side=stop_side,
                 type=const.OrderType.TPSL.TRAILING_STOP_MARKET.value,
                 quantity=position[const.POSITION_AMOUNT],
-                callbackRate=const.TPSL.TRAILING_STOP_DELTA.value / self.leverage,
+                callbackRate=min(delta, 5),
             )
         except Exception as e:
             logger.error(f"Opening a trailing stop order error: {e}")
 
     def _calculate_quantity(self, entry_price: float):
         try:
-            quantity = (self.avbl_usdt * (self.size / self.leverage)) / entry_price
+            quantity = (self.avbl_usdt * self.size * self.leverage) / entry_price
 
             return math.floor(quantity * 1000) / 1000
         except Exception as e:
             print("Unexpected error in calculate_quantity: {}".format(e))
 
-    def _gtd(self, line=4) -> int:
+    def _gtd(self, line=2, to_milli=True) -> int:
         interval_to_seconds = {"m": 60, "h": 3600, "d": 86400}
         unit = self.interval[-1]
         base = interval_to_seconds[unit] * int(self.interval[:-1])
         exp = max(base * line, const.MIN_EXP)
+        gtd = int(time.time() + exp)
 
-        return int(time.time() + exp) * const.TO_MILLI
+        return gtd * const.TO_MILLI if to_milli else gtd
 
     def _user_stream_handler(self, _, stream) -> None:
         try:
