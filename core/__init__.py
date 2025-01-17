@@ -207,15 +207,16 @@ class Joshua:
 
         current_rsi = df["RSI"].iloc[-1]
         current_position = self.positions[symbol]
+        current_orders = self.open_orders[symbol]
         entry_price = round(close_price, 1)
 
         # LONG 포지션 진입 조건
         if current_rsi <= RSI.OVERSOLD_THRESHOLD.value:
-            if current_position[
-                Position.SIDE
-            ] == PositionSide.BUY or OrderType.TRAILING_STOP_MARKET in [
-                order[OpenOrder.TYPE] for order in self.open_orders[symbol]
-            ]:
+            if current_position[Position.SIDE] == PositionSide.BUY or any(
+                order[OpenOrder.TYPE]
+                in [OrderType.LIMIT, OrderType.TRAILING_STOP_MARKET]
+                for order in current_orders
+            ):
                 return
 
             if current_position[Position.SIDE] == PositionSide.SELL:
@@ -241,11 +242,11 @@ class Joshua:
 
         # SHORT 포지션 진입 조건
         elif current_rsi >= RSI.OVERBOUGHT_THRESHOLD.value:
-            if current_position[
-                Position.SIDE
-            ] == PositionSide.SELL or OrderType.TRAILING_STOP_MARKET in [
-                order[OpenOrder.TYPE] for order in self.open_orders[symbol]
-            ]:
+            if current_position[Position.SIDE] == PositionSide.SELL or any(
+                order[OpenOrder.TYPE]
+                in [OrderType.LIMIT, OrderType.TRAILING_STOP_MARKET]
+                for order in current_orders
+            ):
                 return
 
             if current_position[Position.SIDE] == PositionSide.BUY:
@@ -304,9 +305,10 @@ class Joshua:
     def _calculate_quantity(self, entry_price: float, symbol: str) -> float:
         initial_margin = self.avbl_usdt * self.size
         quantity = initial_margin * self.leverage / entry_price
-
         position_amount = math.floor(quantity * 1000) / 1000
-        notional = position_amount * entry_price
+
+        factor = 1 - (TPSL.TAKE_PROFIT.value / self.leverage)
+        notional = position_amount * (entry_price * factor)
 
         return position_amount if notional >= MIN_NOTIONAL[symbol] else 0.0
 
@@ -458,15 +460,29 @@ class Joshua:
                                 logger.info("Closing all open orders...")
                                 fetch(self.client.cancel_open_orders, symbol=symbol)
 
-                        elif (
-                            status == OrderStatus.EXPIRED
-                            and self.positions[symbol][Position.SIDE] is None
-                        ):
-                            logger.info(
-                                f"{og_order_type} for {symbol} is triggered but no existing position found."
-                            )
-                            logger.info("Closing all open orders...")
-                            fetch(self.client.cancel_open_orders, symbol=symbol)
+                        elif status == OrderStatus.EXPIRED:
+                            if self.positions[symbol][Position.SIDE] is None:
+                                logger.info(
+                                    f"{og_order_type} for {symbol} is triggered but no existing position found."
+                                )
+                                logger.info("Closing all open orders...")
+                                fetch(self.client.cancel_open_orders, symbol=symbol)
+
+                            if og_order_type == OrderType.TRAILING_STOP_MARKET:
+                                logger.info(
+                                    f"Trailing stop order for {symbol} is activated. Cancel TP/SL orders."
+                                )
+                                fetch(
+                                    self.client.cancel_batch_order,
+                                    symbol=symbol,
+                                    orderIdList=[
+                                        order[OpenOrder.ID]
+                                        for order in self.open_orders[symbol]
+                                        if order[OpenOrder.SIDE] == side
+                                        and order[OpenOrder.ID] != order_id
+                                    ],
+                                    origClientOrderIdList=[],
+                                )
 
                 if data["e"] == EventType.ACCOUNT_UPDATE.value:
                     account_update = data["a"]
@@ -520,10 +536,11 @@ class Joshua:
     def _set_stop_loss(
         self, symbol: str, stop_side: PositionSide, price: float, quantity: float
     ) -> None:
+        stop_loss_ratio = TPSL.STOP_LOSS.value / self.leverage
         factor = (
-            1 - (TPSL.STOP_LOSS.value / self.leverage)
+            1 - stop_loss_ratio
             if stop_side == PositionSide.SELL
-            else 1 + (TPSL.STOP_LOSS.value / self.leverage)
+            else 1 + stop_loss_ratio
         )
         stop_price = round(price * factor, 1)
 
