@@ -53,6 +53,9 @@ class Joshua:
         self.positions = {s: self._init_positions(s) for s in self.symbols}
         self.RSIs = {s: self._init_rsi(symbol=s) for s in self.symbols}
 
+        self.chill_counter = 0
+        self.chill_time = 0
+
     def _init_avbl_usdt(self) -> float:
         logger.info("Fetching available USDT balance...")
         res = fetch(self.client.balance)["data"]
@@ -198,6 +201,9 @@ class Joshua:
             logger.info(
                 f"Updated RSI for {symbol}:\n{self.RSIs[symbol].tail().to_string(index=False)}"
             )
+
+        if self.chill_counter and time.time() < self.chill_time:
+            return
 
         current_rsi = df["RSI"].iloc[-1]
         current_position = self.positions[symbol]
@@ -387,6 +393,23 @@ class Joshua:
                             )
 
                             if status == OrderStatus.FILLED:
+                                if realized_profit < 0:
+                                    self.chill_time = self._gtd(
+                                        line=2**self.chill_counter, to_milli=False
+                                    )
+                                    self.chill_counter = min(
+                                        self.chill_counter + 1, MAX_CHILL_COUNTER
+                                    )
+                                    logger.info(
+                                        f"Trade will be chilled until {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(self.chill_time))} due to a loss."
+                                    )
+                                elif realized_profit > 0 and self.chill_counter:
+                                    self.chill_counter = 0
+                                    self.chill_time = 0
+                                    logger.info(
+                                        "Trade chill has been lifted due to profit."
+                                    )
+
                                 if order_to_remove := next(
                                     (
                                         order
@@ -405,9 +428,6 @@ class Joshua:
                                 ]:
                                     logger.info(
                                         f"Closing {len(tpsl_orders)} TP/SL orders..."
-                                    )
-                                    logger.debug(
-                                        f"Open orders:\n{self.open_orders[symbol]}"
                                     )
                                     fetch(
                                         self.client.cancel_batch_order,
@@ -436,9 +456,6 @@ class Joshua:
                                 and self.positions[symbol][Position.SIDE] is None
                             ):
                                 logger.info("Closing all open orders...")
-                                logger.debug(
-                                    f"Open orders:\n{self.open_orders[symbol]}"
-                                )
                                 fetch(self.client.cancel_open_orders, symbol=symbol)
 
                         elif (
@@ -449,7 +466,6 @@ class Joshua:
                                 f"{og_order_type} for {symbol} is triggered but no existing position found."
                             )
                             logger.info("Closing all open orders...")
-                            logger.debug(f"Open orders:\n{self.open_orders[symbol]}")
                             fetch(self.client.cancel_open_orders, symbol=symbol)
 
                 if data["e"] == EventType.ACCOUNT_UPDATE.value:
@@ -481,7 +497,6 @@ class Joshua:
                                     ),
                                 }
                             )
-                        logger.info(f"Updated positions:\n{self.positions}")
 
                     if "B" in account_update and account_update["B"]:
                         usdt_balance = list(
