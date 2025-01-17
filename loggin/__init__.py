@@ -2,10 +2,10 @@ import logging
 from logging.handlers import TimedRotatingFileHandler
 from datetime import datetime
 import os
-from core.constants import TradingConfig
+from core.constants import AppConfig
 
 BASE_DIR = ".log"
-SUB_DIR = "test" if TradingConfig.IS_TESTNET.value else "main"
+SUB_DIR = "test" if AppConfig.IS_TESTNET.value else "main"
 
 FILE_HANDLER_INTERVAL = 1
 FILE_HANDLER_BACKUP_COUNT = 7

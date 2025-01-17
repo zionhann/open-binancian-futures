@@ -1,5 +1,4 @@
 from enum import Enum
-from dotenv import load_dotenv
 import os
 
 LISTEN_KEY = "listenKey"
@@ -9,13 +8,13 @@ KEEPALIVE_INTERVAL = 3600 * 23 + 60 * 55
 TO_MILLI = 1000
 MIN_EXP = 660
 
-NOTIONAL = {
+MIN_NOTIONAL = {
     "BTCUSDT": 100,
     "ETHUSDT": 20,
 }
 
 
-class TradingConfig(Enum):
+class AppConfig(Enum):
     SYMBOLS = [symbol.strip() for symbol in os.getenv("SYMBOLS", "BTCUSDT").split(",")]
     INTERVAL = os.getenv("INTERVAL", "1d")
     LEVERAGE = int(os.getenv("LEVERAGE", 1))
@@ -30,10 +29,8 @@ class RSI(Enum):
 
 
 class TPSL(Enum):
-    TAKE_PROFIT = float(
-        os.getenv("TPSL_TAKE_PROFIT", 0.02 * TradingConfig.LEVERAGE.value)
-    )
-    STOP_LOSS = float(os.getenv("TPSL_STOP_LOSS", 0.01 * TradingConfig.LEVERAGE.value))
+    TAKE_PROFIT = float(os.getenv("TPSL_TAKE_PROFIT", 0.02 * AppConfig.LEVERAGE.value))
+    STOP_LOSS = float(os.getenv("TPSL_STOP_LOSS", 0.01 * AppConfig.LEVERAGE.value))
     TRAILING_STOP = float(os.getenv("TPSL_TRAILING_STOP", 0.5))
 
 
@@ -54,13 +51,12 @@ class BaseUrl(Enum):
 class OrderType(Enum):
     LIMIT = "LIMIT"
     MARKET = "MARKET"
-
-    class TPSL(Enum):
-        TAKE_PROFIT = "TAKE_PROFIT"
-        STOP = "STOP"
-        STOP_MARKET = "STOP_MARKET"
-        TAKE_PROFIT_MARKET = "TAKE_PROFIT_MARKET"
-        TRAILING_STOP_MARKET = "TRAILING_STOP_MARKET"
+    STOP = "STOP"
+    STOP_MARKET = "STOP_MARKET"
+    TAKE_PROFIT = "TAKE_PROFIT"
+    TAKE_PROFIT_MARKET = "TAKE_PROFIT_MARKET"
+    TRAILING_STOP_MARKET = "TRAILING_STOP_MARKET"
+    LIQUIDATION = "LIQUIDATION"
 
 
 class TimeInForce(Enum):
@@ -81,21 +77,23 @@ class OrderStatus(Enum):
     FILLED = "FILLED"
     CANCELED = "CANCELED"
     EXPIRED = "EXPIRED"
+    EXPIRED_IN_MATCH = "EXPIRED_IN_MATCH"
+
+
+class PositionSide(Enum):
+    BUY = "BUY"
+    SELL = "SELL"
 
 
 class OpenOrder(Enum):
     ID = "id"
-    TYPE = "typ"
-    SIDE = "ps"
-    PRICE = "prc"
-    AMOUNT = "qty"
+    TYPE = "type"
+    SIDE = "side"
+    PRICE = "price"
+    QUANTITY = "quantity"
 
 
 class Position(Enum):
-    SIDE = "ps"
-    ENTRY_PRICE = "ep"
-    AMOUNT = "pa"
-
-    class Side(Enum):
-        BUY = "BUY"
-        SELL = "SELL"
+    SIDE = "side"
+    ENTRY_PRICE = "entry_price"
+    AMOUNT = "amount"
