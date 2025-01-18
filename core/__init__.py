@@ -1,5 +1,6 @@
 import json
 import math
+from typing import Any
 
 from indicator import rsi
 from pandas import DataFrame
@@ -86,9 +87,7 @@ class Joshua:
             for order in orders
         ]
 
-    def _init_positions(
-        self, symbol: str
-    ) -> dict[Position, PositionSide | float | None]:
+    def _init_positions(self, symbol: str) -> dict[Position, Any]:
         logger.info(f"Fetching positions for {symbol}...")
         positions = fetch(self.client.get_position_risk, symbol=symbol)["data"]
 
@@ -219,7 +218,10 @@ class Joshua:
             ):
                 return
 
-            if current_position[Position.SIDE] == PositionSide.SELL:
+            if (
+                current_position[Position.SIDE] == PositionSide.SELL
+                and entry_price < current_position[Position.ENTRY_PRICE]
+            ):
                 self._open_trailing_stop(current_position, symbol)
                 return
 
@@ -249,7 +251,10 @@ class Joshua:
             ):
                 return
 
-            if current_position[Position.SIDE] == PositionSide.BUY:
+            if (
+                current_position[Position.SIDE] == PositionSide.BUY
+                and entry_price > current_position[Position.ENTRY_PRICE]
+            ):
                 self._open_trailing_stop(current_position, symbol)
                 return
 
@@ -307,6 +312,11 @@ class Joshua:
         quantity = initial_margin * self.leverage / entry_price
         position_amount = math.floor(quantity * 1000) / 1000
 
+        """
+        Estimate the minimum notional value required for TP/SL orders.
+        Since take profit ratio is usually higher than stop loss ratio, use take profit ratio on both positions.
+        This guarantees that TP/SL orders can be placed without any nominal value issues.
+        """
         factor = 1 - (TPSL.TAKE_PROFIT.value / self.leverage)
         notional = position_amount * (entry_price * factor)
 
