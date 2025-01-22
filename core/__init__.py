@@ -2,7 +2,7 @@ import json
 import math
 from typing import Any
 
-from indicator import rsi
+from indicator import rsi, macd
 from pandas import DataFrame
 import pandas as pd
 from binance.um_futures import UMFutures
@@ -42,18 +42,15 @@ class Joshua:
             on_message=self._user_stream_handler,
         )
 
-        self.symbols = AppConfig.SYMBOLS.value
-        self.interval = AppConfig.INTERVAL.value
-        self.leverage = AppConfig.LEVERAGE.value
-        self.size = AppConfig.SIZE.value
-        self.rsi_window = RSI.WINDOW.value
         self.steram_url = stream_url
-
         self.avbl_usdt = self._init_avbl_usdt()
-        self.open_orders = {s: self._init_open_orders(s) for s in self.symbols}
-        self.positions = {s: self._init_positions(s) for s in self.symbols}
-        self.RSIs = {s: self._init_rsi(symbol=s) for s in self.symbols}
-
+        self.open_orders = {
+            s: self._init_open_orders(s) for s in AppConfig.SYMBOLS.value
+        }
+        self.positions = {s: self._init_positions(s) for s in AppConfig.SYMBOLS.value}
+        self.indicators = {
+            s: self._init_indicators(symbol=s) for s in AppConfig.SYMBOLS.value
+        }
         self.chill_counter = 0
         self.chill_time = 0
 
@@ -110,7 +107,7 @@ class Joshua:
             Position.AMOUNT: abs(position_amount),
         }
 
-    def _init_rsi(self, symbol: str) -> DataFrame:
+    def _init_indicators(self, symbol: str) -> DataFrame:
         klines_columns = [
             "Open_time",
             "Open",
@@ -125,36 +122,56 @@ class Joshua:
             "Taker_buy_quote_volume",
             "Ignore",
         ]
-        logger.info(f"Fetching {symbol} klines by {self.interval}...")
-        klines_data = fetch(self.client.klines, symbol=symbol, interval=self.interval)[
-            "data"
-        ]
+        logger.info(f"Fetching {symbol} klines by {AppConfig.INTERVAL.value}...")
+        klines_data = fetch(
+            self.client.klines, symbol=symbol, interval=AppConfig.INTERVAL.value
+        )["data"][:-1]
 
         df = pd.DataFrame(data=klines_data, columns=klines_columns)
-        df["Close"] = df["Close"].astype(float)
-        df["RSI"] = rsi(df, window=self.rsi_window)
-        initial_rsi = df[["Close", "RSI"]]
-
-        logger.info(
-            f"Loaded RSI for {symbol}:\n{initial_rsi.tail().to_string(index=False)}"
+        df["Open_time"] = (
+            pd.to_datetime(df["Open_time"], unit="ms")
+            .dt.tz_localize("UTC")
+            .dt.tz_convert("Asia/Seoul")
+            .dt.strftime("%Y-%m-%d %H:%M")
         )
-        return initial_rsi
+        df["Symbol"] = symbol
+
+        df["Close"] = df["Close"].astype(float)
+        df["Volume"] = df["Volume"].astype(float)
+
+        df["RSI"] = rsi(df, window=Indicator.RSI_WINDOW.value)
+        df["MACD"] = macd(
+            df,
+            fast=Indicator.MACD_FAST.value,
+            slow=Indicator.MACD_SLOW.value,
+            signal=Indicator.MACD_SIGNAL.value,
+        )
+
+        initial_indicators = df[
+            ["Open_time", "Symbol", "Close", "Volume", "RSI", "MACD"]
+        ]
+        logger.info(
+            f"Loaded indicators for {symbol}:\n{initial_indicators.tail().to_string(index=False)}"
+        )
+        return initial_indicators
 
     def run(self) -> None:
         logger.info("Starting to run...")
         logger.info("Connecting to User Data Stream...")
         fetch(self.client_ws_user.user_data, listen_key=self.listen_key)
 
-        for s in self.symbols:
-            logger.info(f"Setting leverage to {self.leverage} for {s}...")
-            fetch(self.client.change_leverage, symbol=s, leverage=self.leverage)
+        for s in AppConfig.SYMBOLS.value:
+            logger.info(f"Setting leverage to {AppConfig.LEVERAGE.value} for {s}...")
+            fetch(
+                self.client.change_leverage, symbol=s, leverage=AppConfig.LEVERAGE.value
+            )
             self._subscribe_to_stream(symbol=s)
 
         asyncio.run(self._keepalive_stream())
 
     def _subscribe_to_stream(self, symbol: str):
-        logger.info(f"Subscribing to {symbol} klines by {self.interval}...")
-        fetch(self.client_ws.kline, symbol=symbol, interval=self.interval)
+        logger.info(f"Subscribing to {symbol} klines by {AppConfig.INTERVAL.value}...")
+        fetch(self.client_ws.kline, symbol=symbol, interval=AppConfig.INTERVAL.value)
 
     async def _keepalive_stream(self):
         while True:
@@ -171,7 +188,7 @@ class Joshua:
                 stream_url=self.steram_url, on_message=self._user_stream_handler
             )
 
-            for s in self.symbols:
+            for s in AppConfig.SYMBOLS.value:
                 self._subscribe_to_stream(symbol=s)
             fetch(self.client_ws_user.user_data, listen_key=self.listen_key)
 
@@ -181,36 +198,60 @@ class Joshua:
 
             if "e" in data:
                 if data["e"] == EventType.KLINE.value:
-                    self._handle_kline(kline=data["k"], symbol=data["s"])
+                    self._handle_kline(data=data["k"])
         except Exception as e:
             logger.error(f"An error occurred in the market stream handler: {e}")
 
-    def _handle_kline(self, kline: dict, symbol: str) -> None:
-        close_price = float(kline["c"])
+    def _handle_kline(self, data: dict) -> None:
+        open_time = (
+            pd.to_datetime(data["t"], unit="ms")
+            .tz_localize("UTC")
+            .tz_convert("Asia/Seoul")
+            .strftime("%Y-%m-%d %H:%M")
+        )
+        symbol = data["s"]
+        close_price = float(data["c"])
+        volume = float(data["v"])
 
         df = pd.concat(
-            [self.RSIs[symbol], pd.DataFrame({"Close": [close_price]})],
+            [
+                self.indicators[symbol],
+                pd.DataFrame(
+                    {
+                        "Open_time": [open_time],
+                        "Symbol": [symbol],
+                        "Close": [close_price],
+                        "Volume": [volume],
+                    }
+                ),
+            ],
             ignore_index=True,
         )
-        df["RSI"] = rsi(df, window=self.rsi_window)
+        df["RSI"] = rsi(df, window=Indicator.RSI_WINDOW.value)
+        df["MACD"] = macd(
+            df,
+            fast=Indicator.MACD_FAST.value,
+            slow=Indicator.MACD_SLOW.value,
+            signal=Indicator.MACD_SIGNAL.value,
+        )
 
-        if kline["x"]:
-            logger.info(f"{self.interval} candle closed for {symbol}.")
-            self.RSIs[symbol] = df
+        if data["x"]:
+            logger.info(f"{AppConfig.INTERVAL.value} candle closed for {symbol}.")
+            self.indicators[symbol] = df
             logger.info(
-                f"Updated RSI for {symbol}:\n{self.RSIs[symbol].tail().to_string(index=False)}"
+                f"Updated indicators for {symbol}:\n{self.indicators[symbol].tail().to_string(index=False)}"
             )
 
-        if self.chill_counter and time.time() < self.chill_time:
-            return
+        rsi_recent_window = Indicator.RSI_RECENT_WINDOW.value
+        current_rsi = df["RSI"].iloc[-rsi_recent_window:]
+        current_macd = df["MACD"].iloc[-1]
 
-        current_rsi = df["RSI"].iloc[-1]
         current_position = self.positions[symbol]
         current_orders = self.open_orders[symbol]
         entry_price = round(close_price, 1)
 
         # LONG 포지션 진입 조건
-        if current_rsi <= RSI.OVERSOLD_THRESHOLD.value:
+        if current_macd > 0:
             if current_position[Position.SIDE] == PositionSide.BUY or any(
                 order[OpenOrder.TYPE]
                 in [OrderType.LIMIT, OrderType.TRAILING_STOP_MARKET]
@@ -219,17 +260,13 @@ class Joshua:
                 return
 
             if (
-                current_position[Position.SIDE] == PositionSide.SELL
-                and entry_price < current_position[Position.ENTRY_PRICE]
-            ):
-                self._open_trailing_stop(current_position, symbol)
-                return
-
-            if not current_position[Position.SIDE] and (
-                quantity := self._calculate_quantity(entry_price, symbol)
+                not current_position[Position.SIDE]
+                and current_rsi.min() <= Indicator.RSI_OVERSOLD_THRESHOLD.value
+                and self.chill_time < time.time()
+                and (quantity := self._calculate_quantity(entry_price, symbol))
             ):
                 logger.info(
-                    f"Buy signal for {symbol} detected: Current Price: {entry_price}, RSI: {current_rsi}"
+                    f"Buy signal for {symbol} detected: Current Price: {entry_price}, RSI: {current_rsi}, MACD: {current_macd}"
                 )
                 fetch(
                     self.client.new_order,
@@ -243,7 +280,7 @@ class Joshua:
                 )
 
         # SHORT 포지션 진입 조건
-        elif current_rsi >= RSI.OVERBOUGHT_THRESHOLD.value:
+        elif current_macd < 0:
             if current_position[Position.SIDE] == PositionSide.SELL or any(
                 order[OpenOrder.TYPE]
                 in [OrderType.LIMIT, OrderType.TRAILING_STOP_MARKET]
@@ -252,17 +289,13 @@ class Joshua:
                 return
 
             if (
-                current_position[Position.SIDE] == PositionSide.BUY
-                and entry_price > current_position[Position.ENTRY_PRICE]
-            ):
-                self._open_trailing_stop(current_position, symbol)
-                return
-
-            if not current_position[Position.SIDE] and (
-                quantity := self._calculate_quantity(entry_price, symbol)
+                not current_position[Position.SIDE]
+                and current_rsi.max() >= Indicator.RSI_OVERBOUGHT_THRESHOLD.value
+                and self.chill_time < time.time()
+                and (quantity := self._calculate_quantity(entry_price, symbol))
             ):
                 logger.info(
-                    f"Sell signal for {symbol} detected: Current Price: {entry_price}, RSI: {current_rsi}"
+                    f"Sell signal for {symbol} detected: Current Price: {entry_price}, RSI: {current_rsi}, MACD: {current_macd}"
                 )
                 fetch(
                     self.client.new_order,
@@ -275,41 +308,44 @@ class Joshua:
                     goodTillDate=self._gtd(),
                 )
 
-    def _open_trailing_stop(self, position: dict, symbol: str) -> None:
+    def _open_trailing_stop(
+        self, symbol: str, stop_side: PositionSide, price: float, quantity: float
+    ) -> None:
         logger.info(f"Opening a trailing stop order for {symbol}...")
 
         try:
-            if positions := fetch(self.client.get_position_risk, symbol=symbol)["data"]:
-                unrealized_profit = float(positions[0]["unRealizedProfit"])
-                initial_margin = float(positions[0]["initialMargin"])
+            activation_ratio = (TPSL.TAKE_PROFIT.value / 2) / AppConfig.LEVERAGE.value
+            factor = (
+                1 + activation_ratio
+                if stop_side == PositionSide.SELL
+                else 1 - activation_ratio
+            )
+            activation_price = round(price * factor, 1)
 
-                roi = (unrealized_profit / initial_margin) * 100
+            estimated_delta = (
+                min(
+                    TPSL.TRAILING_STOP.value / AppConfig.LEVERAGE.value,
+                    activation_ratio,
+                )
+                * 100
+            )
+            delta = min(max(estimated_delta, 0.1), 5)
 
-                stop_side = (
-                    PositionSide.SELL
-                    if position[Position.SIDE] == PositionSide.BUY
-                    else PositionSide.BUY
-                )
-                estimated_delta = round(
-                    (roi * TPSL.TRAILING_STOP.value) / self.leverage,
-                    1,
-                )
-                delta = abs(min(max(estimated_delta, 0.1), 5))
-
-                fetch(
-                    self.client.new_order,
-                    symbol=symbol,
-                    side=stop_side.value,
-                    type=OrderType.TRAILING_STOP_MARKET.value,
-                    quantity=position[Position.AMOUNT],
-                    callbackRate=delta,
-                )
+            fetch(
+                self.client.new_order,
+                symbol=symbol,
+                side=stop_side.value,
+                type=OrderType.TRAILING_STOP_MARKET.value,
+                activationPrice=activation_price,
+                quantity=quantity,
+                callbackRate=delta,
+            )
         except Exception as e:
             logger.error(f"Opening a trailing stop order error: {e}")
 
     def _calculate_quantity(self, entry_price: float, symbol: str) -> float:
-        initial_margin = self.avbl_usdt * self.size
-        quantity = initial_margin * self.leverage / entry_price
+        initial_margin = self.avbl_usdt * AppConfig.SIZE.value
+        quantity = initial_margin * AppConfig.LEVERAGE.value / entry_price
         position_amount = math.floor(quantity * 1000) / 1000
 
         """
@@ -317,15 +353,15 @@ class Joshua:
         Since take profit ratio is usually higher than stop loss ratio, use take profit ratio on both positions.
         This guarantees that TP/SL orders can be placed without any nominal value issues.
         """
-        factor = 1 - (TPSL.TAKE_PROFIT.value / self.leverage)
+        factor = 1 - (TPSL.TAKE_PROFIT.value / AppConfig.LEVERAGE.value)
         notional = position_amount * (entry_price * factor)
 
         return position_amount if notional >= MIN_NOTIONAL[symbol] else 0.0
 
     def _gtd(self, line=2, to_milli=True) -> int:
         interval_to_seconds = {"m": 60, "h": 3600, "d": 86400}
-        unit = self.interval[-1]
-        base = interval_to_seconds[unit] * int(self.interval[:-1])
+        unit = AppConfig.INTERVAL.value[-1]
+        base = interval_to_seconds[unit] * int(AppConfig.INTERVAL.value[:-1])
         exp = max(base * line, MIN_EXP)
         gtd = int(time.time() + exp)
 
@@ -354,7 +390,7 @@ class Joshua:
                     realized_profit = float(order["rp"])
                     filled = float(order["z"])
 
-                    if symbol in self.symbols:
+                    if symbol in AppConfig.SYMBOLS.value:
                         if (
                             status == OrderStatus.NEW
                             and og_order_type == curr_order_type
@@ -370,23 +406,26 @@ class Joshua:
                             )
 
                             if og_order_type == OrderType.LIMIT:
+                                opposite_side = (
+                                    PositionSide.SELL
+                                    if side == PositionSide.BUY
+                                    else PositionSide.BUY
+                                )
                                 self._set_stop_loss(
                                     symbol=symbol,
-                                    stop_side=(
-                                        PositionSide.SELL
-                                        if side == PositionSide.BUY
-                                        else PositionSide.BUY
-                                    ),
+                                    stop_side=opposite_side,
                                     price=price,
                                     quantity=quantity,
                                 )
                                 self._set_take_profit(
                                     symbol=symbol,
-                                    take_side=(
-                                        PositionSide.SELL
-                                        if side == PositionSide.BUY
-                                        else PositionSide.BUY
-                                    ),
+                                    take_side=opposite_side,
+                                    price=price,
+                                    quantity=quantity,
+                                )
+                                self._open_trailing_stop(
+                                    symbol=symbol,
+                                    stop_side=opposite_side,
                                     price=price,
                                     quantity=quantity,
                                 )
@@ -546,7 +585,7 @@ class Joshua:
     def _set_stop_loss(
         self, symbol: str, stop_side: PositionSide, price: float, quantity: float
     ) -> None:
-        stop_loss_ratio = TPSL.STOP_LOSS.value / self.leverage
+        stop_loss_ratio = TPSL.STOP_LOSS.value / AppConfig.LEVERAGE.value
         factor = (
             1 - stop_loss_ratio
             if stop_side == PositionSide.SELL
@@ -571,9 +610,9 @@ class Joshua:
         self, symbol: str, take_side: PositionSide, price: float, quantity: float
     ) -> None:
         factor = (
-            1 + (TPSL.TAKE_PROFIT.value / self.leverage)
+            1 + (TPSL.TAKE_PROFIT.value / AppConfig.LEVERAGE.value)
             if take_side == PositionSide.SELL
-            else 1 - (TPSL.TAKE_PROFIT.value / self.leverage)
+            else 1 - (TPSL.TAKE_PROFIT.value / AppConfig.LEVERAGE.value)
         )
         take_price = round(price * factor, 1)
 

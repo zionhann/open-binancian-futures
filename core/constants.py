@@ -23,16 +23,21 @@ class AppConfig(Enum):
     IS_TESTNET = os.getenv("IS_TESTNET", "false") == "true"
 
 
-class RSI(Enum):
-    WINDOW = int(os.getenv("RSI_WINDOW", 14))
-    OVERSOLD_THRESHOLD = int(os.getenv("RSI_OVERSOLD_THRESHOLD", 30))
-    OVERBOUGHT_THRESHOLD = int(os.getenv("RSI_OVERBOUGHT_THRESHOLD", 70))
+class Indicator(Enum):
+    OBV_WINDOW = int(os.getenv("OBV_WINDOW", 7))
+    RSI_WINDOW = int(os.getenv("RSI_WINDOW", 14))
+    RSI_RECENT_WINDOW = int(os.getenv("RSI_RECENT_WINDOW", 7))
+    RSI_OVERSOLD_THRESHOLD = int(os.getenv("RSI_OVERSOLD_THRESHOLD", 30))
+    RSI_OVERBOUGHT_THRESHOLD = int(os.getenv("RSI_OVERBOUGHT_THRESHOLD", 70))
+    MACD_FAST = int(os.getenv("MACD_FAST", 12))
+    MACD_SLOW = int(os.getenv("MACD_SLOW", 26))
+    MACD_SIGNAL = int(os.getenv("MACD_SIGNAL", 9))
 
 
 class TPSL(Enum):
-    TAKE_PROFIT = float(os.getenv("TPSL_TAKE_PROFIT", 0.01 * AppConfig.LEVERAGE.value))
-    STOP_LOSS = float(os.getenv("TPSL_STOP_LOSS", 0.005 * AppConfig.LEVERAGE.value))
-    TRAILING_STOP = float(os.getenv("TPSL_TRAILING_STOP", 0.5))
+    TAKE_PROFIT = float(os.getenv("TPSL_TAKE_PROFIT", 0.05))
+    STOP_LOSS = float(os.getenv("TPSL_STOP_LOSS", 0.05))
+    TRAILING_STOP = float(os.getenv("TPSL_TRAILING_STOP", STOP_LOSS))
 
 
 class ApiKey(Enum):
