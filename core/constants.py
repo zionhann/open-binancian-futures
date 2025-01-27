@@ -14,13 +14,30 @@ MIN_NOTIONAL = {
     "ETHUSDT": 20,
 }
 
+KLINES_COLUMNS = [
+    "Open_time",
+    "Open",
+    "High",
+    "Low",
+    "Close",
+    "Volume",
+    "Close_time",
+    "Quote_volume",
+    "Trades",
+    "Taker_buy_volume",
+    "Taker_buy_quote_volume",
+    "Ignore",
+]
+
 
 class AppConfig(Enum):
-    SYMBOLS = [symbol.strip() for symbol in os.getenv("SYMBOLS", "BTCUSDT").split(",")]
+    SYMBOLS = [s.strip() for s in os.getenv("SYMBOLS", "BTCUSDT").split(",")]
+    STRATEGY = os.getenv("STRATEGY", "RSI_MACD")
     INTERVAL = os.getenv("INTERVAL", "1d")
     LEVERAGE = int(os.getenv("LEVERAGE", 1))
     SIZE = float(os.getenv("SIZE", 0.05))
     IS_TESTNET = os.getenv("IS_TESTNET", "false") == "true"
+    IS_BACKTEST = os.getenv("IS_BACKTEST", "false") == "true"
 
 
 class Indicator(Enum):
@@ -89,17 +106,3 @@ class OrderStatus(Enum):
 class PositionSide(Enum):
     BUY = "BUY"
     SELL = "SELL"
-
-
-class OpenOrder(Enum):
-    ID = "id"
-    TYPE = "type"
-    SIDE = "side"
-    PRICE = "price"
-    QUANTITY = "quantity"
-
-
-class Position(Enum):
-    SIDE = "side"
-    ENTRY_PRICE = "entry_price"
-    AMOUNT = "amount"

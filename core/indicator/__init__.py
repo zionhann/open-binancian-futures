@@ -1,6 +1,4 @@
 from pandas import DataFrame, Series
-import numpy as np
-import pandas as pd
 
 
 def rsi(data: DataFrame, window=14) -> Series:
