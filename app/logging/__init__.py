@@ -1,8 +1,9 @@
 import logging
+import os
+
 from logging.handlers import TimedRotatingFileHandler
 from datetime import datetime
-import os
-from core.constants import AppConfig
+from app.core.constant import AppConfig
 
 BASE_DIR = ".log"
 SUB_DIR = "test" if AppConfig.IS_TESTNET.value else "main"

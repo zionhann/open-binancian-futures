@@ -1,0 +1,66 @@
+import logging
+
+from binance.um_futures import UMFutures
+from app import App
+from app.core.constant import AppConfig, ApiKey, BacktestConfig, BaseUrl
+from app.core.order import Orders
+from app.core.position import Positions
+from app.core.balance import Balance
+from app.core.strategy import Strategy
+from app.backtest.test_result import TestResult
+
+
+class Backtest(App):
+    logger = logging.getLogger(__name__)
+
+    def __init__(self) -> None:
+        self.client = UMFutures(
+            key=ApiKey.CLIENT.value,
+            secret=ApiKey.SECRET.value,
+            base_url=BaseUrl.REST.value,
+        )
+        self.positions = {s: Positions() for s in AppConfig.SYMBOLS.value}
+        self.orders = {s: Orders() for s in AppConfig.SYMBOLS.value}
+        self.balance = Balance(BacktestConfig.BALANCE.value)
+
+        self.strategy = Strategy.of(AppConfig.STRATEGY.value)
+        self.indicators = {
+            s: self.strategy.init_indicators(
+                s, self.client, limit=BacktestConfig.KLINES_LIMIT.value
+            )
+            for s in AppConfig.SYMBOLS.value
+        }
+        self.test_results = {
+            s: TestResult(s, BacktestConfig.SAMPLE_SIZE.value)
+            for s in AppConfig.SYMBOLS.value
+        }
+
+    def run(self) -> None:
+        for symbol in AppConfig.SYMBOLS.value:
+            self.logger.info(f"Running backtest for {symbol}...")
+
+            for i in range(
+                BacktestConfig.INDICATOR_BUFFER_SIZE.value,
+                BacktestConfig.KLINES_LIMIT.value,
+            ):
+                current_kline = self.indicators[symbol][:i]
+                close_price = round(current_kline["Close"].iloc[-1], 1)
+
+                self.test_results[symbol].check_filled_order_backtest(
+                    positions=self.positions[symbol],
+                    orders=self.orders[symbol],
+                    entry_price=close_price,
+                    balance=self.balance,
+                )
+                self.strategy.run_backtest(
+                    indicators=current_kline,
+                    positions=self.positions[symbol],
+                    orders=self.orders[symbol],
+                    balance=self.balance,
+                )
+
+        for symbol in AppConfig.SYMBOLS.value:
+            print(self.test_results[symbol])
+
+    def close(self) -> None:
+        return

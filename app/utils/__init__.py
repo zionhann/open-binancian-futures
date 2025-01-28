@@ -1,7 +1,17 @@
 import time
-from typing import Callable
 import logging
 import json
+
+from typing import Callable
+
+from app.core.constant import (
+    MIN_EXP,
+    TO_MILLI,
+    TPSL,
+    AppConfig,
+    OrderType,
+    PositionSide,
+)
 
 CODE = "code"
 MESSAGE = "msg"
@@ -62,3 +72,30 @@ def fetch(request: Callable, base_delay=0.25, max_retries=3, **kwargs) -> dict:
             time.sleep(delay)
 
     return {}
+
+
+def calculate_stop_price(
+    entry_price: float, order_type: OrderType, stop_side: PositionSide
+) -> float:
+    ratio = (
+        TPSL.STOP_LOSS.value / AppConfig.LEVERAGE.value
+        if order_type == OrderType.STOP
+        else TPSL.TAKE_PROFIT.value / AppConfig.LEVERAGE.value
+    )
+    factor = (
+        (1 - ratio)
+        if (order_type == OrderType.STOP and stop_side == PositionSide.SELL)
+        or (order_type == OrderType.TAKE_PROFIT and stop_side == PositionSide.BUY)
+        else (1 + ratio)
+    )
+    return round(entry_price * factor, 1)
+
+
+def gtd(line=2, to_milli=True) -> int:
+    interval_to_seconds = {"m": 60, "h": 3600, "d": 86400}
+    unit = AppConfig.INTERVAL.value[-1]
+    base = interval_to_seconds[unit] * int(AppConfig.INTERVAL.value[:-1])
+    exp = max(base * line, MIN_EXP)
+    gtd = int(time.time() + exp)
+
+    return gtd * TO_MILLI if to_milli else gtd

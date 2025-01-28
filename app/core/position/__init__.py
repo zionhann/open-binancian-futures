@@ -1,5 +1,6 @@
-from core.constants import OrderType, PositionSide
-from core.order import Order
+from app.core.balance import Balance
+from app.core.constant import AppConfig, OrderType, PositionSide
+from app.core.order import Order
 
 
 class Positions:
@@ -24,6 +25,24 @@ class Positions:
     def is_empty(self) -> bool:
         return not self.positions
 
+    def open_position_backtest(
+        self,
+        balance: Balance,
+        symbol: str,
+        quantity: float,
+        entry_price: float,
+        side: PositionSide,
+    ) -> None:
+        position = Position(
+            symbol=symbol,
+            amount=quantity if side == PositionSide.BUY else -quantity,
+            entry_price=entry_price,
+        )
+        self.positions = [*self.positions, position]
+
+        initial_margin = position.calculate_initial_margin()
+        balance = balance.update(-initial_margin)
+
 
 class Position:
     def __init__(self, symbol: str, entry_price: float, amount: float) -> None:
@@ -41,3 +60,6 @@ class Position:
     def realized_pnl(self, filled: Order) -> float | None:
         pnl = abs(self.entry_price - filled.price) * self.amount
         return pnl if filled.type == OrderType.TAKE_PROFIT else -pnl
+
+    def calculate_initial_margin(self) -> float:
+        return self.amount * self.entry_price / AppConfig.LEVERAGE.value

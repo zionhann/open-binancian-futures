@@ -1,6 +1,8 @@
 import logging
+import time
 
-from core.constants import OrderType, PositionSide
+from app.core.constant import OrderType, PositionSide
+from app.utils import calculate_stop_price
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +56,33 @@ class Orders:
 
     def to_ids(self) -> list[int]:
         return [order.id for order in self.orders]
+
+    def open_tpsl_backtest(
+        self,
+        symbol: str,
+        quantity: float,
+        entry_price: float,
+        side: PositionSide,
+    ) -> None:
+        self.orders = [
+            *self.orders,
+            Order(
+                symbol=symbol,
+                id=int(time.time()),
+                type=OrderType.TAKE_PROFIT,
+                side=side,
+                price=calculate_stop_price(entry_price, OrderType.TAKE_PROFIT, side),
+                quantity=quantity,
+            ),
+            Order(
+                symbol=symbol,
+                id=int(time.time()),
+                type=OrderType.STOP,
+                side=side,
+                price=calculate_stop_price(entry_price, OrderType.STOP, side),
+                quantity=quantity,
+            ),
+        ]
 
 
 class Order:

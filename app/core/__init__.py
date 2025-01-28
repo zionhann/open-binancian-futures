@@ -6,12 +6,12 @@ import pandas as pd
 from binance.um_futures import UMFutures
 from binance.websocket.um_futures.websocket_client import UMFuturesWebsocketClient
 from app import App
-from core.constants import *
-from core.balance import Balance
-from utils import fetch, check_required_params
-from core.position import Position, Positions
-from core.order import Order, Orders
-from common import init_strategy, init_indicators
+from app.core.constant import *
+from app.core.balance import Balance
+from app.core.strategy import Strategy
+from app.utils import fetch, check_required_params
+from app.core.position import Position, Positions
+from app.core.order import Order, Orders
 
 logger = logging.getLogger(__name__)
 
@@ -49,12 +49,12 @@ class Joshua(App):
 
         self.steram_url = stream_url
         self.balance = self._init_balance()
-        self.strategy = init_strategy()
+        self.strategy = Strategy.of(AppConfig.STRATEGY.value)
 
         self.orders = {s: self._init_orders(s) for s in AppConfig.SYMBOLS.value}
         self.positions = {s: self._init_positions(s) for s in AppConfig.SYMBOLS.value}
         self.indicators = {
-            s: init_indicators(s, self.client, self.strategy)
+            s: self.strategy.init_indicators(s, self.client)
             for s in AppConfig.SYMBOLS.value
         }
 
@@ -247,12 +247,11 @@ class Joshua(App):
                         price=price,
                         quantity=quantity,
                     )
-                    self.strategy.set_trailing_stop(
+                    self._set_take_profit(
                         symbol=symbol,
-                        stop_side=opposite_side,
+                        take_side=opposite_side,
                         price=price,
                         quantity=quantity,
-                        client=self.client,
                     )
 
             elif status in [
@@ -369,7 +368,7 @@ class Joshua(App):
             f"Setting Take Profit for {symbol}; Price={take_price}, Quantity={quantity}, Side={take_side.value}"
         )
 
-    def close(self):
+    def close(self) -> None:
         logger.info("Initiating shutdown process...")
         fetch(self.client.close_listen_key, listenKey=self.listen_key)
         fetch(self.client_ws_user.stop)

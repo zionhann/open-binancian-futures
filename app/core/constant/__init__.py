@@ -1,5 +1,6 @@
-from enum import Enum
 import os
+
+from enum import Enum
 
 LISTEN_KEY = "listenKey"
 USDT = "USDT"
@@ -37,7 +38,16 @@ class AppConfig(Enum):
     LEVERAGE = int(os.getenv("LEVERAGE", 1))
     SIZE = float(os.getenv("SIZE", 0.05))
     IS_TESTNET = os.getenv("IS_TESTNET", "false") == "true"
+
+
+class BacktestConfig(Enum):
     IS_BACKTEST = os.getenv("IS_BACKTEST", "false") == "true"
+    BALANCE = float(os.getenv("BALANCE", 10000))
+    KLINES_LIMIT = min(int(os.getenv("KLINES_LIMIT", 500)), 1000)
+    INDICATOR_BUFFER_SIZE = int(
+        os.getenv("INDICATOR_BUFFER_SIZE", int(KLINES_LIMIT * 0.2))
+    )
+    SAMPLE_SIZE = KLINES_LIMIT - INDICATOR_BUFFER_SIZE
 
 
 class Indicator(Enum):
