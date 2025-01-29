@@ -30,10 +30,7 @@ class Backtest(App):
             )
             for s in AppConfig.SYMBOLS.value
         }
-        self.test_results = {
-            s: TestResult(s, BacktestConfig.SAMPLE_SIZE.value)
-            for s in AppConfig.SYMBOLS.value
-        }
+        self.test_results = {s: TestResult(s) for s in AppConfig.SYMBOLS.value}
 
     def run(self) -> None:
         for symbol in AppConfig.SYMBOLS.value:
@@ -43,8 +40,8 @@ class Backtest(App):
                 BacktestConfig.INDICATOR_BUFFER_SIZE.value,
                 BacktestConfig.KLINES_LIMIT.value,
             ):
-                current_kline = self.indicators[symbol][:i]
-                close_price = round(current_kline["Close"].iloc[-1], 1)
+                current_kline = self.indicators[symbol][: i + 1]
+                close_price = current_kline["Close"].iloc[-1]
 
                 self.test_results[symbol].check_filled_order_backtest(
                     positions=self.positions[symbol],
@@ -60,7 +57,7 @@ class Backtest(App):
                 )
 
         for symbol in AppConfig.SYMBOLS.value:
-            print(self.test_results[symbol])
+            self.test_results[symbol].print()
 
     def close(self) -> None:
         return
