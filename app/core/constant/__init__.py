@@ -30,6 +30,8 @@ KLINES_COLUMNS = [
     "Ignore",
 ]
 
+INTERVAL_TO_SECONDS = {"m": 60, "h": 3600, "d": 86400}
+
 
 class AppConfig(Enum):
     SYMBOLS = [s.strip() for s in os.getenv("SYMBOLS", "BTCUSDT").split(",")]
@@ -42,10 +44,10 @@ class AppConfig(Enum):
 
 class BacktestConfig(Enum):
     IS_BACKTEST = os.getenv("IS_BACKTEST", "false") == "true"
-    BALANCE = float(os.getenv("BALANCE", 10000))
-    KLINES_LIMIT = min(int(os.getenv("KLINES_LIMIT", 500)), 1000)
+    BALANCE = float(os.getenv("BACKTEST_BALANCE", 10000))
+    KLINES_LIMIT = min(int(os.getenv("BACKTEST_KLINES_LIMIT", 500)), 1000)
     INDICATOR_BUFFER_SIZE = int(
-        os.getenv("INDICATOR_BUFFER_SIZE", int(KLINES_LIMIT * 0.2))
+        os.getenv("BACKTEST_INDICATOR_BUFFER_SIZE", int(KLINES_LIMIT * 0.2))
     )
     SAMPLE_SIZE = KLINES_LIMIT - INDICATOR_BUFFER_SIZE
 

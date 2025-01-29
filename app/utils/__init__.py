@@ -7,6 +7,7 @@ from typing import Callable
 from app.core.constant import (
     MIN_EXP,
     TO_MILLI,
+    INTERVAL_TO_SECONDS,
     TPSL,
     AppConfig,
     OrderType,
@@ -88,13 +89,12 @@ def calculate_stop_price(
         or (order_type == OrderType.TAKE_PROFIT and stop_side == PositionSide.BUY)
         else (1 + ratio)
     )
-    return round(entry_price * factor, 1)
+    return round(entry_price * factor, 2)
 
 
 def gtd(line=2, to_milli=True) -> int:
-    interval_to_seconds = {"m": 60, "h": 3600, "d": 86400}
     unit = AppConfig.INTERVAL.value[-1]
-    base = interval_to_seconds[unit] * int(AppConfig.INTERVAL.value[:-1])
+    base = INTERVAL_TO_SECONDS[unit] * int(AppConfig.INTERVAL.value[:-1])
     exp = max(base * line, MIN_EXP)
     gtd = int(time.time() + exp)
 

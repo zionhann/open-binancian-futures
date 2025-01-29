@@ -151,6 +151,9 @@ class Joshua(App):
             logger.error(f"An error occurred in the market stream handler: {e}")
 
     def _handle_kline(self, data: dict) -> None:
+        if not data["x"]:
+            return
+
         open_time = (
             pd.to_datetime(data["t"], unit="ms")
             .tz_localize("UTC")
@@ -158,29 +161,25 @@ class Joshua(App):
             .strftime("%Y-%m-%d %H:%M")
         )
         symbol = data["s"]
-        close_price = float(data["c"])
-        volume = float(data["v"])
-
         new_data = {
             "Open_time": open_time,
             "Symbol": symbol,
-            "Close": close_price,
-            "Volume": volume,
+            "Open": round(float(data["o"]), 2),
+            "High": round(float(data["h"]), 2),
+            "Low": round(float(data["l"]), 2),
+            "Close": round(float(data["c"]), 2),
+            "Volume": round(float(data["v"]), 3),
         }
-        df = pd.concat(
-            [self.indicators[symbol], pd.DataFrame([new_data])], ignore_index=True
-        )
-        df = self.strategy.load(df)
-
-        if data["x"]:
-            logger.info(f"{AppConfig.INTERVAL.value} candle closed for {symbol}.")
-            self.indicators[symbol] = df
-            logger.info(
-                f"Updated indicators for {symbol}:\n{self.indicators[symbol].tail(Indicator.RSI_RECENT_WINDOW.value).to_string(index=False)}"
+        self.indicators[symbol] = self.strategy.load(
+            pd.concat(
+                [self.indicators[symbol], pd.DataFrame([new_data])], ignore_index=True
             )
-
+        )
+        logger.info(
+            f"Updated indicators for {symbol}:\n{self.indicators[symbol].tail(Indicator.RSI_RECENT_WINDOW.value).to_string(index=False)}"
+        )
         self.strategy.run(
-            indicators=df,
+            indicators=self.indicators[symbol],
             positions=self.positions[symbol],
             orders=self.orders[symbol],
             balance=self.balance,
@@ -291,12 +290,15 @@ class Joshua(App):
             elif status == OrderStatus.CANCELED:
                 self.orders[symbol].remove_by_id(order_id)
 
-                if og_order_type == OrderType.LIMIT and not self.positions[symbol]:
+                if (
+                    og_order_type == OrderType.LIMIT
+                    and self.positions[symbol].is_empty()
+                ):
                     logger.info("Closing all open orders...")
                     fetch(self.client.cancel_open_orders, symbol=symbol)
 
             elif status == OrderStatus.EXPIRED:
-                if not self.positions[symbol]:
+                if self.positions[symbol].is_empty():
                     logger.info(
                         f"{og_order_type} for {symbol} is triggered but no existing position found."
                     )
@@ -305,26 +307,27 @@ class Joshua(App):
 
     def _handle_account_update(self, data: dict):
         if "P" in data and data["P"]:
-            positions = Positions()
-
             for position in data["P"]:
                 symbol = position["s"]
                 position_amount = float(position["pa"])
                 entry_price = float(position["ep"])
 
-                if position_amount != 0:
-                    positions.add(
-                        Position(
-                            symbol=symbol,
-                            entry_price=entry_price,
-                            amount=position_amount,
-                        )
+                self.positions[symbol] = (
+                    Positions(
+                        [
+                            Position(
+                                symbol=symbol,
+                                entry_price=entry_price,
+                                amount=position_amount,
+                            )
+                        ]
                     )
-                    self.positions[symbol] = positions
+                    if position_amount != 0
+                    else Positions()
+                )
 
         if "B" in data and data["B"]:
-            usdt_balance = list(filter(lambda b: b["a"] == USDT, data["B"]))
-            if usdt_balance:
+            if usdt_balance := list(filter(lambda b: b["a"] == USDT, data["B"])):
                 self.balance = Balance(float(usdt_balance[0]["cw"]))
                 logger.info(f"Updated available USDT: {self.balance:.2f}")
 
@@ -333,7 +336,7 @@ class Joshua(App):
     ) -> None:
         ratio = TPSL.STOP_LOSS.value / AppConfig.LEVERAGE.value
         factor = 1 - ratio if stop_side == PositionSide.SELL else 1 + ratio
-        stop_price = round(price * factor, 1)
+        stop_price = round(price * factor, 2)
 
         fetch(
             self.client.new_order,
@@ -353,7 +356,7 @@ class Joshua(App):
     ) -> None:
         ratio = TPSL.TAKE_PROFIT.value / AppConfig.LEVERAGE.value
         factor = 1 + ratio if take_side == PositionSide.SELL else 1 - ratio
-        take_price = round(price * factor, 1)
+        take_price = round(price * factor, 2)
 
         fetch(
             self.client.new_order,

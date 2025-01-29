@@ -7,9 +7,6 @@ class Positions:
     def __init__(self, positions: list["Position"] = []) -> None:
         self.positions = positions
 
-    def add(self, position: "Position") -> None:
-        self.positions = [*self.positions, position]
-
     def clear(self) -> None:
         self.positions = []
 
