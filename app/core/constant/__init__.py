@@ -10,11 +10,6 @@ TO_MILLI = 1000
 MIN_EXP = 660
 MAX_CHILL_COUNTER = 3
 
-MIN_NOTIONAL = {
-    "BTCUSDT": 100,
-    "ETHUSDT": 20,
-}
-
 KLINES_COLUMNS = [
     "Open_time",
     "Open",
@@ -118,3 +113,9 @@ class OrderStatus(Enum):
 class PositionSide(Enum):
     BUY = "BUY"
     SELL = "SELL"
+
+
+class FilterType(Enum):
+    PRICE_FILTER = "PRICE_FILTER"
+    LOT_SIZE = "LOT_SIZE"
+    MIN_NOTIONAL = "MIN_NOTIONAL"

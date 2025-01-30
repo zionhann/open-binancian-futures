@@ -3,11 +3,13 @@ import logging
 from binance.um_futures import UMFutures
 from app import App
 from app.core.constant import AppConfig, ApiKey, BacktestConfig, BaseUrl
+from app.core.exchange_info import ExchangeInfo
 from app.core.order import Orders
 from app.core.position import Positions
 from app.core.balance import Balance
 from app.core.strategy import Strategy
 from app.backtest.test_result import TestResult
+from app.utils import fetch
 
 
 class Backtest(App):
@@ -19,18 +21,23 @@ class Backtest(App):
             secret=ApiKey.SECRET.value,
             base_url=BaseUrl.REST.value,
         )
+        self.balance = Balance(BacktestConfig.BALANCE.value)
+        self.strategy = Strategy.of(AppConfig.STRATEGY.value)
+
         self.positions = {s: Positions() for s in AppConfig.SYMBOLS.value}
         self.orders = {s: Orders() for s in AppConfig.SYMBOLS.value}
-        self.balance = Balance(BacktestConfig.BALANCE.value)
-
-        self.strategy = Strategy.of(AppConfig.STRATEGY.value)
+        self.test_results = {s: TestResult(s) for s in AppConfig.SYMBOLS.value}
         self.indicators = {
             s: self.strategy.init_indicators(
                 s, self.client, limit=BacktestConfig.KLINES_LIMIT.value
             )
             for s in AppConfig.SYMBOLS.value
         }
-        self.test_results = {s: TestResult(s) for s in AppConfig.SYMBOLS.value}
+
+        exchange_info = fetch(self.client.exchange_info)["symbols"]
+        self.exchange_info = {
+            s: ExchangeInfo(s, exchange_info) for s in AppConfig.SYMBOLS.value
+        }
 
     def run(self) -> None:
         for symbol in AppConfig.SYMBOLS.value:
@@ -53,6 +60,7 @@ class Backtest(App):
                     indicators=current_kline,
                     positions=self.positions[symbol],
                     orders=self.orders[symbol],
+                    exchange_info=self.exchange_info[symbol],
                     balance=self.balance,
                 )
 

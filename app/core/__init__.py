@@ -8,8 +8,9 @@ from binance.websocket.um_futures.websocket_client import UMFuturesWebsocketClie
 from app import App
 from app.core.constant import *
 from app.core.balance import Balance
+from app.core.exchange_info import ExchangeInfo
 from app.core.strategy import Strategy
-from app.utils import fetch, check_required_params
+from app.utils import calculate_stop_price, fetch, check_required_params
 from app.core.position import Position, Positions
 from app.core.order import Order, Orders
 
@@ -51,6 +52,10 @@ class Joshua(App):
         self.balance = self._init_balance()
         self.strategy = Strategy.of(AppConfig.STRATEGY.value)
 
+        exchange_info = fetch(self.client.exchange_info)["symbols"]
+        self.exchange_info = {
+            s: ExchangeInfo(s, exchange_info) for s in AppConfig.SYMBOLS.value
+        }
         self.orders = {s: self._init_orders(s) for s in AppConfig.SYMBOLS.value}
         self.positions = {s: self._init_positions(s) for s in AppConfig.SYMBOLS.value}
         self.indicators = {
@@ -164,11 +169,11 @@ class Joshua(App):
         new_data = {
             "Open_time": open_time,
             "Symbol": symbol,
-            "Open": round(float(data["o"]), 2),
-            "High": round(float(data["h"]), 2),
-            "Low": round(float(data["l"]), 2),
-            "Close": round(float(data["c"]), 2),
-            "Volume": round(float(data["v"]), 3),
+            "Open": float(data["o"]),
+            "High": float(data["h"]),
+            "Low": float(data["l"]),
+            "Close": float(data["c"]),
+            "Volume": float(data["v"]),
         }
         self.indicators[symbol] = self.strategy.load(
             pd.concat(
@@ -182,6 +187,7 @@ class Joshua(App):
             indicators=self.indicators[symbol],
             positions=self.positions[symbol],
             orders=self.orders[symbol],
+            exchange_info=self.exchange_info[symbol],
             balance=self.balance,
             client=self.client,
         )
@@ -240,15 +246,9 @@ class Joshua(App):
                         if side == PositionSide.BUY
                         else PositionSide.BUY
                     )
-                    self._set_stop_loss(
+                    self._set_tpsl(
                         symbol=symbol,
-                        stop_side=opposite_side,
-                        price=price,
-                        quantity=quantity,
-                    )
-                    self._set_take_profit(
-                        symbol=symbol,
-                        take_side=opposite_side,
+                        position_side=opposite_side,
                         price=price,
                         quantity=quantity,
                     )
@@ -267,25 +267,9 @@ class Joshua(App):
                 if status == OrderStatus.FILLED:
                     self.orders[symbol].remove_by_id(order_id)
 
-                    if realized_profit == 0:
-                        return
-
-                    if (
-                        tpsl_orders := self.orders[symbol].find_all_by_type(
-                            OrderType.STOP,
-                            OrderType.STOP_MARKET,
-                            OrderType.TAKE_PROFIT,
-                            OrderType.TAKE_PROFIT_MARKET,
-                            OrderType.TRAILING_STOP_MARKET,
-                        )
-                    ).is_not_empty():
-                        logger.info(f"Closing {tpsl_orders.size()} TP/SL orders...")
-                        fetch(
-                            self.client.cancel_batch_order,
-                            symbol=symbol,
-                            orderIdList=tpsl_orders.to_ids(),
-                            origClientOrderIdList=[],
-                        )
+                    if og_order_type != OrderType.LIMIT:
+                        logger.info("Cancelling all open orders...")
+                        fetch(self.client.cancel_open_orders, symbol=symbol)
 
             elif status == OrderStatus.CANCELED:
                 self.orders[symbol].remove_by_id(order_id)
@@ -294,7 +278,7 @@ class Joshua(App):
                     og_order_type == OrderType.LIMIT
                     and self.positions[symbol].is_empty()
                 ):
-                    logger.info("Closing all open orders...")
+                    logger.info("Cancelling all open orders...")
                     fetch(self.client.cancel_open_orders, symbol=symbol)
 
             elif status == OrderStatus.EXPIRED:
@@ -302,8 +286,13 @@ class Joshua(App):
                     logger.info(
                         f"{og_order_type} for {symbol} is triggered but no existing position found."
                     )
-                    logger.info("Closing all open orders...")
-                    fetch(self.client.cancel_open_orders, symbol=symbol)
+                    logger.info(f"Cancelling {self.orders[symbol].size()} orders...")
+                    fetch(
+                        self.client.cancel_batch_order,
+                        symbol=symbol,
+                        orderIdList=self.orders[symbol].to_ids(),
+                        origClientOrderIdList=[],
+                    )
 
     def _handle_account_update(self, data: dict):
         if "P" in data and data["P"]:
@@ -329,47 +318,30 @@ class Joshua(App):
         if "B" in data and data["B"]:
             if usdt_balance := list(filter(lambda b: b["a"] == USDT, data["B"])):
                 self.balance = Balance(float(usdt_balance[0]["cw"]))
-                logger.info(f"Updated available USDT: {self.balance:.2f}")
+                logger.info(f"Updated available USDT: {self.balance}")
 
-    def _set_stop_loss(
-        self, symbol: str, stop_side: PositionSide, price: float, quantity: float
+    def _set_tpsl(
+        self,
+        symbol: str,
+        position_side: PositionSide,
+        price: float,
+        quantity: float,
     ) -> None:
-        ratio = TPSL.STOP_LOSS.value / AppConfig.LEVERAGE.value
-        factor = 1 - ratio if stop_side == PositionSide.SELL else 1 + ratio
-        stop_price = round(price * factor, 2)
+        for order_type in [OrderType.STOP, OrderType.TAKE_PROFIT]:
+            stop_price = calculate_stop_price(price, order_type, position_side)
 
-        fetch(
-            self.client.new_order,
-            symbol=symbol,
-            side=stop_side.value,
-            type=OrderType.STOP.value,
-            stopPrice=stop_price,
-            price=stop_price,
-            quantity=quantity,
-        )
-        logger.info(
-            f"Setting Stop Loss for {symbol}: Price={stop_price}, Quantity={quantity}, Side={stop_side.value}"
-        )
-
-    def _set_take_profit(
-        self, symbol: str, take_side: PositionSide, price: float, quantity: float
-    ) -> None:
-        ratio = TPSL.TAKE_PROFIT.value / AppConfig.LEVERAGE.value
-        factor = 1 + ratio if take_side == PositionSide.SELL else 1 - ratio
-        take_price = round(price * factor, 2)
-
-        fetch(
-            self.client.new_order,
-            symbol=symbol,
-            side=take_side.value,
-            type=OrderType.TAKE_PROFIT.value,
-            stopPrice=take_price,
-            price=take_price,
-            quantity=quantity,
-        )
-        logger.info(
-            f"Setting Take Profit for {symbol}; Price={take_price}, Quantity={quantity}, Side={take_side.value}"
-        )
+            fetch(
+                self.client.new_order,
+                symbol=symbol,
+                side=position_side.value,
+                type=order_type.value,
+                stopPrice=stop_price,
+                price=stop_price,
+                quantity=quantity,
+            )
+            logger.info(
+                f"Setting TPSL for {symbol}: Type={order_type.value}, Side={position_side.value}, Price={stop_price}, Quantity={quantity}, "
+            )
 
     def close(self) -> None:
         logger.info("Initiating shutdown process...")
