@@ -33,7 +33,7 @@ class BacktestConfig(Enum):
     BALANCE = float(os.getenv("BACKTEST_BALANCE", 10000))
     KLINES_LIMIT = min(int(os.getenv("BACKTEST_KLINES_LIMIT", 500)), 1000)
     INDICATOR_INIT_SIZE = int(
-        os.getenv("BACKTEST_INDICATOR_INIT_SIZE", int(KLINES_LIMIT * 0.2))
+        os.getenv("BACKTEST_INDICATOR_INIT_SIZE", KLINES_LIMIT * 0.2)
     )
 
 

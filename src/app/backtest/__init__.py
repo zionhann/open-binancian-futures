@@ -46,9 +46,13 @@ class Backtest(App):
         for symbol in AppConfig.SYMBOLS.value:
             self.logger.info(f"Running backtest for {symbol}...")
 
+            self.logger.info(
+                f"Backtesting {BacktestConfig.INDICATOR_INIT_SIZE.value} to {BacktestConfig.KLINES_LIMIT.value}..."
+            )
+
             for i in range(
-                BacktestConfig.INDICATOR_INIT_SIZE.value,
-                BacktestConfig.KLINES_LIMIT.value,
+                int(BacktestConfig.INDICATOR_INIT_SIZE.value),
+                int(BacktestConfig.KLINES_LIMIT.value),
             ):
                 current_kline = self.indicators[symbol][: i + 1]
                 close_price = current_kline["Close"].iloc[-1]
