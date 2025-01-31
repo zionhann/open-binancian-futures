@@ -2,35 +2,26 @@ import os
 
 from enum import Enum
 
-LISTEN_KEY = "listenKey"
-USDT = "USDT"
-
-KEEPALIVE_INTERVAL = 3600 * 23 + 60 * 55
-TO_MILLI = 1000
-MIN_EXP = 660
-MAX_CHILL_COUNTER = 3
-
-KLINES_COLUMNS = [
-    "Open_time",
-    "Open",
-    "High",
-    "Low",
-    "Close",
-    "Volume",
-    "Close_time",
-    "Quote_volume",
-    "Trades",
-    "Taker_buy_volume",
-    "Taker_buy_quote_volume",
-    "Ignore",
-]
-
 INTERVAL_TO_SECONDS = {"m": 60, "h": 3600, "d": 86400}
+
+
+class Required(Enum):
+    """
+    Either (API_KEY, API_SECRET) or (API_KEY_TEST, API_SECRET_TEST) is required.
+    STRATEGY: The class name of the strategy to use. It must be located in the `app.core.strategy` module.
+    """
+
+    API_KEY = os.getenv("API_KEY")
+    API_SECRET = os.getenv("API_SECRET")
+
+    API_KEY_TEST = os.getenv("API_KEY_TEST")
+    API_SECRET_TEST = os.getenv("API_SECRET_TEST")
+
+    STRATEGY = os.getenv("STRATEGY")
 
 
 class AppConfig(Enum):
     SYMBOLS = [s.strip() for s in os.getenv("SYMBOLS", "BTCUSDT").split(",")]
-    STRATEGY = os.getenv("STRATEGY", "RSI_MACD")
     INTERVAL = os.getenv("INTERVAL", "1d")
     LEVERAGE = int(os.getenv("LEVERAGE", 1))
     SIZE = float(os.getenv("SIZE", 0.05))
@@ -41,41 +32,28 @@ class BacktestConfig(Enum):
     IS_BACKTEST = os.getenv("IS_BACKTEST", "false") == "true"
     BALANCE = float(os.getenv("BACKTEST_BALANCE", 10000))
     KLINES_LIMIT = min(int(os.getenv("BACKTEST_KLINES_LIMIT", 500)), 1000)
-    INDICATOR_BUFFER_SIZE = int(
-        os.getenv("BACKTEST_INDICATOR_BUFFER_SIZE", int(KLINES_LIMIT * 0.2))
+    INDICATOR_INIT_SIZE = int(
+        os.getenv("BACKTEST_INDICATOR_INIT_SIZE", int(KLINES_LIMIT * 0.2))
     )
-    SAMPLE_SIZE = KLINES_LIMIT - INDICATOR_BUFFER_SIZE
 
 
 class Indicator(Enum):
-    OBV_WINDOW = int(os.getenv("OBV_WINDOW", 7))
     RSI_WINDOW = int(os.getenv("RSI_WINDOW", 14))
     RSI_RECENT_WINDOW = int(os.getenv("RSI_RECENT_WINDOW", 7))
     RSI_OVERSOLD_THRESHOLD = int(os.getenv("RSI_OVERSOLD_THRESHOLD", 30))
     RSI_OVERBOUGHT_THRESHOLD = int(os.getenv("RSI_OVERBOUGHT_THRESHOLD", 70))
+    OBV_SIGNAL = int(os.getenv("OBV_SIGNAL", 9))
     MACD_FAST = int(os.getenv("MACD_FAST", 12))
     MACD_SLOW = int(os.getenv("MACD_SLOW", 26))
     MACD_SIGNAL = int(os.getenv("MACD_SIGNAL", 9))
+    VMA_WINDOW = int(os.getenv("VMA_WINDOW", 10))
+    VWAP_LENGTH = int(os.getenv("VWAP_LENGTH", 14))
 
 
 class TPSL(Enum):
     TAKE_PROFIT = float(os.getenv("TPSL_TAKE_PROFIT", 0.05))
     STOP_LOSS = float(os.getenv("TPSL_STOP_LOSS", 0.05))
     TRAILING_STOP = float(os.getenv("TPSL_TRAILING_STOP", STOP_LOSS))
-
-
-class ApiKey(Enum):
-    CLIENT = os.getenv("API_KEY")
-    SECRET = os.getenv("API_SECRET")
-    CLIENT_TEST = os.getenv("API_KEY_TEST")
-    SECRET_TEST = os.getenv("API_SECRET_TEST")
-
-
-class BaseUrl(Enum):
-    REST = os.getenv("BASEURL_REST")
-    WS = os.getenv("BASEURL_WS")
-    REST_TEST = os.getenv("BASEURL_REST_TEST")
-    WS_TEST = os.getenv("BASEURL_WS_TEST")
 
 
 class OrderType(Enum):

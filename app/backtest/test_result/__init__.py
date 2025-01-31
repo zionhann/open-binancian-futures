@@ -1,17 +1,23 @@
 import logging
 
 from app.core.balance import Balance
-from app.core.constant import AppConfig, BacktestConfig, OrderType, INTERVAL_TO_SECONDS
+from app.core.constant import (
+    BacktestConfig,
+    OrderType,
+    INTERVAL_TO_SECONDS,
+)
 from app.core.order import Orders
 from app.core.position import Positions
+from app.core.strategy import Strategy
 
 
 logger = logging.getLogger(__name__)
 
 
 class TestResult:
-    def __init__(self, symbol: str):
+    def __init__(self, symbol: str, strategy: Strategy):
         self.symbol = symbol
+        self.strategy = strategy
 
         self.sample_size = 0
         self.trade_count = 0
@@ -54,8 +60,8 @@ class TestResult:
         self.trade_frequency = round(self.trade_count / self.sample_size * 100, 2)
         self.win_rate = round(self.win_count / self.trade_count * 100, 2)
 
-        unit = AppConfig.INTERVAL.value[-1]
-        base = INTERVAL_TO_SECONDS[unit] * int(AppConfig.INTERVAL.value[:-1])
+        unit = self.strategy.interval[-1]
+        base = INTERVAL_TO_SECONDS[unit] * int(self.strategy.interval[:-1])
         days = (base * self.sample_size) / (60 * 60 * 24)
         self.return_per_day = round(self.cumulative_pnl / days, 2)
 
@@ -63,9 +69,11 @@ class TestResult:
             f"""
 ===Backtest Result===
 Symbol: {self.symbol}
-Interval: {AppConfig.INTERVAL.value}
-Leverage: {AppConfig.LEVERAGE.value}
-Size: {AppConfig.SIZE.value * 100}%
+Interval: {self.strategy.interval}
+Leverage: {self.strategy.leverage}
+Size: {self.strategy.size * 100}%
+Strategy: {self.strategy.__class__.__name__}
+TP/SL: {self.strategy.take_profit_ratio * 100}% / {self.strategy.stop_loss_ratio * 100}%
 Initial Balance: {BacktestConfig.BALANCE.value}USDT
 
 Sample Size: {self.sample_size}

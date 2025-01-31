@@ -2,7 +2,7 @@ import logging
 
 from binance.um_futures import UMFutures
 from app import App
-from app.core.constant import AppConfig, ApiKey, BacktestConfig, BaseUrl
+from app.core.constant import AppConfig, BacktestConfig, Required
 from app.core.exchange_info import ExchangeInfo
 from app.core.order import Orders
 from app.core.position import Positions
@@ -14,19 +14,22 @@ from app.utils import fetch
 
 class Backtest(App):
     logger = logging.getLogger(__name__)
+    _BASE_URL = "https://fapi.binance.com"
 
     def __init__(self) -> None:
         self.client = UMFutures(
-            key=ApiKey.CLIENT.value,
-            secret=ApiKey.SECRET.value,
-            base_url=BaseUrl.REST.value,
+            key=Required.API_KEY.value,
+            secret=Required.API_SECRET.value,
+            base_url=self._BASE_URL,
         )
         self.balance = Balance(BacktestConfig.BALANCE.value)
-        self.strategy = Strategy.of(AppConfig.STRATEGY.value)
+        self.strategy = Strategy.of(Required.STRATEGY.value)
 
         self.positions = {s: Positions() for s in AppConfig.SYMBOLS.value}
         self.orders = {s: Orders() for s in AppConfig.SYMBOLS.value}
-        self.test_results = {s: TestResult(s) for s in AppConfig.SYMBOLS.value}
+        self.test_results = {
+            s: TestResult(s, self.strategy) for s in AppConfig.SYMBOLS.value
+        }
         self.indicators = {
             s: self.strategy.init_indicators(
                 s, self.client, limit=BacktestConfig.KLINES_LIMIT.value
@@ -44,7 +47,7 @@ class Backtest(App):
             self.logger.info(f"Running backtest for {symbol}...")
 
             for i in range(
-                BacktestConfig.INDICATOR_BUFFER_SIZE.value,
+                BacktestConfig.INDICATOR_INIT_SIZE.value,
                 BacktestConfig.KLINES_LIMIT.value,
             ):
                 current_kline = self.indicators[symbol][: i + 1]

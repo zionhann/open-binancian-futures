@@ -1,8 +1,8 @@
 from pandas import DataFrame, Series
 
 
-def RSI(data: DataFrame, window=14, decimals=1) -> Series:
-    delta = data["Close"].astype(float).diff()
+def RSI(data: DataFrame, window: int, decimals=1) -> Series:
+    delta = data["Close"].diff()
 
     gain = delta.clip(lower=0)
     loss = -delta.clip(upper=0)
@@ -16,17 +16,17 @@ def RSI(data: DataFrame, window=14, decimals=1) -> Series:
     return rsi_values.round(decimals)
 
 
-def OBV(data: DataFrame, window=10, decimals=1) -> Series:
+def OBV(data: DataFrame, signal: int, decimals=1) -> Series:
     close_diff = data["Close"].diff().fillna(0)
     direction = close_diff.apply(lambda x: 1 if x > 0 else (-1 if x < 0 else 0))
 
     obv = (data["Volume"] * direction).cumsum()
-    ema = obv.ewm(span=window, adjust=False, min_periods=1).mean()
+    ema = obv.ewm(span=signal, adjust=False, min_periods=1).mean()
 
     return (obv - ema).round(decimals)
 
 
-def MACD(data: DataFrame, fast=12, slow=26, signal=9, decimals=1) -> Series:
+def MACD(data: DataFrame, fast: int, slow: int, signal: int, decimals=1) -> Series:
     fast_ema = data["Close"].ewm(span=fast, adjust=False, min_periods=1).mean()
     slow_ema = data["Close"].ewm(span=slow, adjust=False, min_periods=1).mean()
 
@@ -36,11 +36,11 @@ def MACD(data: DataFrame, fast=12, slow=26, signal=9, decimals=1) -> Series:
     return (dif - dea).round(decimals)
 
 
-def SMAVOL(data: DataFrame, window=10, decimals=3) -> Series:
+def VMA(data: DataFrame, window: int, decimals=3) -> Series:
     return data["Volume"].rolling(window=window, min_periods=1).mean().round(decimals)
 
 
-def VWAP(data: DataFrame, length=14, decimals=1) -> Series:
+def VWAP(data: DataFrame, length: int, decimals=1) -> Series:
     typical_price = (data["High"] + data["Low"] + data["Close"]) / 3
     price_volume = typical_price * data["Volume"]
 

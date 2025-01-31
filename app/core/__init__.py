@@ -10,7 +10,7 @@ from app.core.constant import *
 from app.core.balance import Balance
 from app.core.exchange_info import ExchangeInfo
 from app.core.strategy import Strategy
-from app.utils import calculate_stop_price, fetch, check_required_params
+from app.utils import fetch
 from app.core.position import Position, Positions
 from app.core.order import Order, Orders
 
@@ -18,44 +18,47 @@ logger = logging.getLogger(__name__)
 
 
 class Joshua(App):
+    _BASEURL_REST = "https://fapi.binance.com"
+    _BASEURL_WS = "wss://fstream.binance.com"
+
+    _BASEURL_REST_TEST = "https://testnet.binancefuture.com"
+    _BASEURL_WS_TEST = "wss://stream.binancefuture.com"
+
+    _LISTEN_KEY = "listenKey"
+    _USDT = "USDT"
+    _KEEPALIVE_INTERVAL = 3600 * 23 + 60 * 55
+
     def __init__(self) -> None:
+        base_url, stream_url = (
+            (self._BASEURL_REST_TEST, self._BASEURL_WS_TEST)
+            if AppConfig.IS_TESTNET.value
+            else (self._BASEURL_REST, self._BASEURL_WS)
+        )
         api_key, api_secret = (
-            (ApiKey.CLIENT_TEST.value, ApiKey.SECRET_TEST.value)
+            (Required.API_KEY_TEST.value, Required.API_SECRET_TEST.value)
             if AppConfig.IS_TESTNET.value
-            else (ApiKey.CLIENT.value, ApiKey.SECRET.value)
+            else (Required.API_KEY.value, Required.API_SECRET.value)
         )
-        base_url = (
-            BaseUrl.REST_TEST.value
-            if AppConfig.IS_TESTNET.value
-            else BaseUrl.REST.value
-        )
-        stream_url = (
-            BaseUrl.WS_TEST.value if AppConfig.IS_TESTNET.value else BaseUrl.WS.value
-        )
-
-        check_required_params(base_url=base_url, stream_url=stream_url)
-        assert base_url is not None
-        assert stream_url is not None
-
+        self.strategy = Strategy.of(Required.STRATEGY.value)
         self.client = UMFutures(key=api_key, secret=api_secret, base_url=base_url)
-        self.client_ws = UMFuturesWebsocketClient(
-            stream_url=stream_url, on_message=self._market_stream_handler
-        )
 
-        self.listen_key = fetch(self.client.new_listen_key).get(LISTEN_KEY)
+        self.stream_url = stream_url
+        self.listen_key = fetch(self.client.new_listen_key).get(self._LISTEN_KEY)
+
+        self.client_ws = UMFuturesWebsocketClient(
+            stream_url=self.stream_url, on_message=self._market_stream_handler
+        )
         self.client_ws_user = UMFuturesWebsocketClient(
-            stream_url=stream_url,
+            stream_url=self.stream_url,
             on_message=self._user_stream_handler,
         )
-
-        self.steram_url = stream_url
-        self.balance = self._init_balance()
-        self.strategy = Strategy.of(AppConfig.STRATEGY.value)
 
         exchange_info = fetch(self.client.exchange_info)["symbols"]
         self.exchange_info = {
             s: ExchangeInfo(s, exchange_info) for s in AppConfig.SYMBOLS.value
         }
+
+        self.balance = self._init_balance()
         self.orders = {s: self._init_orders(s) for s in AppConfig.SYMBOLS.value}
         self.positions = {s: self._init_positions(s) for s in AppConfig.SYMBOLS.value}
         self.indicators = {
@@ -67,7 +70,7 @@ class Joshua(App):
         logger.info("Fetching available USDT balance...")
         data = fetch(self.client.balance)["data"]
         df = pd.DataFrame(data)
-        usdt_balance = df[df["asset"] == USDT]
+        usdt_balance = df[df["asset"] == self._USDT]
 
         available = float(usdt_balance["availableBalance"].iloc[0])
         logger.info(f'Available USDT balance: "{available:.2f}"')
@@ -128,21 +131,22 @@ class Joshua(App):
 
     async def _keepalive_stream(self):
         while True:
-            await asyncio.sleep(KEEPALIVE_INTERVAL)
+            await asyncio.sleep(self._KEEPALIVE_INTERVAL)
             logger.info("Reconnecting to the stream to maintain the connection...")
 
             fetch(self.client_ws.stop)
             fetch(self.client_ws_user.stop)
 
             self.client_ws = UMFuturesWebsocketClient(
-                stream_url=self.steram_url, on_message=self._market_stream_handler
+                stream_url=self.stream_url, on_message=self._market_stream_handler
             )
             self.client_ws_user = UMFuturesWebsocketClient(
-                stream_url=self.steram_url, on_message=self._user_stream_handler
+                stream_url=self.stream_url, on_message=self._user_stream_handler
             )
 
             for s in AppConfig.SYMBOLS.value:
                 self._subscribe_to_stream(symbol=s)
+
             fetch(self.client_ws_user.user_data, listen_key=self.listen_key)
 
     def _market_stream_handler(self, _, stream) -> None:
@@ -209,7 +213,9 @@ class Joshua(App):
 
                 if data["e"] == EventType.LISTEN_KEY_EXPIRED.value:
                     logger.info("Listen key expired. Recreating listen key...")
-                    self.listen_key = fetch(self.client.new_listen_key).get(LISTEN_KEY)
+                    self.listen_key = fetch(self.client.new_listen_key).get(
+                        self._LISTEN_KEY
+                    )
                     fetch(self.client_ws_user.user_data, listen_key=self.listen_key)
 
         except Exception as e:
@@ -246,11 +252,12 @@ class Joshua(App):
                         if side == PositionSide.BUY
                         else PositionSide.BUY
                     )
-                    self._set_tpsl(
+                    self.strategy.set_tpsl(
                         symbol=symbol,
                         position_side=opposite_side,
                         price=price,
                         quantity=quantity,
+                        client=self.client,
                     )
 
             elif status in [
@@ -316,32 +323,9 @@ class Joshua(App):
                 )
 
         if "B" in data and data["B"]:
-            if usdt_balance := list(filter(lambda b: b["a"] == USDT, data["B"])):
+            if usdt_balance := list(filter(lambda b: b["a"] == self._USDT, data["B"])):
                 self.balance = Balance(float(usdt_balance[0]["cw"]))
                 logger.info(f"Updated available USDT: {self.balance}")
-
-    def _set_tpsl(
-        self,
-        symbol: str,
-        position_side: PositionSide,
-        price: float,
-        quantity: float,
-    ) -> None:
-        for order_type in [OrderType.STOP, OrderType.TAKE_PROFIT]:
-            stop_price = calculate_stop_price(price, order_type, position_side)
-
-            fetch(
-                self.client.new_order,
-                symbol=symbol,
-                side=position_side.value,
-                type=order_type.value,
-                stopPrice=stop_price,
-                price=stop_price,
-                quantity=quantity,
-            )
-            logger.info(
-                f"Setting TPSL for {symbol}: Type={order_type.value}, Side={position_side.value}, Price={stop_price}, Quantity={quantity}, "
-            )
 
     def close(self) -> None:
         logger.info("Initiating shutdown process...")

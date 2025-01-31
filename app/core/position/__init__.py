@@ -27,13 +27,13 @@ class Positions:
         balance: Balance,
         symbol: str,
         quantity: float,
-        entry_price: float,
+        price: float,
         side: PositionSide,
     ) -> None:
         position = Position(
             symbol=symbol,
             amount=quantity if side == PositionSide.BUY else -quantity,
-            entry_price=entry_price,
+            entry_price=price,
         )
         self.positions = [*self.positions, position]
 

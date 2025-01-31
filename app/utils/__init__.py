@@ -1,23 +1,16 @@
-from decimal import Decimal
 import time
 import logging
 import json
 
+from decimal import Decimal
 from typing import Callable
-
-from app.core.constant import (
-    MIN_EXP,
-    TO_MILLI,
-    INTERVAL_TO_SECONDS,
-    TPSL,
-    AppConfig,
-    OrderType,
-    PositionSide,
-)
+from app.core.constant import INTERVAL_TO_SECONDS, AppConfig
 
 CODE = "code"
 MESSAGE = "msg"
-OK = 200
+STATUS_OK = 200
+UNIT_MS = 1000
+MIN_EXP = 660
 
 logger = logging.getLogger(__name__)
 
@@ -53,7 +46,7 @@ def fetch(request: Callable, base_delay=0.25, max_retries=3, **kwargs) -> dict:
             if isinstance(res, list):
                 return {"data": res}
 
-            if CODE in res and res[CODE] != OK:
+            if CODE in res and res[CODE] != STATUS_OK:
                 raise Exception(res[MESSAGE])
 
             return res
@@ -76,31 +69,13 @@ def fetch(request: Callable, base_delay=0.25, max_retries=3, **kwargs) -> dict:
     return {}
 
 
-def calculate_stop_price(
-    entry_price: float, order_type: OrderType, stop_side: PositionSide
-) -> float:
-    ratio = (
-        TPSL.STOP_LOSS.value / AppConfig.LEVERAGE.value
-        if order_type == OrderType.STOP
-        else TPSL.TAKE_PROFIT.value / AppConfig.LEVERAGE.value
-    )
-    factor = (
-        (1 - ratio)
-        if (order_type == OrderType.STOP and stop_side == PositionSide.SELL)
-        or (order_type == OrderType.TAKE_PROFIT and stop_side == PositionSide.BUY)
-        else (1 + ratio)
-    )
-    decimals = decimal_places(entry_price)
-    return round(entry_price * factor, decimals)
-
-
-def gtd(nlines=3, to_milli=True) -> int:
+def gtd(nlines=3) -> int:
     unit = AppConfig.INTERVAL.value[-1]
     base = INTERVAL_TO_SECONDS[unit] * int(AppConfig.INTERVAL.value[:-1])
     exp = max(base * nlines, MIN_EXP)
     gtd = int(time.time() + exp)
 
-    return gtd * TO_MILLI if to_milli else gtd
+    return gtd * UNIT_MS
 
 
 def decimal_places(num: float) -> int:

@@ -20,15 +20,17 @@ class ExchangeInfo:
         except StopIteration:
             raise ValueError(f"Symbol {symbol} not found in exchange info")
 
-    def to_entry_price(self, price: float) -> float:
+    def to_entry_price(self, initial_price: float) -> float:
         decimals = decimal_places(self.tick_size)
-        return round(int(price / self.tick_size) * self.tick_size, decimals)
+        return round(int(initial_price / self.tick_size) * self.tick_size, decimals)
 
-    def to_entry_quantity(self, balance: Balance, entry_price: float) -> float:
-        quantity = balance.calculate_quantity(entry_price)
+    def to_entry_quantity(
+        self, entry_price: float, size: float, leverage: int, balance: Balance
+    ) -> float:
+        initial_quantity = balance.calculate_quantity(entry_price, size, leverage)
         decimals = decimal_places(self.step_size)
         entry_quantity = round(
-            int(quantity / self.step_size) * self.step_size, decimals
+            int(initial_quantity / self.step_size) * self.step_size, decimals
         )
         return (
             entry_quantity
