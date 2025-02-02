@@ -85,7 +85,7 @@ class Strategy(ABC):
         logger.info(f"Fetching {symbol} klines by {self.interval}...")
         klines_data = fetch(
             client.klines, symbol=symbol, interval=self.interval, limit=limit
-        )["data"]
+        )["data"][:-1]
 
         df = pd.DataFrame(data=klines_data, columns=self._KLINES_COLUMNS)
         df["Open_time"] = (
@@ -113,13 +113,19 @@ class Strategy(ABC):
     ) -> float:
         ratio = (
             self.stop_loss_ratio / self.leverage
-            if order_type == OrderType.STOP
+            if order_type in [OrderType.STOP, OrderType.STOP_MARKET]
             else self.take_profit_ratio / self.leverage
         )
         factor = (
             (1 - ratio)
-            if (order_type == OrderType.STOP and stop_side == PositionSide.SELL)
-            or (order_type == OrderType.TAKE_PROFIT and stop_side == PositionSide.BUY)
+            if (
+                order_type in [OrderType.STOP, OrderType.STOP_MARKET]
+                and stop_side == PositionSide.SELL
+            )
+            or (
+                order_type in [OrderType.TAKE_PROFIT, OrderType.TAKE_PROFIT_MARKET]
+                and stop_side == PositionSide.BUY
+            )
             else (1 + ratio)
         )
         decimals = decimal_places(entry_price)
@@ -130,10 +136,9 @@ class Strategy(ABC):
         symbol: str,
         position_side: PositionSide,
         price: float,
-        quantity: float,
         client: UMFutures,
     ) -> None:
-        for order_type in [OrderType.STOP, OrderType.TAKE_PROFIT]:
+        for order_type in [OrderType.STOP_MARKET, OrderType.TAKE_PROFIT_MARKET]:
             stop_price = self.calculate_stop_price(price, order_type, position_side)
 
             fetch(
@@ -142,11 +147,11 @@ class Strategy(ABC):
                 side=position_side.value,
                 type=order_type.value,
                 stopPrice=stop_price,
-                price=stop_price,
-                quantity=quantity,
+                closePosition=True,
+                timeInForce=TimeInForce.GTE_GTC.value,
             )
             logger.info(
-                f"Setting TPSL for {symbol}: Type={order_type.value}, Side={position_side.value}, Price={stop_price}, Quantity={quantity}, "
+                f"Setting TPSL for {symbol}: Type={order_type.value}, Side={position_side.value}, Price={stop_price}"
             )
 
     @abstractmethod

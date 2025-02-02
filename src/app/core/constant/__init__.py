@@ -70,6 +70,7 @@ class OrderType(Enum):
 class TimeInForce(Enum):
     GTC = "GTC"
     GTD = "GTD"
+    GTE_GTC = "GTE_GTC"
 
 
 class EventType(Enum):

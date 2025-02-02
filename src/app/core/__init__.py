@@ -247,16 +247,15 @@ class Joshua(App):
                 )
 
                 if og_order_type == OrderType.LIMIT:
-                    opposite_side = (
+                    stop_side = (
                         PositionSide.SELL
                         if side == PositionSide.BUY
                         else PositionSide.BUY
                     )
                     self.strategy.set_tpsl(
                         symbol=symbol,
-                        position_side=opposite_side,
+                        position_side=stop_side,
                         price=price,
-                        quantity=quantity,
                         client=self.client,
                     )
 
@@ -268,15 +267,10 @@ class Joshua(App):
                 logger.info(
                     f"Order for {symbol} filled: Type={og_order_type}, Side={side}, Price={price}, Quantity={filled}/{quantity} ({filled_percentage:.2f}%)"
                 )
-
                 logger.info(f"Realized profit/loss for {symbol}: {realized_profit}")
 
                 if status == OrderStatus.FILLED:
                     self.orders[symbol].remove_by_id(order_id)
-
-                    if og_order_type != OrderType.LIMIT:
-                        logger.info("Cancelling all open orders...")
-                        fetch(self.client.cancel_open_orders, symbol=symbol)
 
             elif status == OrderStatus.CANCELED:
                 self.orders[symbol].remove_by_id(order_id)
@@ -289,17 +283,7 @@ class Joshua(App):
                     fetch(self.client.cancel_open_orders, symbol=symbol)
 
             elif status == OrderStatus.EXPIRED:
-                if self.positions[symbol].is_empty():
-                    logger.info(
-                        f"{og_order_type} for {symbol} is triggered but no existing position found."
-                    )
-                    logger.info(f"Cancelling {self.orders[symbol].size()} orders...")
-                    fetch(
-                        self.client.cancel_batch_order,
-                        symbol=symbol,
-                        orderIdList=self.orders[symbol].to_ids(),
-                        origClientOrderIdList=[],
-                    )
+                self.orders[symbol].remove_by_id(order_id)
 
     def _handle_account_update(self, data: dict):
         if "P" in data and data["P"]:
@@ -318,7 +302,7 @@ class Joshua(App):
                             )
                         ]
                     )
-                    if position_amount != 0
+                    if position_amount
                     else Positions()
                 )
 
