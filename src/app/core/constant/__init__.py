@@ -51,9 +51,23 @@ class Indicator(Enum):
 
 
 class TPSL(Enum):
-    TAKE_PROFIT = float(os.getenv("TPSL_TAKE_PROFIT", 0.05))
-    STOP_LOSS = float(os.getenv("TPSL_STOP_LOSS", 0.05))
-    TRAILING_STOP = float(os.getenv("TPSL_TRAILING_STOP", STOP_LOSS))
+    STOP_LOSS_RATIO = float(os.getenv("TPSL_STOP_LOSS_RATIO", 0.05))
+    TAKE_PROFIT_RATIO = float(os.getenv("TPSL_TAKE_PROFIT_RATIO", STOP_LOSS_RATIO * 2))
+
+
+class TS(Enum):
+    ACTIVATION_RATIO = float(
+        os.getenv(
+            "TS_ACTIVATION_RATIO",
+            TPSL.TAKE_PROFIT_RATIO.value,
+        )
+    )
+    CALLBACK_RATIO = float(
+        os.getenv(
+            "TS_CALLBACK_RATIO",
+            abs(ACTIVATION_RATIO - TPSL.STOP_LOSS_RATIO.value),
+        )
+    )
 
 
 class OrderType(Enum):

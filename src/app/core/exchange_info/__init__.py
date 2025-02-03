@@ -47,5 +47,5 @@ class ExchangeInfo:
         Since take profit ratio is usually higher than stop loss ratio, use take profit ratio on both positions.
         This guarantees that TP/SL orders can be placed without any nominal value issues.
         """
-        factor = 1 - (TPSL.TAKE_PROFIT.value / AppConfig.LEVERAGE.value)
+        factor = 1 - (TPSL.TAKE_PROFIT_RATIO.value / AppConfig.LEVERAGE.value)
         return entry_quantity * (entry_price * factor)

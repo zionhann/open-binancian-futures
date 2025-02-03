@@ -272,6 +272,20 @@ class Joshua(App):
                 if status == OrderStatus.FILLED:
                     self.orders[symbol].remove_by_id(order_id)
 
+                    if og_order_type == OrderType.LIMIT:
+                        stop_side = (
+                            PositionSide.SELL
+                            if side == PositionSide.BUY
+                            else PositionSide.BUY
+                        )
+                        self.strategy.set_trailing_stop(
+                            symbol=symbol,
+                            position_side=stop_side,
+                            price=price,
+                            quantity=quantity,
+                            client=self.client,
+                        )
+
             elif status == OrderStatus.CANCELED:
                 self.orders[symbol].remove_by_id(order_id)
 

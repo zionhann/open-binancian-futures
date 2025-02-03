@@ -70,8 +70,8 @@ class Strategy(ABC):
         interval=AppConfig.INTERVAL.value,
         size=AppConfig.SIZE.value,
         leverage=AppConfig.LEVERAGE.value,
-        take_profit_ratio=TPSL.TAKE_PROFIT.value,
-        stop_loss_ratio=TPSL.STOP_LOSS.value,
+        take_profit_ratio=TPSL.TAKE_PROFIT_RATIO.value,
+        stop_loss_ratio=TPSL.STOP_LOSS_RATIO.value,
     ) -> None:
         self.interval = interval
         self.size = size
@@ -137,8 +137,9 @@ class Strategy(ABC):
         position_side: PositionSide,
         price: float,
         client: UMFutures,
+        order_types=[OrderType.STOP_MARKET, OrderType.TAKE_PROFIT_MARKET],
     ) -> None:
-        for order_type in [OrderType.STOP_MARKET, OrderType.TAKE_PROFIT_MARKET]:
+        for order_type in order_types:
             stop_price = self.calculate_stop_price(price, order_type, position_side)
 
             fetch(
@@ -153,6 +154,38 @@ class Strategy(ABC):
             logger.info(
                 f"Setting TPSL for {symbol}: Type={order_type.value}, Side={position_side.value}, Price={stop_price}"
             )
+
+    def set_trailing_stop(
+        self,
+        symbol: str,
+        position_side: PositionSide,
+        price: float,
+        quantity: float,
+        client: UMFutures,
+        activation_ratio=TS.ACTIVATION_RATIO.value,
+        callback_ratio=TS.CALLBACK_RATIO.value,
+    ) -> None:
+        ratio = activation_ratio / self.leverage
+        factor = (1 + ratio) if position_side == PositionSide.SELL else (1 - ratio)
+        decimals = decimal_places(price)
+
+        activation_price = round(price * factor, decimals)
+        cb_rate = round(min(max(0.1, callback_ratio / self.leverage * 100), 5), 2)
+
+        fetch(
+            client.new_order,
+            symbol=symbol,
+            side=position_side.value,
+            type=OrderType.TRAILING_STOP_MARKET.value,
+            quantity=quantity,
+            timeInForce=TimeInForce.GTE_GTC.value,
+            reduceOnly=True,
+            activationPrice=activation_price,
+            callbackRate=cb_rate,
+        )
+        logger.info(
+            f"Setting trailing stop for {symbol}: Side={position_side.value}, ActivationPrice={activation_price}, CallbackRate={cb_rate}%"
+        )
 
     @abstractmethod
     def load(self, df: DataFrame) -> DataFrame: ...
@@ -177,13 +210,3 @@ class Strategy(ABC):
         exchange_info: ExchangeInfo,
         balance: Balance,
     ): ...
-
-    @abstractmethod
-    def set_trailing_stop(
-        self,
-        symbol: str,
-        stop_side: PositionSide,
-        price: float,
-        quantity: float,
-        client: UMFutures,
-    ) -> None: ...
