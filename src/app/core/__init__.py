@@ -10,9 +10,10 @@ from app.core.constant import *
 from app.core.balance import Balance
 from app.core.exchange_info import ExchangeInfo
 from app.core.strategy import Strategy
-from app.utils import fetch
+from app.utils import decimal_places, fetch
 from app.core.position import Position, Positions
 from app.core.order import Order, Orders
+from app.webhook import Webhook
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +41,7 @@ class Joshua(App):
             else (Required.API_KEY.value, Required.API_SECRET.value)
         )
         self.strategy = Strategy.of(Required.STRATEGY.value)
+        self.webhook = Webhook.of(AppConfig.WEBHOOK_URL.value)
         self.client = UMFutures(key=api_key, secret=api_secret, base_url=base_url)
 
         self.stream_url = stream_url
@@ -208,10 +210,10 @@ class Joshua(App):
                 if data["e"] == EventType.ORDER_TRADE_UPDATE.value:
                     self._handle_order_trade_update(data["o"])
 
-                if data["e"] == EventType.ACCOUNT_UPDATE.value:
+                elif data["e"] == EventType.ACCOUNT_UPDATE.value:
                     self._handle_account_update(data["a"])
 
-                if data["e"] == EventType.LISTEN_KEY_EXPIRED.value:
+                elif data["e"] == EventType.LISTEN_KEY_EXPIRED.value:
                     logger.info("Listen key expired. Recreating listen key...")
                     self.listen_key = fetch(self.client.new_listen_key).get(
                         self._LISTEN_KEY
@@ -267,7 +269,22 @@ class Joshua(App):
                 logger.info(
                     f"Order for {symbol} filled: Type={og_order_type}, Side={side}, Price={price}, Quantity={filled}/{quantity} ({filled_percentage:.2f}%)"
                 )
-                logger.info(f"Realized profit/loss for {symbol}: {realized_profit}")
+                logger.info(f"Realized profit for {symbol}: {realized_profit}")
+
+                decimals = decimal_places(price)
+                average_price = round(float(data["ap"]), decimals)
+
+                self.webhook.send_message(
+                    message=f"""
+🔔 [{symbol}] {side.value} ALERT 
+
+Type: {og_order_type.value}
+Status: {status.value}
+
+Average Price: {average_price}
+Quantity: {filled}/{quantity} {symbol[:-4]} ({filled_percentage:.2f}%)
+Realized Profit: {realized_profit} USDT"""
+                )
 
                 if status == OrderStatus.FILLED:
                     self.orders[symbol].remove_by_id(order_id)

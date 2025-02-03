@@ -1,3 +1,4 @@
 binance-futures-connector
 python-dotenv
 pandas
+slack_sdk

@@ -26,6 +26,7 @@ class AppConfig(Enum):
     LEVERAGE = int(os.getenv("LEVERAGE", 1))
     SIZE = float(os.getenv("SIZE", 0.05))
     IS_TESTNET = os.getenv("IS_TESTNET", "false") == "true"
+    WEBHOOK_URL = os.getenv("WEBHOOK_URL")
 
 
 class BacktestConfig(Enum):
@@ -92,6 +93,7 @@ class EventType(Enum):
     ORDER_TRADE_UPDATE = "ORDER_TRADE_UPDATE"
     ACCOUNT_UPDATE = "ACCOUNT_UPDATE"
     LISTEN_KEY_EXPIRED = "listenKeyExpired"
+    TRADE_LITE = "TRADE_LITE"
 
 
 class OrderStatus(Enum):
