@@ -1,9 +1,13 @@
+import logging
+import textwrap
 from app.core.balance import Balance
 from app.core.constant import AppConfig, OrderType, PositionSide
 from app.core.order import Order
 
 
 class Positions:
+    _LOGGER = logging.getLogger(__name__)
+
     def __init__(self, positions: list["Position"] = []) -> None:
         self.positions = positions
 
@@ -25,28 +29,40 @@ class Positions:
     def open_position_backtest(
         self,
         balance: Balance,
-        symbol: str,
-        quantity: float,
-        price: float,
-        side: PositionSide,
-    ) -> None:
+        order: Order,
+        time: str,
+    ) -> Balance:
         position = Position(
-            symbol=symbol,
-            amount=quantity if side == PositionSide.BUY else -quantity,
-            entry_price=price,
+            symbol=order.symbol,
+            amount=order.quantity,
+            price=order.price,
+            side=order.side,
         )
         self.positions = [*self.positions, position]
+        initial_margin = position.initial_margin()
 
-        initial_margin = position.calculate_initial_margin()
-        balance = balance.update(-initial_margin)
+        self._LOGGER.info(
+            textwrap.dedent(
+                f"""
+                Date: {time}
+                {order.side.value} {position.symbol}@{position.price}
+                Type: {order.type.value}
+                Size: {order.quantity}{position.symbol[:-4]}
+                Margin: {initial_margin:.2f}USDT
+                """
+            )
+        )
+        return balance.update_backtest(-initial_margin)
 
 
 class Position:
-    def __init__(self, symbol: str, entry_price: float, amount: float) -> None:
-        self.side = PositionSide.BUY if amount > 0 else PositionSide.SELL
+    def __init__(
+        self, symbol: str, price: float, amount: float, side: PositionSide
+    ) -> None:
         self.symbol = symbol
-        self.entry_price = entry_price
+        self.price = price
         self.amount = abs(amount)
+        self.side = side
 
     def is_LONG(self) -> bool:
         return self.side == PositionSide.BUY
@@ -54,9 +70,9 @@ class Position:
     def is_SHORT(self) -> bool:
         return self.side == PositionSide.SELL
 
-    def realized_pnl(self, filled: Order) -> float | None:
-        pnl = abs(self.entry_price - filled.price) * self.amount
-        return pnl if filled.type == OrderType.TAKE_PROFIT else -pnl
+    def initial_margin(self) -> float:
+        return self.amount * self.price / AppConfig.LEVERAGE.value
 
-    def calculate_initial_margin(self) -> float:
-        return self.amount * self.entry_price / AppConfig.LEVERAGE.value
+    def pnl_backtest(self, filled: Order) -> float:
+        pnl = abs(self.price - filled.price) * self.amount
+        return pnl if filled.type == OrderType.TAKE_PROFIT_MARKET else -pnl

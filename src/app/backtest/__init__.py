@@ -1,4 +1,5 @@
 import logging
+from typing import override
 
 from binance.um_futures import UMFutures
 from app import App
@@ -42,25 +43,20 @@ class Backtest(App):
             s: ExchangeInfo(s, exchange_info) for s in AppConfig.SYMBOLS.value
         }
 
+    @override
     def run(self) -> None:
-        for symbol in AppConfig.SYMBOLS.value:
-            self.logger.info(f"Running backtest for {symbol}...")
-
-            self.logger.info(
-                f"Backtesting {BacktestConfig.INDICATOR_INIT_SIZE.value} to {BacktestConfig.KLINES_LIMIT.value}..."
-            )
-
-            for i in range(
-                int(BacktestConfig.INDICATOR_INIT_SIZE.value),
-                int(BacktestConfig.KLINES_LIMIT.value),
-            ):
+        for i in range(
+            int(BacktestConfig.INDICATOR_INIT_SIZE.value),
+            int(BacktestConfig.KLINES_LIMIT.value),
+        ):
+            for symbol in AppConfig.SYMBOLS.value:
                 current_kline = self.indicators[symbol][: i + 1]
-                close_price = current_kline["Close"].iloc[-1]
+                kline = current_kline.iloc[-1]
 
-                self.test_results[symbol].check_filled_order_backtest(
+                self.balance = self.test_results[symbol].check_filled_order_backtest(
                     positions=self.positions[symbol],
                     orders=self.orders[symbol],
-                    entry_price=close_price,
+                    kline=kline,
                     balance=self.balance,
                 )
                 self.strategy.run_backtest(
@@ -74,5 +70,10 @@ class Backtest(App):
         for symbol in AppConfig.SYMBOLS.value:
             self.test_results[symbol].print()
 
+        self.logger.info(
+            f"Overall PNL: {sum(r.cumulative_pnl for r in self.test_results.values()):.2f} USDT, Balance: {self.balance} USDT"
+        )
+
+    @override
     def close(self) -> None:
         return

@@ -113,17 +113,14 @@ class Strategy(ABC):
     ) -> float:
         ratio = (
             self.stop_loss_ratio / self.leverage
-            if order_type in [OrderType.STOP, OrderType.STOP_MARKET]
+            if order_type == OrderType.STOP_MARKET
             else self.take_profit_ratio / self.leverage
         )
         factor = (
             (1 - ratio)
-            if (
-                order_type in [OrderType.STOP, OrderType.STOP_MARKET]
-                and stop_side == PositionSide.SELL
-            )
+            if (order_type == OrderType.STOP_MARKET and stop_side == PositionSide.SELL)
             or (
-                order_type in [OrderType.TAKE_PROFIT, OrderType.TAKE_PROFIT_MARKET]
+                order_type == OrderType.TAKE_PROFIT_MARKET
                 and stop_side == PositionSide.BUY
             )
             else (1 + ratio)
@@ -162,6 +159,7 @@ class Strategy(ABC):
         price: float,
         quantity: float,
         client: UMFutures,
+        activation_price: float | None = None,
         activation_ratio=TS.ACTIVATION_RATIO.value,
         callback_ratio=TS.CALLBACK_RATIO.value,
     ) -> None:
@@ -169,7 +167,11 @@ class Strategy(ABC):
         factor = (1 + ratio) if position_side == PositionSide.SELL else (1 - ratio)
         decimals = decimal_places(price)
 
-        activation_price = round(price * factor, decimals)
+        _activation_price = (
+            round(price * factor, decimals)
+            if not activation_price
+            else round(activation_price, decimals)
+        )
         cb_rate = round(min(max(0.1, callback_ratio / self.leverage * 100), 5), 2)
 
         fetch(
@@ -180,7 +182,7 @@ class Strategy(ABC):
             quantity=quantity,
             timeInForce=TimeInForce.GTE_GTC.value,
             reduceOnly=True,
-            activationPrice=activation_price,
+            activationPrice=_activation_price,
             callbackRate=cb_rate,
         )
         logger.info(
@@ -209,4 +211,4 @@ class Strategy(ABC):
         orders: Orders,
         exchange_info: ExchangeInfo,
         balance: Balance,
-    ): ...
+    ) -> None: ...

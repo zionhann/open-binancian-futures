@@ -101,10 +101,12 @@ class Joshua(App):
         positions = [
             Position(
                 symbol=symbol,
-                entry_price=float(position["entryPrice"]),
-                amount=float(position["positionAmt"]),
+                price=price,
+                amount=amount,
+                side=(PositionSide.BUY if amount > 0 else PositionSide.SELL),
             )
-            for position in data
+            for p in data
+            for price, amount in [(float(p["entryPrice"]), float(p["positionAmt"]))]
         ]
         return Positions(positions)
 
@@ -319,21 +321,27 @@ Realized Profit: {realized_profit} USDT"""
     def _handle_account_update(self, data: dict):
         if "P" in data and data["P"]:
             for position in data["P"]:
-                symbol = position["s"]
-                position_amount = float(position["pa"])
-                entry_price = float(position["ep"])
-
+                symbol, price, amount = (
+                    position["s"],
+                    float(position["ep"]),
+                    float(position["pa"]),
+                )
                 self.positions[symbol] = (
                     Positions(
                         [
                             Position(
                                 symbol=symbol,
-                                entry_price=entry_price,
-                                amount=position_amount,
+                                price=price,
+                                amount=amount,
+                                side=(
+                                    PositionSide.BUY
+                                    if amount > 0
+                                    else PositionSide.SELL
+                                ),
                             )
                         ]
                     )
-                    if position_amount
+                    if amount
                     else Positions()
                 )
 

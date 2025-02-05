@@ -1,7 +1,7 @@
 from pandas import DataFrame, Series
 
 
-def RSI(data: DataFrame, window: int, decimals=1) -> Series:
+def RSI(data: DataFrame, window: int, decimals: int) -> Series:
     delta = data["Close"].diff()
 
     gain = delta.clip(lower=0)
@@ -16,7 +16,7 @@ def RSI(data: DataFrame, window: int, decimals=1) -> Series:
     return rsi_values.round(decimals)
 
 
-def OBV(data: DataFrame, signal: int, decimals=1) -> Series:
+def OBV(data: DataFrame, signal: int, decimals: int) -> Series:
     close_diff = data["Close"].diff().fillna(0)
     direction = close_diff.apply(lambda x: 1 if x > 0 else (-1 if x < 0 else 0))
 
@@ -26,7 +26,7 @@ def OBV(data: DataFrame, signal: int, decimals=1) -> Series:
     return (obv - ema).round(decimals)
 
 
-def MACD(data: DataFrame, fast: int, slow: int, signal: int, decimals=1) -> Series:
+def MACD(data: DataFrame, fast: int, slow: int, signal: int, decimals: int) -> Series:
     fast_ema = data["Close"].ewm(span=fast, adjust=False, min_periods=1).mean()
     slow_ema = data["Close"].ewm(span=slow, adjust=False, min_periods=1).mean()
 
@@ -36,11 +36,11 @@ def MACD(data: DataFrame, fast: int, slow: int, signal: int, decimals=1) -> Seri
     return (dif - dea).round(decimals)
 
 
-def VMA(data: DataFrame, window: int, decimals=3) -> Series:
+def VMA(data: DataFrame, window: int, decimals: int) -> Series:
     return data["Volume"].rolling(window=window, min_periods=1).mean().round(decimals)
 
 
-def VWAP(data: DataFrame, length: int, decimals=1) -> Series:
+def VWAP(data: DataFrame, length: int, decimals: int) -> Series:
     typical_price = (data["High"] + data["Low"] + data["Close"]) / 3
     price_volume = typical_price * data["Volume"]
 
@@ -48,3 +48,8 @@ def VWAP(data: DataFrame, length: int, decimals=1) -> Series:
     cumulative_volume = data["Volume"].rolling(window=length, min_periods=1).sum()
 
     return (weighted_price_volume / cumulative_volume).round(decimals)
+
+
+def MTM(data: DataFrame, length: int, decimals: int) -> Series:
+    mtm_values = data["Close"].diff(periods=length).fillna(0)
+    return mtm_values.round(decimals)

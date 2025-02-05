@@ -31,8 +31,8 @@ class AppConfig(Enum):
 
 class BacktestConfig(Enum):
     IS_BACKTEST = os.getenv("IS_BACKTEST", "false") == "true"
-    BALANCE = float(os.getenv("BACKTEST_BALANCE", 10000))
-    KLINES_LIMIT = min(int(os.getenv("BACKTEST_KLINES_LIMIT", 500)), 1000)
+    BALANCE = float(os.getenv("BACKTEST_BALANCE", 100))
+    KLINES_LIMIT = min(int(os.getenv("BACKTEST_KLINES_LIMIT", 1000)), 1000)
     INDICATOR_INIT_SIZE = int(
         os.getenv("BACKTEST_INDICATOR_INIT_SIZE", KLINES_LIMIT * 0.2)
     )
@@ -49,6 +49,7 @@ class Indicator(Enum):
     MACD_SIGNAL = int(os.getenv("MACD_SIGNAL", 9))
     VMA_WINDOW = int(os.getenv("VMA_WINDOW", 10))
     VWAP_LENGTH = int(os.getenv("VWAP_LENGTH", 14))
+    MTM_LENGTH = int(os.getenv("MTM_LENGTH", 14))
 
 
 class TPSL(Enum):
@@ -74,9 +75,7 @@ class TS(Enum):
 class OrderType(Enum):
     LIMIT = "LIMIT"
     MARKET = "MARKET"
-    STOP = "STOP"
     STOP_MARKET = "STOP_MARKET"
-    TAKE_PROFIT = "TAKE_PROFIT"
     TAKE_PROFIT_MARKET = "TAKE_PROFIT_MARKET"
     TRAILING_STOP_MARKET = "TRAILING_STOP_MARKET"
     LIQUIDATION = "LIQUIDATION"
