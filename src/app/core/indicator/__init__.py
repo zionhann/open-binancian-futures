@@ -53,3 +53,19 @@ def VWAP(data: DataFrame, length: int, decimals: int) -> Series:
 def MTM(data: DataFrame, length: int, decimals: int) -> Series:
     mtm_values = data["Close"].diff(periods=length).fillna(0)
     return mtm_values.round(decimals)
+
+
+def BOLL(data: DataFrame, length: int, multiplier: float, decimals: int) -> DataFrame:
+    middle_band = data["Close"].rolling(window=length, min_periods=1).mean()
+    std_band = data["Close"].rolling(window=length, min_periods=1).std()
+
+    upper_band = middle_band + std_band * multiplier
+    lower_band = middle_band - std_band * multiplier
+
+    return DataFrame(
+        {
+            "BOLL_UP": upper_band.round(decimals),
+            "BOLL_MB": middle_band.round(decimals),
+            "BOLL_DN": lower_band.round(decimals),
+        }
+    )

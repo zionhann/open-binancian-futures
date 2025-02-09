@@ -1,14 +1,15 @@
 import logging
 import textwrap
 from app.core.balance import Balance
-from app.core.constant import AppConfig, OrderType, PositionSide
+from app.core.constant import OrderType, PositionSide
 from app.core.order import Order
 
 
 class Positions:
     _LOGGER = logging.getLogger(__name__)
 
-    def __init__(self, positions: list["Position"] = []) -> None:
+    def __init__(self, leverage: int, positions: list["Position"] = []) -> None:
+        self.leverage = leverage
         self.positions = positions
 
     def clear(self) -> None:
@@ -31,15 +32,16 @@ class Positions:
         balance: Balance,
         order: Order,
         time: str,
-    ) -> Balance:
+    ) -> None:
         position = Position(
             symbol=order.symbol,
             amount=order.quantity,
             price=order.price,
             side=order.side,
+            leverage=self.leverage,
         )
         self.positions = [*self.positions, position]
-        initial_margin = position.initial_margin()
+        balance.update_backtest(-position.initial_margin())
 
         self._LOGGER.info(
             textwrap.dedent(
@@ -48,21 +50,34 @@ class Positions:
                 {order.side.value} {position.symbol}@{position.price}
                 Type: {order.type.value}
                 Size: {order.quantity}{position.symbol[:-4]}
-                Margin: {initial_margin:.2f}USDT
                 """
             )
         )
-        return balance.update_backtest(-initial_margin)
+
+    def reset_backtest(self, balance: Balance) -> None:
+        for position in self.positions:
+            margin = position.initial_margin()
+            balance.update_backtest(margin)
+
+        self.clear()
 
 
 class Position:
+    _LOGGER = logging.getLogger(__name__)
+
     def __init__(
-        self, symbol: str, price: float, amount: float, side: PositionSide
+        self,
+        symbol: str,
+        price: float,
+        amount: float,
+        side: PositionSide,
+        leverage: int,
     ) -> None:
         self.symbol = symbol
         self.price = price
         self.amount = abs(amount)
         self.side = side
+        self.leverage = leverage
 
     def is_LONG(self) -> bool:
         return self.side == PositionSide.BUY
@@ -71,8 +86,24 @@ class Position:
         return self.side == PositionSide.SELL
 
     def initial_margin(self) -> float:
-        return self.amount * self.price / AppConfig.LEVERAGE.value
+        return self.amount * self.price / self.leverage
 
     def pnl_backtest(self, filled: Order) -> float:
         pnl = abs(self.price - filled.price) * self.amount
         return pnl if filled.type == OrderType.TAKE_PROFIT_MARKET else -pnl
+
+    def realized_pnl_backtest(self, balance: Balance, order: Order) -> float:
+        pnl, margin = self.pnl_backtest(order), self.initial_margin()
+        balance.update_backtest(pnl + margin)
+
+        self._LOGGER.info(
+            textwrap.dedent(
+                f"""
+                {order.side.value} {self.symbol}@{order.price}
+                Type: {order.type.value}
+                Realized PNL: {pnl:.2f}USDT
+                Balance: {balance}
+                """
+            )
+        )
+        return pnl

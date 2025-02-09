@@ -1,3 +1,4 @@
+import traceback
 import app.logging as log
 
 from dotenv import load_dotenv
@@ -15,5 +16,5 @@ if __name__ == "__main__":
         app = Joshua() if not BacktestConfig.IS_BACKTEST.value else Backtest()
         app.run()
     except Exception as e:
-        logger.error(f"Application terminated by {e}")
+        logger.error(f"Application terminated by {e}: {traceback.format_exc()}")
         app.close()

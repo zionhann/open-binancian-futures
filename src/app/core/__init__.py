@@ -1,6 +1,7 @@
 import json
 import asyncio
 import logging
+import textwrap
 import pandas as pd
 
 from binance.um_futures import UMFutures
@@ -89,6 +90,7 @@ class Joshua(App):
                 side=PositionSide(order["side"]),
                 price=float(order["price"]),
                 quantity=float(order["origQty"]),
+                gtd=order["goodTillDate"],
             )
             for order in data
         ]
@@ -104,11 +106,12 @@ class Joshua(App):
                 price=price,
                 amount=amount,
                 side=(PositionSide.BUY if amount > 0 else PositionSide.SELL),
+                leverage=self.strategy.leverage,
             )
             for p in data
             for price, amount in [(float(p["entryPrice"]), float(p["positionAmt"]))]
         ]
-        return Positions(positions)
+        return Positions(self.strategy.leverage, positions)
 
     def run(self) -> None:
         logger.info("Starting to run...")
@@ -236,6 +239,7 @@ class Joshua(App):
         quantity = float(data["q"])
         realized_profit = float(data["rp"])
         filled = float(data["z"])
+        gtd = data["gtd"]
 
         if symbol in AppConfig.SYMBOLS.value:
             if status == OrderStatus.NEW and og_order_type == curr_order_type:
@@ -247,6 +251,7 @@ class Joshua(App):
                         side=side,
                         price=price,
                         quantity=quantity,
+                        gtd=gtd,
                     )
                 )
 
@@ -277,15 +282,18 @@ class Joshua(App):
                 average_price = round(float(data["ap"]), decimals)
 
                 self.webhook.send_message(
-                    message=f"""
-🔔 [{symbol}] {side.value} ALERT 
+                    message=textwrap.dedent(
+                        f"""
+                        🔔 [{symbol}] {side.value} ALERT 
 
-Type: {og_order_type.value}
-Status: {status.value}
+                        Type: {og_order_type.value}
+                        Status: {status.value}
 
-Average Price: {average_price}
-Quantity: {filled}/{quantity} {symbol[:-4]} ({filled_percentage:.2f}%)
-Realized Profit: {realized_profit} USDT"""
+                        Average Price: {average_price}
+                        Quantity: {filled}/{quantity} {symbol[:-4]} ({filled_percentage:.2f}%)
+                        Realized Profit: {realized_profit} USDT
+                        """
+                    )
                 )
 
                 if status == OrderStatus.FILLED:
@@ -328,6 +336,7 @@ Realized Profit: {realized_profit} USDT"""
                 )
                 self.positions[symbol] = (
                     Positions(
+                        self.strategy.leverage,
                         [
                             Position(
                                 symbol=symbol,
@@ -338,11 +347,12 @@ Realized Profit: {realized_profit} USDT"""
                                     if amount > 0
                                     else PositionSide.SELL
                                 ),
+                                leverage=self.strategy.leverage,
                             )
-                        ]
+                        ],
                     )
                     if amount
-                    else Positions()
+                    else Positions(self.strategy.leverage)
                 )
 
         if "B" in data and data["B"]:

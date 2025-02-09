@@ -15,10 +15,8 @@ from app.core.constant import *
 from app.utils import decimal_places, fetch
 
 
-logger = logging.getLogger(__name__)
-
-
 class Strategy(ABC):
+    _LOGGER = logging.getLogger(__name__)
     _KLINES_COLUMNS = [
         "Open_time",
         "Open",
@@ -82,7 +80,7 @@ class Strategy(ABC):
     def init_indicators(
         self, symbol: str, client: UMFutures, limit: int | None = None
     ) -> DataFrame:
-        logger.info(f"Fetching {symbol} klines by {self.interval}...")
+        self._LOGGER.info(f"Fetching {symbol} klines by {self.interval}...")
         klines_data = fetch(
             client.klines, symbol=symbol, interval=self.interval, limit=limit
         )["data"][:-1]
@@ -103,7 +101,7 @@ class Strategy(ABC):
 
         initial_indicators = self.load(df[self._BASIC_COLUMNS])
 
-        logger.info(
+        self._LOGGER.info(
             f"Loaded indicators for {symbol}:\n{initial_indicators.tail().to_string(index=False)}"
         )
         return initial_indicators
@@ -148,7 +146,7 @@ class Strategy(ABC):
                 closePosition=True,
                 timeInForce=TimeInForce.GTE_GTC.value,
             )
-            logger.info(
+            self._LOGGER.info(
                 f"Setting TPSL for {symbol}: Type={order_type.value}, Side={position_side.value}, Price={stop_price}"
             )
 
@@ -185,7 +183,7 @@ class Strategy(ABC):
             activationPrice=_activation_price,
             callbackRate=cb_rate,
         )
-        logger.info(
+        self._LOGGER.info(
             f"Setting trailing stop for {symbol}: Side={position_side.value}, ActivationPrice={activation_price}, CallbackRate={cb_rate}%"
         )
 

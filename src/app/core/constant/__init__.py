@@ -43,13 +43,20 @@ class Indicator(Enum):
     RSI_RECENT_WINDOW = int(os.getenv("RSI_RECENT_WINDOW", 7))
     RSI_OVERSOLD_THRESHOLD = int(os.getenv("RSI_OVERSOLD_THRESHOLD", 30))
     RSI_OVERBOUGHT_THRESHOLD = int(os.getenv("RSI_OVERBOUGHT_THRESHOLD", 70))
+
     OBV_SIGNAL = int(os.getenv("OBV_SIGNAL", 9))
+
     MACD_FAST = int(os.getenv("MACD_FAST", 12))
     MACD_SLOW = int(os.getenv("MACD_SLOW", 26))
     MACD_SIGNAL = int(os.getenv("MACD_SIGNAL", 9))
+
     VMA_WINDOW = int(os.getenv("VMA_WINDOW", 10))
     VWAP_LENGTH = int(os.getenv("VWAP_LENGTH", 14))
+
     MTM_LENGTH = int(os.getenv("MTM_LENGTH", 14))
+
+    BOLL_LENGTH = int(os.getenv("BOLL_LENGTH", 20))
+    BOLL_MULTIPLIER = float(os.getenv("BOLL_MULTIPLIER", 2))
 
 
 class TPSL(Enum):

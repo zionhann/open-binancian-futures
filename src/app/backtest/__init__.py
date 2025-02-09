@@ -1,7 +1,10 @@
 import logging
+
+from datetime import datetime
 from typing import override
 
 from binance.um_futures import UMFutures
+import pandas as pd
 from app import App
 from app.core.constant import AppConfig, BacktestConfig, Required
 from app.core.exchange_info import ExchangeInfo
@@ -26,7 +29,9 @@ class Backtest(App):
         self.balance = Balance(BacktestConfig.BALANCE.value)
         self.strategy = Strategy.of(Required.STRATEGY.value)
 
-        self.positions = {s: Positions() for s in AppConfig.SYMBOLS.value}
+        self.positions = {
+            s: Positions(self.strategy.leverage) for s in AppConfig.SYMBOLS.value
+        }
         self.orders = {s: Orders() for s in AppConfig.SYMBOLS.value}
         self.test_results = {
             s: TestResult(s, self.strategy) for s in AppConfig.SYMBOLS.value
@@ -50,17 +55,29 @@ class Backtest(App):
             int(BacktestConfig.KLINES_LIMIT.value),
         ):
             for symbol in AppConfig.SYMBOLS.value:
-                current_kline = self.indicators[symbol][: i + 1]
-                kline = current_kline.iloc[-1]
+                klines = self.indicators[symbol][: i + 1]
+                current_kline = klines.iloc[-1]
+                current_time = int(
+                    pd.to_datetime(current_kline["Open_time"], format="%Y-%m-%d %H:%M")
+                    .tz_localize("Asia/Seoul")
+                    .tz_convert("UTC")
+                    .timestamp()
+                    * 1000
+                )
 
-                self.balance = self.test_results[symbol].check_filled_order_backtest(
+                self.orders[symbol] = self.orders[symbol].rm_expired_orders_backtest(
+                    current_time
+                )
+
+                self.test_results[symbol].check_filled_order_backtest(
                     positions=self.positions[symbol],
                     orders=self.orders[symbol],
-                    kline=kline,
+                    kline=current_kline,
                     balance=self.balance,
                 )
+
                 self.strategy.run_backtest(
-                    indicators=current_kline,
+                    indicators=klines,
                     positions=self.positions[symbol],
                     orders=self.orders[symbol],
                     exchange_info=self.exchange_info[symbol],
@@ -68,6 +85,8 @@ class Backtest(App):
                 )
 
         for symbol in AppConfig.SYMBOLS.value:
+            self.positions[symbol].reset_backtest(self.balance)
+            self.orders[symbol].clear()
             self.test_results[symbol].print()
 
         self.logger.info(

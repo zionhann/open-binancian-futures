@@ -38,14 +38,14 @@ class TestResult:
         orders: Orders,
         kline: Series,
         balance: Balance,
-    ) -> Balance:
+    ) -> None:
         self.sample_size += 1
         time, high, low = kline["Open_time"], kline["High"], kline["Low"]
 
         if filled_orders := orders.filled_orders_backtest(high, low):
             for order in filled_orders:
                 if order.is_type(OrderType.LIMIT) and positions.is_empty():
-                    balance = positions.open_position_backtest(
+                    positions.open_position_backtest(
                         balance=balance,
                         order=order,
                         time=time,
@@ -55,31 +55,13 @@ class TestResult:
                 elif order.is_type(
                     OrderType.STOP_MARKET, OrderType.TAKE_PROFIT_MARKET
                 ) and (position := positions.first()):
-                    pnl, margin = (
-                        position.pnl_backtest(order),
-                        position.initial_margin(),
-                    )
+                    pnl = position.realized_pnl_backtest(balance, order)
+                    positions.clear()
+                    orders.clear()
 
-                    logger.info(
-                        textwrap.dedent(
-                            f"""
-                            Date: {time}
-                            {order.side.value} {position.symbol}@{order.price}
-                            Type: {order.type.value}
-                            Realized PNL: {pnl:.2f}USDT
-                            Margin: {margin:.2f}USDT
-                            """
-                        )
-                    )
                     self.trade_count += 1
                     self.win_count += 1 if pnl > 0 else 0
                     self.cumulative_pnl += pnl
-
-                    orders.clear()
-                    positions.clear()
-                    return balance.update_backtest(pnl + margin)
-
-        return balance
 
     def print(self):
         self.trade_frequency = round(self.trade_count / self.sample_size * 100, 2)
