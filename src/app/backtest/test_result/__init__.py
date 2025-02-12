@@ -45,17 +45,13 @@ class TestResult:
         if filled_orders := orders.filled_orders_backtest(high, low):
             for order in filled_orders:
                 if order.is_type(OrderType.LIMIT) and positions.is_empty():
-                    positions.open_position_backtest(
-                        balance=balance,
-                        order=order,
-                        time=time,
-                    )
+                    positions.open_position_backtest(balance, order, time)
                     orders.remove_by_id(order.id)
 
                 elif order.is_type(
                     OrderType.STOP_MARKET, OrderType.TAKE_PROFIT_MARKET
                 ) and (position := positions.first()):
-                    pnl = position.realized_pnl_backtest(balance, order)
+                    pnl = position.realized_pnl_backtest(balance, order, time)
                     positions.clear()
                     orders.clear()
 

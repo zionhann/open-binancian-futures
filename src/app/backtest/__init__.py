@@ -1,10 +1,8 @@
 import logging
 
-from datetime import datetime
 from typing import override
 
 from binance.um_futures import UMFutures
-import pandas as pd
 from app import App
 from app.core.constant import AppConfig, BacktestConfig, Required
 from app.core.exchange_info import ExchangeInfo
@@ -57,16 +55,9 @@ class Backtest(App):
             for symbol in AppConfig.SYMBOLS.value:
                 klines = self.indicators[symbol][: i + 1]
                 current_kline = klines.iloc[-1]
-                current_time = int(
-                    pd.to_datetime(current_kline["Open_time"], format="%Y-%m-%d %H:%M")
-                    .tz_localize("Asia/Seoul")
-                    .tz_convert("UTC")
-                    .timestamp()
-                    * 1000
-                )
 
                 self.orders[symbol] = self.orders[symbol].rm_expired_orders_backtest(
-                    current_time
+                    current_kline["Open_time"]
                 )
 
                 self.test_results[symbol].check_filled_order_backtest(

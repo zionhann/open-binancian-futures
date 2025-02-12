@@ -1,5 +1,7 @@
 import logging
 import textwrap
+
+from pandas import Timestamp
 from app.core.balance import Balance
 from app.core.constant import OrderType, PositionSide
 from app.core.order import Order
@@ -31,7 +33,7 @@ class Positions:
         self,
         balance: Balance,
         order: Order,
-        time: str,
+        time: Timestamp,
     ) -> None:
         position = Position(
             symbol=order.symbol,
@@ -46,10 +48,10 @@ class Positions:
         self._LOGGER.info(
             textwrap.dedent(
                 f"""
-                Date: {time}
-                {order.side.value} {position.symbol}@{position.price}
+                Date: {time.strftime("%Y-%m-%d %H:%M:%S")}
+                {order.side.value} {position.symbol} @ {position.price}
                 Type: {order.type.value}
-                Size: {order.quantity}{position.symbol[:-4]}
+                Size: {order.quantity} {position.symbol[:-4]}
                 """
             )
         )
@@ -92,16 +94,19 @@ class Position:
         pnl = abs(self.price - filled.price) * self.amount
         return pnl if filled.type == OrderType.TAKE_PROFIT_MARKET else -pnl
 
-    def realized_pnl_backtest(self, balance: Balance, order: Order) -> float:
+    def realized_pnl_backtest(
+        self, balance: Balance, order: Order, time: Timestamp
+    ) -> float:
         pnl, margin = self.pnl_backtest(order), self.initial_margin()
         balance.update_backtest(pnl + margin)
 
         self._LOGGER.info(
             textwrap.dedent(
                 f"""
-                {order.side.value} {self.symbol}@{order.price}
+                Date: {time.strftime("%Y-%m-%d %H:%M:%S")}
+                {order.side.value} {self.symbol} @ {order.price}
                 Type: {order.type.value}
-                Realized PNL: {pnl:.2f}USDT
+                Realized PNL: {pnl:.2f} {self.symbol[:-4]} ({pnl / margin * 100:.2f}%)
                 Balance: {balance}
                 """
             )

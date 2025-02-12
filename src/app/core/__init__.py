@@ -16,10 +16,9 @@ from app.core.position import Position, Positions
 from app.core.order import Order, Orders
 from app.webhook import Webhook
 
-logger = logging.getLogger(__name__)
-
 
 class Joshua(App):
+    _LOGGER = logging.getLogger(__name__)
     _BASEURL_REST = "https://fapi.binance.com"
     _BASEURL_WS = "wss://fstream.binance.com"
 
@@ -70,13 +69,13 @@ class Joshua(App):
         }
 
     def _init_balance(self) -> Balance:
-        logger.info("Fetching available USDT balance...")
+        self._LOGGER.info("Fetching available USDT balance...")
         data = fetch(self.client.balance)["data"]
         df = pd.DataFrame(data)
         usdt_balance = df[df["asset"] == self._USDT]
 
         available = float(usdt_balance["availableBalance"].iloc[0])
-        logger.info(f'Available USDT balance: "{available:.2f}"')
+        self._LOGGER.info(f'Available USDT balance: "{available:.2f}"')
 
         return Balance(available)
 
@@ -97,8 +96,8 @@ class Joshua(App):
         return Orders(orders)
 
     def _init_positions(self, symbol: str) -> Positions:
-        logger.info(f"Fetching positions for {symbol}...")
         data = fetch(self.client.get_position_risk, symbol=symbol)["data"]
+        self._LOGGER.info(f"Fetched positions for {symbol}.")
 
         positions = [
             Position(
@@ -114,8 +113,8 @@ class Joshua(App):
         return Positions(self.strategy.leverage, positions)
 
     def run(self) -> None:
-        logger.info("Starting to run...")
-        logger.info("Connecting to User Data Stream...")
+        self._LOGGER.info("Starting to run...")
+        self._LOGGER.info("Connecting to User Data Stream...")
         fetch(self.client_ws_user.user_data, listen_key=self.listen_key)
 
         for s in AppConfig.SYMBOLS.value:
@@ -125,21 +124,25 @@ class Joshua(App):
         asyncio.run(self._keepalive_stream())
 
     def _set_leverage(self, symbol: str):
-        logger.info(f"Setting leverage to {AppConfig.LEVERAGE.value} for {symbol}...")
         fetch(
             self.client.change_leverage,
             symbol=symbol,
             leverage=AppConfig.LEVERAGE.value,
         )
+        self._LOGGER.info(f"Set leverage for {symbol} to {AppConfig.LEVERAGE.value}.")
 
     def _subscribe_to_stream(self, symbol: str):
-        logger.info(f"Subscribing to {symbol} klines by {AppConfig.INTERVAL.value}...")
         fetch(self.client_ws.kline, symbol=symbol, interval=AppConfig.INTERVAL.value)
+        self._LOGGER.info(
+            f"Subscribed to {symbol} klines by {AppConfig.INTERVAL.value}..."
+        )
 
     async def _keepalive_stream(self):
         while True:
             await asyncio.sleep(self._KEEPALIVE_INTERVAL)
-            logger.info("Reconnecting to the stream to maintain the connection...")
+            self._LOGGER.info(
+                "Reconnecting to the stream to maintain the connection..."
+            )
 
             fetch(self.client_ws.stop)
             fetch(self.client_ws_user.stop)
@@ -164,7 +167,7 @@ class Joshua(App):
                 if data["e"] == EventType.KLINE.value:
                     self._handle_kline(data["k"])
         except Exception as e:
-            logger.error(f"An error occurred in the market stream handler: {e}")
+            self._LOGGER.error(f"An error occurred in the market stream handler: {e}")
 
     def _handle_kline(self, data: dict) -> None:
         if not data["x"]:
@@ -174,7 +177,6 @@ class Joshua(App):
             pd.to_datetime(data["t"], unit="ms")
             .tz_localize("UTC")
             .tz_convert("Asia/Seoul")
-            .strftime("%Y-%m-%d %H:%M")
         )
         symbol = data["s"]
         new_data = {
@@ -186,13 +188,13 @@ class Joshua(App):
             "Close": float(data["c"]),
             "Volume": float(data["v"]),
         }
-        self.indicators[symbol] = self.strategy.load(
-            pd.concat(
-                [self.indicators[symbol], pd.DataFrame([new_data])], ignore_index=True
-            )
-        )
-        logger.info(
-            f"Updated indicators for {symbol}:\n{self.indicators[symbol].tail(Indicator.RSI_RECENT_WINDOW.value).to_string(index=False)}"
+        new_df = pd.DataFrame([new_data], index=[open_time])
+
+        df = pd.concat([self.indicators[symbol], new_df])
+        self.indicators[symbol] = self.strategy.load(df)
+
+        self._LOGGER.info(
+            f"Updated indicators for {symbol}:\n{self.indicators[symbol].tail().to_string(index=False)}"
         )
         self.strategy.run(
             indicators=self.indicators[symbol],
@@ -208,7 +210,7 @@ class Joshua(App):
             data = json.loads(stream)
 
             if "e" in data:
-                logger.debug(
+                self._LOGGER.debug(
                     f"Received {data['e']} event:\n{json.dumps(data, indent=2)}"
                 )
 
@@ -219,14 +221,16 @@ class Joshua(App):
                     self._handle_account_update(data["a"])
 
                 elif data["e"] == EventType.LISTEN_KEY_EXPIRED.value:
-                    logger.info("Listen key expired. Recreating listen key...")
+                    self._LOGGER.info(
+                        "Listen key has expired. Recreating listen key..."
+                    )
                     self.listen_key = fetch(self.client.new_listen_key).get(
                         self._LISTEN_KEY
                     )
                     fetch(self.client_ws_user.user_data, listen_key=self.listen_key)
 
         except Exception as e:
-            logger.error(f"An error occurred in the user data handler: {e}")
+            self._LOGGER.error(f"An error occurred in the user data handler: {e}")
 
     def _handle_order_trade_update(self, data: dict):
         order_id = data["i"]
@@ -254,29 +258,19 @@ class Joshua(App):
                         gtd=gtd,
                     )
                 )
-
-                if og_order_type == OrderType.LIMIT:
-                    stop_side = (
-                        PositionSide.SELL
-                        if side == PositionSide.BUY
-                        else PositionSide.BUY
-                    )
-                    self.strategy.set_tpsl(
-                        symbol=symbol,
-                        position_side=stop_side,
-                        price=price,
-                        client=self.client,
-                    )
+                self._LOGGER.info(
+                    f"Opened {side.value} {og_order_type.value} order for {symbol} @ {price} with {quantity} {symbol[:-4]}"
+                )
 
             elif status in [
                 OrderStatus.PARTIALLY_FILLED,
                 OrderStatus.FILLED,
             ]:
                 filled_percentage = (filled / quantity) * 100
-                logger.info(
-                    f"Order for {symbol} filled: Type={og_order_type}, Side={side}, Price={price}, Quantity={filled}/{quantity} ({filled_percentage:.2f}%)"
+                self._LOGGER.info(
+                    f"{side.value} {og_order_type.value} order for {symbol} has been (partially) filled @ {price} with {filled} {symbol[:-4]} ({filled_percentage:.2f}%)"
                 )
-                logger.info(f"Realized profit for {symbol}: {realized_profit}")
+                self._LOGGER.info(f"Realized profit for {symbol}: {realized_profit}")
 
                 decimals = decimal_places(price)
                 average_price = round(float(data["ap"]), decimals)
@@ -305,6 +299,12 @@ class Joshua(App):
                             if side == PositionSide.BUY
                             else PositionSide.BUY
                         )
+                        self.strategy.set_tpsl(
+                            symbol=symbol,
+                            position_side=stop_side,
+                            price=price,
+                            client=self.client,
+                        )
                         self.strategy.set_trailing_stop(
                             symbol=symbol,
                             position_side=stop_side,
@@ -315,16 +315,24 @@ class Joshua(App):
 
             elif status == OrderStatus.CANCELED:
                 self.orders[symbol].remove_by_id(order_id)
+                self._LOGGER.info(
+                    f"{side.value} {og_order_type.value} order for {symbol} has been cancelled."
+                )
 
                 if (
                     og_order_type == OrderType.LIMIT
                     and self.positions[symbol].is_empty()
                 ):
-                    logger.info("Cancelling all open orders...")
                     fetch(self.client.cancel_open_orders, symbol=symbol)
+                    self._LOGGER.info(
+                        f"All open orders for {symbol} have been cancelled."
+                    )
 
             elif status == OrderStatus.EXPIRED:
                 self.orders[symbol].remove_by_id(order_id)
+                self._LOGGER.info(
+                    f"{side.value} {og_order_type.value} order for {symbol} has expired."
+                )
 
     def _handle_account_update(self, data: dict):
         if "P" in data and data["P"]:
@@ -358,11 +366,11 @@ class Joshua(App):
         if "B" in data and data["B"]:
             if usdt_balance := list(filter(lambda b: b["a"] == self._USDT, data["B"])):
                 self.balance = Balance(float(usdt_balance[0]["cw"]))
-                logger.info(f"Updated available USDT: {self.balance}")
+                self._LOGGER.info(f"Updated available USDT: {self.balance}")
 
     def close(self) -> None:
-        logger.info("Initiating shutdown process...")
+        self._LOGGER.info("Initiating shutdown process...")
         fetch(self.client.close_listen_key, listenKey=self.listen_key)
         fetch(self.client_ws_user.stop)
         fetch(self.client_ws.stop)
-        logger.info("Shutdown process completed successfully.")
+        self._LOGGER.info("Shutdown process completed successfully.")

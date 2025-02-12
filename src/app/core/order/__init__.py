@@ -4,6 +4,8 @@ import textwrap
 from typing import Iterator
 import uuid
 
+from pandas import Timestamp
+
 from app.core.constant import OrderType, PositionSide
 
 
@@ -40,7 +42,7 @@ class Orders:
         orders = [order for order in self.orders if order.is_type(*args)]
         return Orders(sorted(orders, key=lambda o: args.index(o.type)))
 
-    def rm_expired_orders_backtest(self, time: int) -> "Orders":
+    def rm_expired_orders_backtest(self, time: Timestamp) -> "Orders":
         for order in self.orders:
             if order.type == OrderType.LIMIT and order.is_expired(time):
                 self._LOGGER.debug(
@@ -142,5 +144,5 @@ class Order:
     def is_type(self, *args: OrderType) -> bool:
         return self.type in args
 
-    def is_expired(self, time: int) -> bool:
-        return self.gtd < time if self.gtd else False
+    def is_expired(self, time: Timestamp) -> bool:
+        return self.gtd < int(time.timestamp() * 1000) if self.gtd else False

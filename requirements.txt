@@ -1,4 +1,7 @@
 binance-futures-connector
-python-dotenv
+numpy==1.26.4
 pandas
+pandas_ta
+python-dotenv
+setuptools
 slack_sdk

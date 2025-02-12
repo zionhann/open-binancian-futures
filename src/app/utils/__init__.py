@@ -69,12 +69,11 @@ def fetch(request: Callable, base_delay=0.25, max_retries=3, **kwargs) -> dict:
     return {}
 
 
-def gtd(time=time.time(), nlines=3) -> int:
+def gtd(timestamp: float, nlines: int) -> int:
     unit = AppConfig.INTERVAL.value[-1]
     base = INTERVAL_TO_SECONDS[unit] * int(AppConfig.INTERVAL.value[:-1])
     exp = max(base * nlines, MIN_EXP)
-    gtd = int(time + exp)
-
+    gtd = int(timestamp + exp)
     return gtd * UNIT_MS
 
 

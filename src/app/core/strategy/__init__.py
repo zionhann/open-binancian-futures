@@ -70,10 +70,12 @@ class Strategy(ABC):
         leverage=AppConfig.LEVERAGE.value,
         take_profit_ratio=TPSL.TAKE_PROFIT_RATIO.value,
         stop_loss_ratio=TPSL.STOP_LOSS_RATIO.value,
+        gtd_nlines=AppConfig.GTD_NLINES.value,
     ) -> None:
         self.interval = interval
         self.size = size
         self.leverage = leverage
+        self.gtd_nlines = gtd_nlines
         self.take_profit_ratio = take_profit_ratio
         self.stop_loss_ratio = stop_loss_ratio
 
@@ -90,8 +92,9 @@ class Strategy(ABC):
             pd.to_datetime(df["Open_time"], unit="ms")
             .dt.tz_localize("UTC")
             .dt.tz_convert("Asia/Seoul")
-            .dt.strftime("%Y-%m-%d %H:%M")
         )
+        df.set_index("Open_time", inplace=True, drop=False)
+
         df["Symbol"] = symbol
         df["Open"] = df["Open"].astype(float)
         df["High"] = df["High"].astype(float)
@@ -146,9 +149,6 @@ class Strategy(ABC):
                 closePosition=True,
                 timeInForce=TimeInForce.GTE_GTC.value,
             )
-            self._LOGGER.info(
-                f"Setting TPSL for {symbol}: Type={order_type.value}, Side={position_side.value}, Price={stop_price}"
-            )
 
     def set_trailing_stop(
         self,
@@ -182,9 +182,6 @@ class Strategy(ABC):
             reduceOnly=True,
             activationPrice=_activation_price,
             callbackRate=cb_rate,
-        )
-        self._LOGGER.info(
-            f"Setting trailing stop for {symbol}: Side={position_side.value}, ActivationPrice={activation_price}, CallbackRate={cb_rate}%"
         )
 
     @abstractmethod
