@@ -240,10 +240,13 @@ class Joshua(App):
         status = OrderStatus(data["X"])
         side = PositionSide(data["S"])
         price = float(data["p"])
+        stop_price = float(data["sp"])
+        average_price = round(float(data["ap"]), decimal_places(price))
         quantity = float(data["q"])
         realized_profit = float(data["rp"])
         filled = float(data["z"])
         gtd = data["gtd"]
+        is_reduce_only = data["R"]
 
         if symbol in AppConfig.SYMBOLS.value:
             if status == OrderStatus.NEW and og_order_type == curr_order_type:
@@ -259,7 +262,15 @@ class Joshua(App):
                     )
                 )
                 self._LOGGER.info(
-                    f"Opened {side.value} {og_order_type.value} order for {symbol} @ {price} with {quantity} {symbol[:-4]}"
+                    textwrap.dedent(
+                        f"""
+                        Opened {og_order_type.value} order @ {price if price else stop_price}
+                        Symbol: {symbol}
+                        Side: {side.value}
+                        Quantity: {quantity if quantity else "N/A"}
+                        Reduce-Only: {is_reduce_only}
+                        """
+                    )
                 )
 
             elif status in [
@@ -268,13 +279,16 @@ class Joshua(App):
             ]:
                 filled_percentage = (filled / quantity) * 100
                 self._LOGGER.info(
-                    f"{side.value} {og_order_type.value} order for {symbol} has been (partially) filled @ {price} with {filled} {symbol[:-4]} ({filled_percentage:.2f}%)"
+                    textwrap.dedent(
+                        f"""
+                        {og_order_type.value} order has been (partially) filled @ {average_price}
+                        Symbol: {symbol}
+                        Side: {side.value}
+                        Quantity: {filled}/{quantity} {symbol[:-4]} ({filled_percentage:.2f}%)
+                        Realized Profit: {realized_profit} USDT
+                        """
+                    )
                 )
-                self._LOGGER.info(f"Realized profit for {symbol}: {realized_profit}")
-
-                decimals = decimal_places(price)
-                average_price = round(float(data["ap"]), decimals)
-
                 self.webhook.send_message(
                     message=textwrap.dedent(
                         f"""
@@ -316,7 +330,7 @@ class Joshua(App):
             elif status == OrderStatus.CANCELED:
                 self.orders[symbol].remove_by_id(order_id)
                 self._LOGGER.info(
-                    f"{side.value} {og_order_type.value} order for {symbol} has been cancelled."
+                    f"{og_order_type.value} order for {symbol} has been cancelled. (Side: {side.value})"
                 )
 
                 if (
@@ -325,13 +339,13 @@ class Joshua(App):
                 ):
                     fetch(self.client.cancel_open_orders, symbol=symbol)
                     self._LOGGER.info(
-                        f"All open orders for {symbol} have been cancelled."
+                        f"All open orders for {symbol} have been cancelled. (Side: {side.value})"
                     )
 
             elif status == OrderStatus.EXPIRED:
                 self.orders[symbol].remove_by_id(order_id)
                 self._LOGGER.info(
-                    f"{side.value} {og_order_type.value} order for {symbol} has expired."
+                    f"{og_order_type.value} order for {symbol} has expired. (Side: {side.value})"
                 )
 
     def _handle_account_update(self, data: dict):

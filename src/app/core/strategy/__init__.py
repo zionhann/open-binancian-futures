@@ -68,9 +68,11 @@ class Strategy(ABC):
         interval=AppConfig.INTERVAL.value,
         size=AppConfig.SIZE.value,
         leverage=AppConfig.LEVERAGE.value,
+        gtd_nlines=AppConfig.GTD_NLINES.value,
         take_profit_ratio=TPSL.TAKE_PROFIT_RATIO.value,
         stop_loss_ratio=TPSL.STOP_LOSS_RATIO.value,
-        gtd_nlines=AppConfig.GTD_NLINES.value,
+        activation_ratio=TS.ACTIVATION_RATIO.value,
+        callback_ratio=TS.CALLBACK_RATIO.value,
     ) -> None:
         self.interval = interval
         self.size = size
@@ -78,6 +80,8 @@ class Strategy(ABC):
         self.gtd_nlines = gtd_nlines
         self.take_profit_ratio = take_profit_ratio
         self.stop_loss_ratio = stop_loss_ratio
+        self.activation_ratio = activation_ratio
+        self.callback_ratio = callback_ratio
 
     def init_indicators(
         self, symbol: str, client: UMFutures, limit: int | None = None
@@ -135,8 +139,13 @@ class Strategy(ABC):
         position_side: PositionSide,
         price: float,
         client: UMFutures,
-        order_types=[OrderType.STOP_MARKET, OrderType.TAKE_PROFIT_MARKET],
+        order_types: list[OrderType] | None = None,
     ) -> None:
+        order_types = order_types or [
+            OrderType.STOP_MARKET,
+            OrderType.TAKE_PROFIT_MARKET,
+        ]
+
         for order_type in order_types:
             stop_price = self.calculate_stop_price(price, order_type, position_side)
 
@@ -154,23 +163,23 @@ class Strategy(ABC):
         self,
         symbol: str,
         position_side: PositionSide,
-        price: float,
         quantity: float,
         client: UMFutures,
-        activation_price: float | None = None,
-        activation_ratio=TS.ACTIVATION_RATIO.value,
-        callback_ratio=TS.CALLBACK_RATIO.value,
+        price: float | None = None,
+        activation_ratio: float | None = None,
+        callback_ratio: float | None = None,
     ) -> None:
-        ratio = activation_ratio / self.leverage
-        factor = (1 + ratio) if position_side == PositionSide.SELL else (1 - ratio)
-        decimals = decimal_places(price)
-
-        _activation_price = (
-            round(price * factor, decimals)
-            if not activation_price
-            else round(activation_price, decimals)
+        activation_ratio = activation_ratio or (self.activation_ratio / self.leverage)
+        factor = (
+            (1 + activation_ratio)
+            if position_side == PositionSide.SELL
+            else (1 - activation_ratio)
         )
-        cb_rate = round(min(max(0.1, callback_ratio / self.leverage * 100), 5), 2)
+        decimals = decimal_places(price) if price else None
+        activation_price = round(price * factor, decimals) if price else None
+
+        callback_ratio = callback_ratio or (self.callback_ratio / self.leverage * 100)
+        safe_cb_rate = round(min(max(0.1, callback_ratio), 5), 2)
 
         fetch(
             client.new_order,
@@ -180,8 +189,8 @@ class Strategy(ABC):
             quantity=quantity,
             timeInForce=TimeInForce.GTE_GTC.value,
             reduceOnly=True,
-            activationPrice=_activation_price,
-            callbackRate=cb_rate,
+            activationPrice=activation_price,
+            callbackRate=safe_cb_rate,
         )
 
     @abstractmethod
