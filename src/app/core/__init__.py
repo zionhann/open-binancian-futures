@@ -67,6 +67,7 @@ class Joshua(App):
             s: self.strategy.init_indicators(s, self.client)
             for s in AppConfig.SYMBOLS.value
         }
+        self.realized_profit = {s: 0.0 for s in AppConfig.SYMBOLS.value}
 
     def _init_balance(self) -> Balance:
         self._LOGGER.info("Fetching available USDT balance...")
@@ -248,6 +249,8 @@ class Joshua(App):
         gtd = data["gtd"]
         is_reduce_only = data["R"]
 
+        stop_side = PositionSide.SELL if side == PositionSide.BUY else PositionSide.BUY
+
         if symbol in AppConfig.SYMBOLS.value:
             if status == OrderStatus.NEW and og_order_type == curr_order_type:
                 self.orders[symbol].add(
@@ -273,58 +276,80 @@ class Joshua(App):
                     )
                 )
 
+                if og_order_type == OrderType.LIMIT:
+                    self.strategy.set_tpsl(
+                        symbol=symbol,
+                        position_side=stop_side,
+                        price=price,
+                        client=self.client,
+                    )
+                    self.webhook.send_message(
+                        message=textwrap.dedent(
+                            f"""
+                            [{status.value}] {side.value} {quantity} @ {price}
+
+                            Symbol: {symbol}
+                            Type: {og_order_type.value}
+                            GTD: {pd.to_datetime(gtd, unit="ms")
+                                  .tz_localize("UTC")
+                                  .tz_convert("Asia/Seoul")
+                                  .strftime("%Y-%m-%d %H:%M:%S")
+                                  if gtd
+                                  else "N/A"
+                                  }
+
+                            """
+                        )
+                    )
+
             elif status in [
                 OrderStatus.PARTIALLY_FILLED,
                 OrderStatus.FILLED,
             ]:
+                self.realized_profit[symbol] += realized_profit
                 filled_percentage = (filled / quantity) * 100
                 self._LOGGER.info(
                     textwrap.dedent(
                         f"""
-                        {og_order_type.value} order has been (partially) filled @ {average_price}
+                        {og_order_type.value} order has been filled @ {average_price}
                         Symbol: {symbol}
                         Side: {side.value}
                         Quantity: {filled}/{quantity} {symbol[:-4]} ({filled_percentage:.2f}%)
-                        Realized Profit: {realized_profit} USDT
-                        """
-                    )
-                )
-                self.webhook.send_message(
-                    message=textwrap.dedent(
-                        f"""
-                        🔔 [{symbol}] {side.value} ALERT 
-
-                        Type: {og_order_type.value}
-                        Status: {status.value}
-
-                        Average Price: {average_price}
-                        Quantity: {filled}/{quantity} {symbol[:-4]} ({filled_percentage:.2f}%)
-                        Realized Profit: {realized_profit} USDT
+                        Realized Profit: {self.realized_profit[symbol]} USDT
                         """
                     )
                 )
 
                 if status == OrderStatus.FILLED:
                     self.orders[symbol].remove_by_id(order_id)
+                    self.webhook.send_message(
+                        message=textwrap.dedent(
+                            f"""
+                            [{status.value}] {side.value} {filled} @ {average_price}
 
-                    if og_order_type == OrderType.LIMIT:
-                        stop_side = (
-                            PositionSide.SELL
-                            if side == PositionSide.BUY
-                            else PositionSide.BUY
+                            Symbol: {symbol}
+                            Type: {og_order_type.value}
+                            Realized Profit: {self.realized_profit[symbol]} USDT
+
+                            """
                         )
+                    )
+                    self.realized_profit[symbol] = 0.0
+
+                    if og_order_type == OrderType.LIMIT and (
+                        order_types := list(
+                            filter(
+                                lambda order: not self.orders[symbol].has_type(order),
+                                [OrderType.TAKE_PROFIT_MARKET, OrderType.STOP_MARKET],
+                            )
+                        )
+                    ):
                         self.strategy.set_tpsl(
                             symbol=symbol,
                             position_side=stop_side,
                             price=price,
                             client=self.client,
-                        )
-                        self.strategy.set_trailing_stop(
-                            symbol=symbol,
-                            position_side=stop_side,
-                            price=price,
-                            quantity=quantity,
-                            client=self.client,
+                            order_types=order_types,
                         )
 
             elif status == OrderStatus.CANCELED:
@@ -340,6 +365,14 @@ class Joshua(App):
                     fetch(self.client.cancel_open_orders, symbol=symbol)
                     self._LOGGER.info(
                         f"All open orders for {symbol} have been cancelled. (Side: {side.value})"
+                    )
+                    self.webhook.send_message(
+                        message=textwrap.dedent(
+                            f"""
+                            [{status.value}] {og_order_type.value} order for {symbol} has been cancelled. (Side: {side.value})
+
+                            """
+                        )
                     )
 
             elif status == OrderStatus.EXPIRED:

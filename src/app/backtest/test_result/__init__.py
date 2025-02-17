@@ -23,10 +23,11 @@ class TestResult:
         self.strategy = strategy
 
         self.sample_size = 0
+        self.hit_count = 0
         self.trade_count = 0
         self.win_count = 0
 
-        self.trade_frequency = 0.0
+        self.hit_rate = 0.0
         self.win_rate = 0.0
 
         self.cumulative_pnl = 0.0
@@ -48,6 +49,8 @@ class TestResult:
                     positions.open_position_backtest(balance, order, time)
                     orders.remove_by_id(order.id)
 
+                    self.hit_count += 1
+
                 elif order.is_type(
                     OrderType.STOP_MARKET, OrderType.TAKE_PROFIT_MARKET
                 ) and (position := positions.first()):
@@ -60,7 +63,7 @@ class TestResult:
                     self.cumulative_pnl += pnl
 
     def print(self):
-        self.trade_frequency = round(self.trade_count / self.sample_size * 100, 2)
+        self.hit_rate = round(self.hit_count / self.sample_size * 100, 2)
         self.win_rate = round(
             self.win_count / self.trade_count * 100 if self.trade_count else 0, 2
         )
@@ -75,19 +78,11 @@ class TestResult:
                 f"""
                 ===Backtest Result===
                 Symbol: {self.symbol}
-                Interval: {self.strategy.interval}
-                Leverage: {self.strategy.leverage}
-                Size: {self.strategy.size * 100}%
-                Strategy: {self.strategy.__class__.__name__}
-                TP/SL: {self.strategy.take_profit_ratio * 100}% / {self.strategy.stop_loss_ratio * 100}%
-                Initial Balance: {BacktestConfig.BALANCE.value}USDT
+                Hit Rate: {self.hit_rate}% ({self.hit_count}/{self.sample_size})
+                Win Rate: {self.win_rate}% ({self.win_count}/{self.trade_count})
 
-                Sample Size: {self.sample_size}
-                Trade Frequency: {self.trade_frequency}%
-                Win Rate: {self.win_rate}%
-
-                Cumulative PNL: {self.cumulative_pnl:.2f}USDT
-                Return per Day: {self.return_per_day:.2f}USDT
+                Cumulative PNL: {self.cumulative_pnl:.2f} USDT
+                Return per Day: {self.return_per_day:.2f} USDT
                 """
             )
         )

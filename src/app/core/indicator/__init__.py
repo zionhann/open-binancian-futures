@@ -18,7 +18,10 @@ def obv(
     else:
         ma = 0
 
-    return obv - ma
+    obv_dif = obv - ma
+    obv_dif.name = "OBV_DIF"
+
+    return obv_dif
 
 
 def vwap(

@@ -169,7 +169,7 @@ class Strategy(ABC):
         activation_ratio: float | None = None,
         callback_ratio: float | None = None,
     ) -> None:
-        activation_ratio = activation_ratio or (self.activation_ratio / self.leverage)
+        activation_ratio = (activation_ratio or self.activation_ratio) / self.leverage
         factor = (
             (1 + activation_ratio)
             if position_side == PositionSide.SELL
@@ -178,7 +178,7 @@ class Strategy(ABC):
         decimals = decimal_places(price) if price else None
         activation_price = round(price * factor, decimals) if price else None
 
-        callback_ratio = callback_ratio or (self.callback_ratio / self.leverage * 100)
+        callback_ratio = (callback_ratio or self.callback_ratio) / self.leverage * 100
         safe_cb_rate = round(min(max(0.1, callback_ratio), 5), 2)
 
         fetch(

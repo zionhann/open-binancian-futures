@@ -62,6 +62,10 @@ class Indicator(Enum):
     STOCHRSI_K = int(os.getenv("STOCHRSI_K", 3))
     STOCHRSI_D = int(os.getenv("STOCHRSI_D", 3))
 
+    EMA1_LENGTH = int(os.getenv("EMA1_LENGTH", 7))
+    EMA2_LENGTH = int(os.getenv("EMA2_LENGTH", 25))
+    EMA3_LENGTH = int(os.getenv("EMA3_LENGTH", 99))
+
 
 class TPSL(Enum):
     STOP_LOSS_RATIO = float(os.getenv("TPSL_STOP_LOSS_RATIO", 0.05))

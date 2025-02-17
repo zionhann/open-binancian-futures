@@ -22,9 +22,7 @@ class Orders:
         return str(self.orders)
 
     def has_type(self, *args: OrderType) -> bool:
-        return any(
-            order.is_type(order_type) for order in self.orders for order_type in args
-        )
+        return any(order.is_type(*args) for order in self.orders)
 
     def add(self, *args: "Order") -> None:
         self.orders = [*self.orders, *args]

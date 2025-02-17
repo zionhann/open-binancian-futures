@@ -1,5 +1,6 @@
 import logging
 
+import textwrap
 from typing import override
 
 from binance.um_futures import UMFutures
@@ -15,7 +16,7 @@ from app.utils import fetch
 
 
 class Backtest(App):
-    logger = logging.getLogger(__name__)
+    _LOGGER = logging.getLogger(__name__)
     _BASE_URL = "https://fapi.binance.com"
 
     def __init__(self) -> None:
@@ -75,13 +76,22 @@ class Backtest(App):
                     balance=self.balance,
                 )
 
+        self._LOGGER.info("Backtesting finished. Closing remaining positions...")
+
         for symbol in AppConfig.SYMBOLS.value:
             self.positions[symbol].reset_backtest(self.balance)
             self.orders[symbol].clear()
-            self.test_results[symbol].print()
 
-        self.logger.info(
-            f"Overall PNL: {sum(r.cumulative_pnl for r in self.test_results.values()):.2f} USDT, Balance: {self.balance} USDT"
+        [self.test_results[symbol].print() for symbol in AppConfig.SYMBOLS.value]
+
+        self._LOGGER.info(
+            textwrap.dedent(
+                f"""
+                ===Overall Result===
+                PNL: {sum(r.cumulative_pnl for r in self.test_results.values()):.2f} USDT
+                Balance: {BacktestConfig.BALANCE.value} -> {self.balance} USDT
+                """
+            )
         )
 
     @override

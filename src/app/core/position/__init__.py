@@ -61,6 +61,15 @@ class Positions:
             margin = position.initial_margin()
             balance.update_backtest(margin)
 
+            self._LOGGER.info(
+                textwrap.dedent(
+                    f"""
+                    CLOSED {position.symbol}
+                    Balance: {balance}
+                    """
+                )
+            )
+
         self.clear()
 
 
@@ -106,7 +115,7 @@ class Position:
                 Date: {time.strftime("%Y-%m-%d %H:%M:%S")}
                 {order.side.value} {self.symbol} @ {order.price}
                 Type: {order.type.value}
-                Realized PNL: {pnl:.2f} {self.symbol[:-4]} ({pnl / margin * 100:.2f}%)
+                Realized PNL: {pnl:.2f} USDT ({pnl / margin * 100:.2f}%)
                 Balance: {balance}
                 """
             )
