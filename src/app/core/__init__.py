@@ -204,6 +204,7 @@ class Joshua(App):
             exchange_info=self.exchange_info[symbol],
             balance=self.balance,
             client=self.client,
+            webhook=self.webhook,
         )
 
     def _user_stream_handler(self, _, stream) -> None:
@@ -282,6 +283,7 @@ class Joshua(App):
                         position_side=stop_side,
                         price=price,
                         client=self.client,
+                        close_position=True,
                     )
                     self.webhook.send_message(
                         message=textwrap.dedent(
@@ -335,22 +337,6 @@ class Joshua(App):
                         )
                     )
                     self.realized_profit[symbol] = 0.0
-
-                    if og_order_type == OrderType.LIMIT and (
-                        order_types := list(
-                            filter(
-                                lambda order: not self.orders[symbol].has_type(order),
-                                [OrderType.TAKE_PROFIT_MARKET, OrderType.STOP_MARKET],
-                            )
-                        )
-                    ):
-                        self.strategy.set_tpsl(
-                            symbol=symbol,
-                            position_side=stop_side,
-                            price=price,
-                            client=self.client,
-                            order_types=order_types,
-                        )
 
             elif status == OrderStatus.CANCELED:
                 self.orders[symbol].remove_by_id(order_id)

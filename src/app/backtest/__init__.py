@@ -84,10 +84,19 @@ class Backtest(App):
 
         [self.test_results[symbol].print() for symbol in AppConfig.SYMBOLS.value]
 
+        overall_trade_count = sum(
+            r.trade_count_buy + r.trade_count_sell for r in self.test_results.values()
+        )
+        overall_win_count = sum(
+            r.win_count_buy + r.win_count_sell for r in self.test_results.values()
+        )
+        overall_win_rate = overall_win_count / overall_trade_count * 100
+
         self._LOGGER.info(
             textwrap.dedent(
                 f"""
                 ===Overall Result===
+                Win Rate: {overall_win_rate:.2f}%
                 PNL: {sum(r.cumulative_pnl for r in self.test_results.values()):.2f} USDT
                 Balance: {BacktestConfig.BALANCE.value} -> {self.balance} USDT
                 """

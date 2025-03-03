@@ -8,6 +8,7 @@ from app.core.constant import (
     BacktestConfig,
     OrderType,
     INTERVAL_TO_SECONDS,
+    PositionSide,
 )
 from app.core.order import Orders
 from app.core.position import Positions
@@ -23,15 +24,17 @@ class TestResult:
         self.strategy = strategy
 
         self.sample_size = 0
-        self.hit_count = 0
-        self.trade_count = 0
-        self.win_count = 0
 
-        self.hit_rate = 0.0
-        self.win_rate = 0.0
+        self.hit_count_buy = 0
+        self.hit_count_sell = 0
+
+        self.win_count_buy = 0
+        self.win_count_sell = 0
+
+        self.trade_count_buy = 0
+        self.trade_count_sell = 0
 
         self.cumulative_pnl = 0.0
-        self.return_per_day = 0.0
 
     def check_filled_order_backtest(
         self,
@@ -49,7 +52,8 @@ class TestResult:
                     positions.open_position_backtest(balance, order, time)
                     orders.remove_by_id(order.id)
 
-                    self.hit_count += 1
+                    self.hit_count_buy += 1 if order.side == PositionSide.BUY else 0
+                    self.hit_count_sell += 1 if order.side == PositionSide.SELL else 0
 
                 elif order.is_type(
                     OrderType.STOP_MARKET, OrderType.TAKE_PROFIT_MARKET
@@ -58,31 +62,63 @@ class TestResult:
                     positions.clear()
                     orders.clear()
 
-                    self.trade_count += 1
-                    self.win_count += 1 if pnl > 0 else 0
                     self.cumulative_pnl += pnl
 
+                    if position.side == PositionSide.BUY:
+                        self.trade_count_buy += 1
+                        self.win_count_buy += 1 if pnl > 0 else 0
+                    else:
+                        self.trade_count_sell += 1
+                        self.win_count_sell += 1 if pnl > 0 else 0
+                    
     def print(self):
-        self.hit_rate = round(self.hit_count / self.sample_size * 100, 2)
-        self.win_rate = round(
-            self.win_count / self.trade_count * 100 if self.trade_count else 0, 2
+        trade_count = self.trade_count_buy + self.trade_count_sell
+        hit_count = self.hit_count_buy + self.hit_count_sell
+        win_count = self.win_count_buy + self.win_count_sell
+
+        hit_rate = round(hit_count / self.sample_size * 100, 2)
+        win_rate = round(win_count / trade_count * 100 if trade_count else 0, 2)
+
+        buy_rate = round(self.hit_count_buy / hit_count * 100 if hit_count else 0, 2)
+        sell_rate = round(self.hit_count_sell / hit_count * 100 if hit_count else 0, 2)
+
+        buy_win_rate = round(
+            (
+                self.win_count_buy / self.trade_count_buy * 100
+                if self.trade_count_buy
+                else 0
+            ),
+            2,
+        )
+        sell_win_rate = round(
+            (
+                self.win_count_sell / self.trade_count_sell * 100
+                if self.trade_count_sell
+                else 0
+            ),
+            2,
         )
 
         unit = self.strategy.interval[-1]
         base = INTERVAL_TO_SECONDS[unit] * int(self.strategy.interval[:-1])
         days = (base * self.sample_size) / (60 * 60 * 24)
-        self.return_per_day = round(self.cumulative_pnl / days, 2)
+        return_per_day = round(self.cumulative_pnl / days, 2)
 
         logger.info(
             textwrap.dedent(
                 f"""
                 ===Backtest Result===
                 Symbol: {self.symbol}
-                Hit Rate: {self.hit_rate}% ({self.hit_count}/{self.sample_size})
-                Win Rate: {self.win_rate}% ({self.win_count}/{self.trade_count})
+                Hit Rate: {hit_rate}% ({hit_count}/{self.sample_size})
+                - BUY Hit Rate: {buy_rate}% ({self.hit_count_buy}/{hit_count})
+                - SELL Hit Rate: {sell_rate}% ({self.hit_count_sell}/{hit_count})
+                
+                Win Rate: {win_rate}% ({win_count}/{trade_count})
+                - BUY Win Rate: {buy_win_rate}% ({self.win_count_buy}/{self.trade_count_buy})
+                - SELL Win Rate: {sell_win_rate}% ({self.win_count_sell}/{self.trade_count_sell})
 
                 Cumulative PNL: {self.cumulative_pnl:.2f} USDT
-                Return per Day: {self.return_per_day:.2f} USDT
+                Return per Day: {return_per_day:.2f} USDT
                 """
             )
         )

@@ -40,6 +40,9 @@ class Orders:
         orders = [order for order in self.orders if order.is_type(*args)]
         return Orders(sorted(orders, key=lambda o: args.index(o.type)))
 
+    def find_by_type(self, type: OrderType) -> "Order | None":
+        return next(filter(lambda o: o.type == type, self.orders), None)
+
     def rm_expired_orders_backtest(self, time: Timestamp) -> "Orders":
         for order in self.orders:
             if order.type == OrderType.LIMIT and order.is_expired(time):

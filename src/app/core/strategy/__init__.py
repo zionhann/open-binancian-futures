@@ -13,6 +13,7 @@ from app.core.position import Positions
 from app.core.order import Orders
 from app.core.constant import *
 from app.utils import decimal_places, fetch
+from app.webhook import Webhook
 
 
 class Strategy(ABC):
@@ -114,18 +115,30 @@ class Strategy(ABC):
         return initial_indicators
 
     def calculate_stop_price(
-        self, entry_price: float, order_type: OrderType, stop_side: PositionSide
+        self,
+        entry_price: float,
+        order_type: OrderType,
+        stop_side: PositionSide,
+        tp_ratio: float | None = None,
+        sl_ratio: float | None = None,
     ) -> float:
+        sl_ratio = (sl_ratio or self.stop_loss_ratio) / self.leverage
+        tp_ratio = (tp_ratio or self.take_profit_ratio) / self.leverage
+
         ratio = (
-            self.stop_loss_ratio / self.leverage
-            if order_type == OrderType.STOP_MARKET
-            else self.take_profit_ratio / self.leverage
+            sl_ratio
+            if order_type in [OrderType.STOP_MARKET, OrderType.STOP_LIMIT]
+            else tp_ratio
         )
         factor = (
             (1 - ratio)
-            if (order_type == OrderType.STOP_MARKET and stop_side == PositionSide.SELL)
+            if (
+                order_type in [OrderType.STOP_MARKET, OrderType.STOP_LIMIT]
+                and stop_side == PositionSide.SELL
+            )
             or (
-                order_type == OrderType.TAKE_PROFIT_MARKET
+                order_type
+                in [OrderType.TAKE_PROFIT_MARKET, OrderType.TAKE_PROFIT_LIMIT]
                 and stop_side == PositionSide.BUY
             )
             else (1 + ratio)
@@ -139,15 +152,34 @@ class Strategy(ABC):
         position_side: PositionSide,
         price: float,
         client: UMFutures,
+        close_position: bool | None = None,
         order_types: list[OrderType] | None = None,
+        quantity: float | None = None,
+        tp_ratio: float | None = None,
+        sl_ratio: float | None = None,
     ) -> None:
-        order_types = order_types or [
-            OrderType.STOP_MARKET,
-            OrderType.TAKE_PROFIT_MARKET,
-        ]
+        close_position = close_position or None
+        reduce_only = None if close_position else True
+
+        quantity = quantity if reduce_only else None
+        order_types = (
+            order_types
+            if order_types is not None
+            else [
+                OrderType.STOP_MARKET,
+                OrderType.TAKE_PROFIT_MARKET,
+            ]
+        )
 
         for order_type in order_types:
-            stop_price = self.calculate_stop_price(price, order_type, position_side)
+            stop_price = self.calculate_stop_price(
+                entry_price=price,
+                order_type=order_type,
+                stop_side=position_side,
+                tp_ratio=tp_ratio,
+                sl_ratio=sl_ratio,
+            )
+            _price = stop_price if reduce_only else None
 
             fetch(
                 client.new_order,
@@ -155,8 +187,11 @@ class Strategy(ABC):
                 side=position_side.value,
                 type=order_type.value,
                 stopPrice=stop_price,
-                closePosition=True,
+                closePosition=close_position,
                 timeInForce=TimeInForce.GTE_GTC.value,
+                price=_price,
+                quantity=quantity,
+                reduceOnly=reduce_only,
             )
 
     def set_trailing_stop(
@@ -205,6 +240,7 @@ class Strategy(ABC):
         exchange_info: ExchangeInfo,
         balance: Balance,
         client: UMFutures,
+        webhook: Webhook,
     ) -> None: ...
 
     @abstractmethod

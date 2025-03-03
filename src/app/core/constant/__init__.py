@@ -89,6 +89,8 @@ class TS(Enum):
 
 class OrderType(Enum):
     LIMIT = "LIMIT"
+    STOP_LIMIT = "STOP"
+    TAKE_PROFIT_LIMIT = "TAKE_PROFIT"
     MARKET = "MARKET"
     STOP_MARKET = "STOP_MARKET"
     TAKE_PROFIT_MARKET = "TAKE_PROFIT_MARKET"
