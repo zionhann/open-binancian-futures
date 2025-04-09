@@ -5,7 +5,6 @@ from pandas import Series
 
 from app.core.balance import Balance
 from app.core.constant import (
-    BacktestConfig,
     OrderType,
     INTERVAL_TO_SECONDS,
     PositionSide,
@@ -42,6 +41,7 @@ class TestResult:
         orders: Orders,
         kline: Series,
         balance: Balance,
+        leverage: int,
     ) -> None:
         self.sample_size += 1
         time, high, low = kline["Open_time"], kline["High"], kline["Low"]
@@ -49,7 +49,7 @@ class TestResult:
         if filled_orders := orders.filled_orders_backtest(high, low):
             for order in filled_orders:
                 if order.is_type(OrderType.LIMIT) and positions.is_empty():
-                    positions.open_position_backtest(balance, order, time)
+                    positions.open_position_backtest(balance, order, time, leverage)
                     orders.remove_by_id(order.id)
 
                     self.hit_count_buy += 1 if order.side == PositionSide.BUY else 0
@@ -57,7 +57,7 @@ class TestResult:
 
                 elif order.is_type(
                     OrderType.STOP_MARKET, OrderType.TAKE_PROFIT_MARKET
-                ) and (position := positions.first()):
+                ) and (position := positions.find_first()):
                     pnl = position.realized_pnl_backtest(balance, order, time)
                     positions.clear()
                     orders.clear()
@@ -70,7 +70,7 @@ class TestResult:
                     else:
                         self.trade_count_sell += 1
                         self.win_count_sell += 1 if pnl > 0 else 0
-                    
+
     def print(self):
         trade_count = self.trade_count_buy + self.trade_count_sell
         hit_count = self.hit_count_buy + self.hit_count_sell

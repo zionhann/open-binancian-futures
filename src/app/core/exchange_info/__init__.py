@@ -38,14 +38,18 @@ class ExchangeInfo:
             else 0.0
         )
 
+    def trim_quantity_precision(self, quantity: float) -> float:
+        decimals = decimal_places(self.step_size)
+        return round(int(quantity / self.step_size) * self.step_size, decimals)
+
     def _is_notional_enough(self, entry_quantity: float, entry_price: float) -> bool:
         return self._notional(entry_quantity, entry_price) >= self.min_notional
 
     def _notional(self, entry_quantity: float, entry_price: float) -> float:
         """
         Estimate the notional value required for TP/SL orders.
-        Since take profit ratio is usually higher than stop loss ratio, use take profit ratio on both positions.
         This guarantees that TP/SL orders can be placed without any nominal value issues.
         """
-        factor = 1 - (TPSL.TAKE_PROFIT_RATIO.value / AppConfig.LEVERAGE.value)
+        max_tpsl = max(TPSL.TAKE_PROFIT_RATIO.value, TPSL.STOP_LOSS_RATIO.value)
+        factor = 1 - (max_tpsl / AppConfig.LEVERAGE.value)
         return entry_quantity * (entry_price * factor)

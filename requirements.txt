@@ -5,3 +5,4 @@ pandas_ta
 python-dotenv
 setuptools
 slack_sdk
+TA-Lib

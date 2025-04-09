@@ -1,4 +1,6 @@
 import logging
+import textwrap
+from typing import Any
 import pandas as pd
 import pkgutil
 import importlib
@@ -10,7 +12,7 @@ from binance.um_futures import UMFutures
 from app.core.balance import Balance
 from app.core.exchange_info import ExchangeInfo
 from app.core.position import Positions
-from app.core.order import Orders
+from app.core.order import Order, Orders
 from app.core.constant import *
 from app.utils import decimal_places, fetch
 from app.webhook import Webhook
@@ -66,17 +68,21 @@ class Strategy(ABC):
 
     def __init__(
         self,
-        interval=AppConfig.INTERVAL.value,
-        size=AppConfig.SIZE.value,
-        leverage=AppConfig.LEVERAGE.value,
-        gtd_nlines=AppConfig.GTD_NLINES.value,
-        take_profit_ratio=TPSL.TAKE_PROFIT_RATIO.value,
-        stop_loss_ratio=TPSL.STOP_LOSS_RATIO.value,
-        activation_ratio=TS.ACTIVATION_RATIO.value,
-        callback_ratio=TS.CALLBACK_RATIO.value,
+        symbols: list[str] = AppConfig.SYMBOLS.value,
+        interval: str = AppConfig.INTERVAL.value,
+        size: float = AppConfig.SIZE.value,
+        max_averaging: int = AppConfig.MAX_AVERAGING.value,
+        leverage: int = AppConfig.LEVERAGE.value,
+        gtd_nlines: int = AppConfig.GTD_NLINES.value,
+        take_profit_ratio: float = TPSL.TAKE_PROFIT_RATIO.value,
+        stop_loss_ratio: float = TPSL.STOP_LOSS_RATIO.value,
+        activation_ratio: float = TS.ACTIVATION_RATIO.value,
+        callback_ratio: float = TS.CALLBACK_RATIO.value,
     ) -> None:
+        self.symbols = symbols
         self.interval = interval
         self.size = size
+        self.max_averaging = max_averaging
         self.leverage = leverage
         self.gtd_nlines = gtd_nlines
         self.take_profit_ratio = take_profit_ratio
@@ -110,7 +116,7 @@ class Strategy(ABC):
         initial_indicators = self.load(df[self._BASIC_COLUMNS])
 
         self._LOGGER.info(
-            f"Loaded indicators for {symbol}:\n{initial_indicators.tail().to_string(index=False)}"
+            f"Loaded indicators for {symbol}:\n{initial_indicators.tail().T.to_string(header=False)}"
         )
         return initial_indicators
 
@@ -158,9 +164,7 @@ class Strategy(ABC):
         tp_ratio: float | None = None,
         sl_ratio: float | None = None,
     ) -> None:
-        close_position = close_position or None
         reduce_only = None if close_position else True
-
         quantity = quantity if reduce_only else None
         order_types = (
             order_types
@@ -227,6 +231,116 @@ class Strategy(ABC):
             activationPrice=activation_price,
             callbackRate=safe_cb_rate,
         )
+
+    def on_new_order(
+        self,
+        data: dict[str, Any],
+        orders: Orders,
+        positions: Positions,
+        exchange_info: ExchangeInfo,
+        client: UMFutures,
+    ) -> None:
+        (
+            order_id,
+            symbol,
+            og_order_type,
+            side,
+            price,
+            stop_price,
+            quantity,
+            gtd,
+            is_reduce_only,
+        ) = (
+            int(data["i"]),
+            str(data["s"]),
+            OrderType(data["ot"]),
+            PositionSide(data["S"]),
+            float(data["p"]),
+            float(data["sp"]),
+            float(data["q"]),
+            int(data["gtd"]),
+            bool(data["R"]),
+        )
+
+        orders.add(
+            Order(
+                symbol=symbol,
+                id=order_id,
+                type=og_order_type,
+                side=side,
+                price=price,
+                quantity=quantity,
+                gtd=gtd,
+            )
+        )
+
+        self._LOGGER.info(
+            textwrap.dedent(
+                f"""
+                Opened {og_order_type.value} order @ {price if price else stop_price}
+                Symbol: {symbol}
+                Side: {side.value}
+                Quantity: {quantity if quantity else "N/A"}
+                Reduce-Only: {is_reduce_only}
+                """
+            )
+        )
+
+    def on_filled_order(
+        self,
+        data: dict[str, Any],
+        orders: Orders,
+        positions: Positions,
+        realized_profit: float,
+        exchange_info: ExchangeInfo,
+        client: UMFutures,
+        webhook: Webhook,
+    ) -> None:
+        (
+            order_id,
+            symbol,
+            og_order_type,
+            side,
+            price,
+            filled,
+            quantity,
+            status,
+        ) = (
+            int(data["i"]),
+            str(data["s"]),
+            OrderType(data["ot"]),
+            PositionSide(data["S"]),
+            float(data["p"]),
+            float(data["z"]),
+            float(data["q"]),
+            OrderStatus(data["X"]),
+        )
+        average_price = round(float(data["ap"]), decimal_places(price))
+        filled_percentage = (filled / quantity) * 100
+
+        self._LOGGER.info(
+            textwrap.dedent(
+                f"""
+                {og_order_type.value} order has been filled @ {average_price}
+                Symbol: {symbol}
+                Side: {side.value}
+                Quantity: {filled}/{quantity} {symbol[:-4]} ({filled_percentage:.2f}%)
+                Realized Profit: {realized_profit} USDT
+                """
+            )
+        )
+
+        webhook.send_message(
+            message=textwrap.dedent(
+                f"""
+                [{status.value}] {side.value} {filled} {symbol[:-4]} @ {average_price}
+                Order: {og_order_type.value}
+                PNL: {realized_profit} USDT
+                """
+            )
+        )
+
+        orders.remove_by_id(order_id)
 
     @abstractmethod
     def load(self, df: DataFrame) -> DataFrame: ...

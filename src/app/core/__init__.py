@@ -1,7 +1,7 @@
 import json
-import asyncio
 import logging
-import textwrap
+import time
+from typing import Any
 import pandas as pd
 
 from binance.um_futures import UMFutures
@@ -11,7 +11,7 @@ from app.core.constant import *
 from app.core.balance import Balance
 from app.core.exchange_info import ExchangeInfo
 from app.core.strategy import Strategy
-from app.utils import decimal_places, fetch
+from app.utils import fetch
 from app.core.position import Position, Positions
 from app.core.order import Order, Orders
 from app.webhook import Webhook
@@ -94,6 +94,7 @@ class Joshua(App):
             )
             for order in data
         ]
+        self._LOGGER.info(f"Loaded open orders: {orders}")
         return Orders(orders)
 
     def _init_positions(self, symbol: str) -> Positions:
@@ -111,7 +112,8 @@ class Joshua(App):
             for p in data
             for price, amount in [(float(p["entryPrice"]), float(p["positionAmt"]))]
         ]
-        return Positions(self.strategy.leverage, positions)
+        self._LOGGER.info(f"Loaded positions: {positions}")
+        return Positions(positions)
 
     def run(self) -> None:
         self._LOGGER.info("Starting to run...")
@@ -122,7 +124,7 @@ class Joshua(App):
             self._set_leverage(symbol=s)
             self._subscribe_to_stream(symbol=s)
 
-        asyncio.run(self._keepalive_stream())
+        self._keepalive_stream()
 
     def _set_leverage(self, symbol: str):
         fetch(
@@ -138,9 +140,9 @@ class Joshua(App):
             f"Subscribed to {symbol} klines by {AppConfig.INTERVAL.value}..."
         )
 
-    async def _keepalive_stream(self):
+    def _keepalive_stream(self):
         while True:
-            await asyncio.sleep(self._KEEPALIVE_INTERVAL)
+            time.sleep(self._KEEPALIVE_INTERVAL)
             self._LOGGER.info(
                 "Reconnecting to the stream to maintain the connection..."
             )
@@ -195,7 +197,7 @@ class Joshua(App):
         self.indicators[symbol] = self.strategy.load(df)
 
         self._LOGGER.info(
-            f"Updated indicators for {symbol}:\n{self.indicators[symbol].tail().to_string(index=False)}"
+            f"Updated indicators for {symbol}:\n{self.indicators[symbol].tail().T.to_string(header=False)}"
         )
         self.strategy.run(
             indicators=self.indicators[symbol],
@@ -234,107 +236,40 @@ class Joshua(App):
         except Exception as e:
             self._LOGGER.error(f"An error occurred in the user data handler: {e}")
 
-    def _handle_order_trade_update(self, data: dict):
+    def _handle_order_trade_update(self, data: dict[str, Any]):
         order_id = data["i"]
         symbol = data["s"]
         og_order_type = OrderType(data["ot"])
         curr_order_type = OrderType(data["o"])
         status = OrderStatus(data["X"])
         side = PositionSide(data["S"])
-        price = float(data["p"])
-        stop_price = float(data["sp"])
-        average_price = round(float(data["ap"]), decimal_places(price))
-        quantity = float(data["q"])
         realized_profit = float(data["rp"])
-        filled = float(data["z"])
-        gtd = data["gtd"]
-        is_reduce_only = data["R"]
-
-        stop_side = PositionSide.SELL if side == PositionSide.BUY else PositionSide.BUY
 
         if symbol in AppConfig.SYMBOLS.value:
             if status == OrderStatus.NEW and og_order_type == curr_order_type:
-                self.orders[symbol].add(
-                    Order(
-                        symbol=symbol,
-                        id=order_id,
-                        type=og_order_type,
-                        side=side,
-                        price=price,
-                        quantity=quantity,
-                        gtd=gtd,
-                    )
+                self.strategy.on_new_order(
+                    data=data,
+                    orders=self.orders[symbol],
+                    positions=self.positions[symbol],
+                    exchange_info=self.exchange_info[symbol],
+                    client=self.client,
                 )
-                self._LOGGER.info(
-                    textwrap.dedent(
-                        f"""
-                        Opened {og_order_type.value} order @ {price if price else stop_price}
-                        Symbol: {symbol}
-                        Side: {side.value}
-                        Quantity: {quantity if quantity else "N/A"}
-                        Reduce-Only: {is_reduce_only}
-                        """
-                    )
-                )
-
-                if og_order_type == OrderType.LIMIT:
-                    self.strategy.set_tpsl(
-                        symbol=symbol,
-                        position_side=stop_side,
-                        price=price,
-                        client=self.client,
-                        close_position=True,
-                    )
-                    self.webhook.send_message(
-                        message=textwrap.dedent(
-                            f"""
-                            [{status.value}] {side.value} {quantity} @ {price}
-
-                            Symbol: {symbol}
-                            Type: {og_order_type.value}
-                            GTD: {pd.to_datetime(gtd, unit="ms")
-                                  .tz_localize("UTC")
-                                  .tz_convert("Asia/Seoul")
-                                  .strftime("%Y-%m-%d %H:%M:%S")
-                                  if gtd
-                                  else "N/A"
-                                  }
-
-                            """
-                        )
-                    )
 
             elif status in [
                 OrderStatus.PARTIALLY_FILLED,
                 OrderStatus.FILLED,
             ]:
                 self.realized_profit[symbol] += realized_profit
-                filled_percentage = (filled / quantity) * 100
-                self._LOGGER.info(
-                    textwrap.dedent(
-                        f"""
-                        {og_order_type.value} order has been filled @ {average_price}
-                        Symbol: {symbol}
-                        Side: {side.value}
-                        Quantity: {filled}/{quantity} {symbol[:-4]} ({filled_percentage:.2f}%)
-                        Realized Profit: {self.realized_profit[symbol]} USDT
-                        """
-                    )
-                )
 
                 if status == OrderStatus.FILLED:
-                    self.orders[symbol].remove_by_id(order_id)
-                    self.webhook.send_message(
-                        message=textwrap.dedent(
-                            f"""
-                            [{status.value}] {side.value} {filled} @ {average_price}
-
-                            Symbol: {symbol}
-                            Type: {og_order_type.value}
-                            Realized Profit: {self.realized_profit[symbol]} USDT
-
-                            """
-                        )
+                    self.strategy.on_filled_order(
+                        data=data,
+                        orders=self.orders[symbol],
+                        positions=self.positions[symbol],
+                        realized_profit=self.realized_profit[symbol],
+                        exchange_info=self.exchange_info[symbol],
+                        client=self.client,
+                        webhook=self.webhook,
                     )
                     self.realized_profit[symbol] = 0.0
 
@@ -344,23 +279,6 @@ class Joshua(App):
                     f"{og_order_type.value} order for {symbol} has been cancelled. (Side: {side.value})"
                 )
 
-                if (
-                    og_order_type == OrderType.LIMIT
-                    and self.positions[symbol].is_empty()
-                ):
-                    fetch(self.client.cancel_open_orders, symbol=symbol)
-                    self._LOGGER.info(
-                        f"All open orders for {symbol} have been cancelled. (Side: {side.value})"
-                    )
-                    self.webhook.send_message(
-                        message=textwrap.dedent(
-                            f"""
-                            [{status.value}] {og_order_type.value} order for {symbol} has been cancelled. (Side: {side.value})
-
-                            """
-                        )
-                    )
-
             elif status == OrderStatus.EXPIRED:
                 self.orders[symbol].remove_by_id(order_id)
                 self._LOGGER.info(
@@ -369,15 +287,15 @@ class Joshua(App):
 
     def _handle_account_update(self, data: dict):
         if "P" in data and data["P"]:
-            for position in data["P"]:
-                symbol, price, amount = (
-                    position["s"],
-                    float(position["ep"]),
-                    float(position["pa"]),
+            for raw_position in data["P"]:
+                symbol, price, amount, bep = (
+                    raw_position["s"],
+                    float(raw_position["ep"]),
+                    float(raw_position["pa"]),
+                    float(raw_position["bep"]),
                 )
-                self.positions[symbol] = (
-                    Positions(
-                        self.strategy.leverage,
+                (
+                    self.positions[symbol].update(
                         [
                             Position(
                                 symbol=symbol,
@@ -389,11 +307,12 @@ class Joshua(App):
                                     else PositionSide.SELL
                                 ),
                                 leverage=self.strategy.leverage,
+                                bep=bep,
                             )
-                        ],
+                        ]
                     )
                     if amount
-                    else Positions(self.strategy.leverage)
+                    else self.positions[symbol].clear()
                 )
 
         if "B" in data and data["B"]:

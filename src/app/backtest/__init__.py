@@ -28,9 +28,7 @@ class Backtest(App):
         self.balance = Balance(BacktestConfig.BALANCE.value)
         self.strategy = Strategy.of(Required.STRATEGY.value)
 
-        self.positions = {
-            s: Positions(self.strategy.leverage) for s in AppConfig.SYMBOLS.value
-        }
+        self.positions = {s: Positions() for s in AppConfig.SYMBOLS.value}
         self.orders = {s: Orders() for s in AppConfig.SYMBOLS.value}
         self.test_results = {
             s: TestResult(s, self.strategy) for s in AppConfig.SYMBOLS.value
@@ -66,6 +64,7 @@ class Backtest(App):
                     orders=self.orders[symbol],
                     kline=current_kline,
                     balance=self.balance,
+                    leverage=self.strategy.leverage,
                 )
 
                 self.strategy.run_backtest(

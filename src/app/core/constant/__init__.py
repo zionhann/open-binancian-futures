@@ -25,6 +25,7 @@ class AppConfig(Enum):
     INTERVAL = os.getenv("INTERVAL", "1d")
     LEVERAGE = int(os.getenv("LEVERAGE", 1))
     SIZE = float(os.getenv("SIZE", 0.05))
+    MAX_AVERAGING = int(os.getenv("MAX_AVERAGING", 1))
     IS_TESTNET = os.getenv("IS_TESTNET", "false") == "true"
     GTD_NLINES = int(os.getenv("GTD_NLINES", 3))
     WEBHOOK_URL = os.getenv("WEBHOOK_URL")
@@ -37,34 +38,6 @@ class BacktestConfig(Enum):
     INDICATOR_INIT_SIZE = int(
         os.getenv("BACKTEST_INDICATOR_INIT_SIZE", KLINES_LIMIT * 0.2)
     )
-
-
-class Indicator(Enum):
-    RSI_LENGTH = int(os.getenv("RSI_LENGTH", 14))
-    RSI_OVERSOLD_THRESHOLD = int(os.getenv("RSI_OVERSOLD_THRESHOLD", 30))
-    RSI_OVERBOUGHT_THRESHOLD = int(os.getenv("RSI_OVERBOUGHT_THRESHOLD", 70))
-
-    OBV_SIGNAL = int(os.getenv("OBV_SIGNAL", 9))
-
-    MACD_FAST = int(os.getenv("MACD_FAST", 12))
-    MACD_SLOW = int(os.getenv("MACD_SLOW", 26))
-    MACD_SIGNAL = int(os.getenv("MACD_SIGNAL", 9))
-
-    MAVOL_LENGTH = int(os.getenv("MAVOL_LENGTH", 10))
-    VWAP_LENGTH = int(os.getenv("VWAP_LENGTH", 14))
-    MTM_LENGTH = int(os.getenv("MTM_LENGTH", 14))
-
-    BOLL_LENGTH = int(os.getenv("BOLL_LENGTH", 20))
-    BOLL_MULTIPLIER = float(os.getenv("BOLL_MULTIPLIER", 2))
-
-    STOCHRSI_RSI_LENGTH = int(os.getenv("STOCHRSI_RSI_LENGTH", 14))
-    STOCHRSI_STOCH_LENGTH = int(os.getenv("STOCHRSI_STOCH_LENGTH", 14))
-    STOCHRSI_K = int(os.getenv("STOCHRSI_K", 3))
-    STOCHRSI_D = int(os.getenv("STOCHRSI_D", 3))
-
-    EMA1_LENGTH = int(os.getenv("EMA1_LENGTH", 7))
-    EMA2_LENGTH = int(os.getenv("EMA2_LENGTH", 25))
-    EMA3_LENGTH = int(os.getenv("EMA3_LENGTH", 99))
 
 
 class TPSL(Enum):

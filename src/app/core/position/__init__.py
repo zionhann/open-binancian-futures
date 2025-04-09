@@ -10,14 +10,18 @@ from app.core.order import Order
 class Positions:
     _LOGGER = logging.getLogger(__name__)
 
-    def __init__(self, leverage: int, positions: list["Position"] = []) -> None:
-        self.leverage = leverage
-        self.positions = positions
+    def __init__(self, positions: list["Position"] = []) -> None:
+        self.positions: list["Position"] = positions
+        self.averaging_count = 0 if not positions else 1
+
+    def __repr__(self) -> str:
+        return str(self.positions)
 
     def clear(self) -> None:
         self.positions = []
+        self.averaging_count = 0
 
-    def first(self) -> "Position | None":
+    def find_first(self) -> "Position | None":
         return next((position for position in self.positions), None)
 
     def is_LONG(self) -> bool:
@@ -29,20 +33,24 @@ class Positions:
     def is_empty(self) -> bool:
         return not self.positions
 
+    def update(self, positions: list["Position"]) -> None:
+        self.positions = positions
+
+    def remove(self, position: "Position") -> None:
+        if position in self.positions:
+            self.positions.remove(position)
+
     def open_position_backtest(
-        self,
-        balance: Balance,
-        order: Order,
-        time: Timestamp,
+        self, balance: Balance, order: Order, time: Timestamp, leverage: int
     ) -> None:
         position = Position(
             symbol=order.symbol,
             amount=order.quantity,
             price=order.price,
             side=order.side,
-            leverage=self.leverage,
+            leverage=leverage,
         )
-        self.positions = [*self.positions, position]
+        self.positions = [position]
         balance.update_backtest(-position.initial_margin())
 
         self._LOGGER.info(
@@ -69,8 +77,7 @@ class Positions:
                     """
                 )
             )
-
-        self.clear()
+            self.remove(position)
 
 
 class Position:
@@ -83,12 +90,17 @@ class Position:
         amount: float,
         side: PositionSide,
         leverage: int,
+        bep: float | None = None,
     ) -> None:
         self.symbol = symbol
         self.price = price
+        self.break_even_price = bep or price
         self.amount = abs(amount)
         self.side = side
         self.leverage = leverage
+
+    def __repr__(self) -> str:
+        return f"\n{__class__.__name__}(symbol={self.symbol}, side={self.side}, leverage={self.leverage}, price={self.price}, amount={self.amount})"
 
     def is_LONG(self) -> bool:
         return self.side == PositionSide.BUY

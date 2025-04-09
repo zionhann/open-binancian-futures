@@ -18,7 +18,7 @@ class Orders:
     def __iter__(self) -> Iterator["Order"]:
         return iter(self.orders)
 
-    def __str__(self) -> str:
+    def __repr__(self) -> str:
         return str(self.orders)
 
     def has_type(self, *args: OrderType) -> bool:
@@ -139,8 +139,8 @@ class Order:
         self.quantity = quantity
         self.gtd = gtd
 
-    def __repr__(self):
-        return f"{__class__.__name__}(symbol={self.symbol}, type={self.type}, side={self.side}, price={self.price})"
+    def __repr__(self) -> str:
+        return f"\n{__class__.__name__}(symbol={self.symbol}, type={self.type}, side={self.side}, price={self.price})"
 
     def is_type(self, *args: OrderType) -> bool:
         return self.type in args
