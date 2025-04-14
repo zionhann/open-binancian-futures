@@ -115,8 +115,14 @@ class Strategy(ABC):
 
         initial_indicators = self.load(df[self._BASIC_COLUMNS])
 
+        """
+        # Use this if displaying rows in vertical alignment
         self._LOGGER.info(
             f"Loaded indicators for {symbol}:\n{initial_indicators.tail().T.to_string(header=False)}"
+        )
+        """
+        self._LOGGER.info(
+            f"Loaded indicators for {symbol}:\n{initial_indicators.tail().to_string(index=False)}"
         )
         return initial_indicators
 

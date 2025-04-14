@@ -6,3 +6,4 @@ python-dotenv
 setuptools
 slack_sdk
 TA-Lib
+openai

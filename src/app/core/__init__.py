@@ -196,8 +196,14 @@ class Joshua(App):
         df = pd.concat([self.indicators[symbol], new_df])
         self.indicators[symbol] = self.strategy.load(df)
 
+        """
+        # Use this if displaying rows in vertical alignment
         self._LOGGER.info(
             f"Updated indicators for {symbol}:\n{self.indicators[symbol].tail().T.to_string(header=False)}"
+        )
+        """
+        self._LOGGER.info(
+            f"Updated indicators for {symbol}:\n{self.indicators[symbol].tail().to_string(index=False)}"
         )
         self.strategy.run(
             indicators=self.indicators[symbol],
