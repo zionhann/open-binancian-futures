@@ -111,6 +111,7 @@ class Joshua(App):
             )
             for p in data
             for price, amount in [(float(p["entryPrice"]), float(p["positionAmt"]))]
+            if not (price == 0.0 or amount == 0.0)
         ]
         self._LOGGER.info(f"Loaded positions: {positions}")
         return Positions(positions)
