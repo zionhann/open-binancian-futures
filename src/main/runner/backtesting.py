@@ -39,7 +39,7 @@ class Backtesting(Runner):
     def run(self) -> None:
         LOGGER.info("Starting backtesting...")
         sample_size = (
-                BacktestConfig.KLINES_LIMIT.value - BacktestConfig.INDICATOR_INIT_SIZE.value
+            BacktestConfig.KLINES_LIMIT.value - BacktestConfig.INDICATOR_INIT_SIZE.value
         )
 
         for i in range(BacktestConfig.INDICATOR_INIT_SIZE.value, sample_size):
@@ -49,7 +49,6 @@ class Backtesting(Runner):
                 open_time = current_kline["Open_time"]
 
                 self.orders.get(symbol).remove_expired_orders_backtesting(open_time)
-                self.strategy.run_backtest(symbol, i)
                 self.test_results[symbol].evaluate_filled_orders(
                     positions=self.positions.get(symbol),
                     orders=self.orders.get(symbol),
@@ -57,6 +56,7 @@ class Backtesting(Runner):
                     balance=self.balance,
                     leverage=AppConfig.LEVERAGE.value,
                 )
+                self.strategy.run_backtest(symbol, i)
 
         LOGGER.info("Backtesting finished. Closing remaining positions...")
 

@@ -42,7 +42,7 @@ class PositionList:
             self.positions.remove(position)
 
     def open_position_backtesting(
-            self, balance: Balance, order: Order, time: Timestamp, leverage: int
+        self, balance: Balance, order: Order, time: Timestamp, leverage: int
     ) -> None:
         position = Position(
             symbol=order.symbol,

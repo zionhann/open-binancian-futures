@@ -32,18 +32,18 @@ BASIC_COLUMNS = [
 
 
 class Strategy(ABC):
-    _LOGGER = logging.getLogger(__name__)
-    _is_imported = False
+    LOGGER = logging.getLogger(__name__)
+    is_imported = False
 
     @staticmethod
     def of(
-            name: str | None,
-            client: UMFutures,
-            exchange_info: ExchangeInfo | None = None,
-            balance: Balance | None = None,
-            orders: OrderBook | None = None,
-            positions: PositionBook | None = None,
-            indicators: Indicator | None = None,
+        name: str | None,
+        client: UMFutures,
+        exchange_info: ExchangeInfo | None = None,
+        balance: Balance | None = None,
+        orders: OrderBook | None = None,
+        positions: PositionBook | None = None,
+        indicators: Indicator | None = None,
     ) -> "Strategy":
         if name is None:
             raise ValueError("Strategy is not specified")
@@ -62,23 +62,23 @@ class Strategy(ABC):
 
     @staticmethod
     def _import_strategies() -> dict[str, type["Strategy"]]:
-        if not Strategy._is_imported:
+        if not Strategy.is_imported:
             for _, mod_name, _ in pkgutil.iter_modules(
-                    sys.modules[__name__].__path__, __name__ + "."
+                sys.modules[__name__].__path__, __name__ + "."
             ):
                 importlib.import_module(mod_name)
-            Strategy._is_imported = True
+            Strategy.is_imported = True
 
         return {clazz.__name__: clazz for clazz in Strategy.__subclasses__()}
 
     def __init__(
-            self,
-            client: UMFutures,
-            exchange_info: ExchangeInfo | None,
-            balance: Balance | None,
-            orders: OrderBook | None,
-            positions: PositionBook | None,
-            indicators: Indicator | None = None,
+        self,
+        client: UMFutures,
+        exchange_info: ExchangeInfo | None,
+        balance: Balance | None,
+        orders: OrderBook | None,
+        positions: PositionBook | None,
+        indicators: Indicator | None = None,
     ) -> None:
         self.client = client
         self.exchange_info = exchange_info or futures.init_exchange_info()
@@ -101,17 +101,17 @@ class Strategy(ABC):
                 f"Loaded indicators for {symbol}:\n{initial_indicators.tail().T.to_string(header=False)}"
             )
             """
-            self._LOGGER.info(
+            self.LOGGER.info(
                 f"Loaded indicators for {symbol}:\n{indicator.get(symbol).tail().to_string(index=False)}"
             )
 
     def calculate_stop_price(
-            self,
-            entry_price: float,
-            order_type: OrderType,
-            stop_side: PositionSide,
-            tp_ratio: float | None = None,
-            sl_ratio: float | None = None,
+        self,
+        entry_price: float,
+        order_type: OrderType,
+        stop_side: PositionSide,
+        tp_ratio: float | None = None,
+        sl_ratio: float | None = None,
     ) -> float:
         sl_ratio = (sl_ratio or TPSL.STOP_LOSS_RATIO.value) / AppConfig.LEVERAGE.value
         tp_ratio = (tp_ratio or TPSL.TAKE_PROFIT_RATIO.value) / AppConfig.LEVERAGE.value
@@ -124,33 +124,35 @@ class Strategy(ABC):
         factor = (
             (1 - ratio)
             if (
-                       order_type in [OrderType.STOP_MARKET, OrderType.STOP_LIMIT]
-                       and stop_side == PositionSide.SELL
-               )
-               or (
-                       order_type
-                       in [OrderType.TAKE_PROFIT_MARKET, OrderType.TAKE_PROFIT_LIMIT]
-                       and stop_side == PositionSide.BUY
-               )
+                order_type in [OrderType.STOP_MARKET, OrderType.STOP_LIMIT]
+                and stop_side == PositionSide.SELL
+            )
+            or (
+                order_type
+                in [OrderType.TAKE_PROFIT_MARKET, OrderType.TAKE_PROFIT_LIMIT]
+                and stop_side == PositionSide.BUY
+            )
             else (1 + ratio)
         )
         decimals = decimal_places(entry_price)
         return round(entry_price * factor, decimals)
 
     def set_tpsl(
-            self,
-            symbol: str,
-            position_side: PositionSide,
-            price: float,
-            close_position: bool | None = None,
-            order_types: list[OrderType] | None = None,
-            quantity: float | None = None,
-            tp_ratio: float | None = None,
-            sl_ratio: float | None = None,
+        self,
+        symbol: str,
+        position_side: PositionSide,
+        price: float | None = None,
+        stop_price: float | None = None,
+        close_position: bool | None = None,
+        order_types: list[OrderType] | None = None,
+        quantity: float | None = None,
+        tp_ratio: float | None = None,
+        sl_ratio: float | None = None,
     ) -> None:
-        reduce_only = None if close_position else True
-        quantity = quantity if reduce_only else None
-        order_types = (
+        if price is None and stop_price is None:
+            raise ValueError("Either price or stop_price must be provided")
+
+        _order_types = (
             order_types
             if order_types is not None
             else [
@@ -159,41 +161,43 @@ class Strategy(ABC):
             ]
         )
 
-        for order_type in order_types:
-            stop_price = self.calculate_stop_price(
+        for order_type in _order_types:
+            reduce_only = None if close_position else True
+            _stop_price = stop_price or self.calculate_stop_price(
                 entry_price=price,
                 order_type=order_type,
                 stop_side=position_side,
                 tp_ratio=tp_ratio,
                 sl_ratio=sl_ratio,
             )
-            _price = stop_price if reduce_only else None
+            _price = (_stop_price or price) if reduce_only else None
+            _quantity = quantity if reduce_only else None
 
             fetch(
                 self.client.new_order,
                 symbol=symbol,
                 side=position_side.value,
                 type=order_type.value,
-                stopPrice=stop_price,
+                price=_price,
+                stopPrice=_stop_price,
+                quantity=_quantity,
                 closePosition=close_position,
                 timeInForce=TimeInForce.GTE_GTC.value,
-                price=_price,
-                quantity=quantity,
                 reduceOnly=reduce_only,
             )
 
     def set_trailing_stop(
-            self,
-            symbol: str,
-            position_side: PositionSide,
-            quantity: float,
-            price: float | None = None,
-            activation_ratio: float | None = None,
-            callback_ratio: float | None = None,
+        self,
+        symbol: str,
+        position_side: PositionSide,
+        quantity: float,
+        price: float | None = None,
+        activation_ratio: float | None = None,
+        callback_ratio: float | None = None,
     ) -> None:
         activation_ratio = (
-                                   activation_ratio or TS.ACTIVATION_RATIO.value
-                           ) / AppConfig.LEVERAGE.value
+            activation_ratio or TS.ACTIVATION_RATIO.value
+        ) / AppConfig.LEVERAGE.value
         factor = (
             (1 + activation_ratio)
             if position_side == PositionSide.SELL
@@ -203,7 +207,7 @@ class Strategy(ABC):
         activation_price = round(price * factor, decimals) if price else None
 
         callback_ratio = (
-                (callback_ratio or TS.CALLBACK_RATIO.value) / AppConfig.LEVERAGE.value * 100
+            (callback_ratio or TS.CALLBACK_RATIO.value) / AppConfig.LEVERAGE.value * 100
         )
         safe_cb_rate = round(min(max(0.1, callback_ratio), 5), 2)
 
@@ -248,7 +252,7 @@ class Strategy(ABC):
             f"Updated indicators for {symbol}:\n{self.indicators[symbol].tail().T.to_string(header=False)}"
         )
         """
-        self._LOGGER.info(
+        self.LOGGER.info(
             f"Updated indicators for {symbol}:\n{self.indicators.get(symbol).tail().to_string(index=False)}"
         )
         self.run(symbol)
@@ -261,7 +265,7 @@ class Strategy(ABC):
             float(data["bep"]),
         )
 
-        if not amount:
+        if price == 0.0 or amount == 0.0:
             self.positions.get(symbol).clear()
             return
 
@@ -277,11 +281,12 @@ class Strategy(ABC):
                 )
             ]
         )
+        self.LOGGER.info(f"Updated positions: {self.positions.get(symbol)}")
 
     def on_balance_update(self, data: dict[str, str]) -> None:
         if data["a"] == "USDT":
             self.balance = Balance(float(data["cw"]))
-            self._LOGGER.info(f"Updated available USDT: {self.balance}")
+            self.LOGGER.info(f"Updated available USDT: {self.balance}")
 
     def on_new_order(self, data: dict[str, Any]) -> None:
         (
@@ -318,7 +323,7 @@ class Strategy(ABC):
             )
         )
 
-        self._LOGGER.info(
+        self.LOGGER.info(
             textwrap.dedent(
                 f"""
                 Opened {og_order_type.value} order @ {price if price else stop_price}
@@ -331,9 +336,9 @@ class Strategy(ABC):
         )
 
     def on_filled_order(
-            self,
-            data: dict[str, Any],
-            realized_profit: float,
+        self,
+        data: dict[str, Any],
+        realized_profit: float,
     ) -> None:
         (
             order_id,
@@ -357,7 +362,7 @@ class Strategy(ABC):
         average_price = round(float(data["ap"]), decimal_places(price))
         filled_percentage = (filled / quantity) * 100
 
-        self._LOGGER.info(
+        self.LOGGER.info(
             textwrap.dedent(
                 f"""
                 {og_order_type.value} order has been filled @ {average_price}
@@ -388,7 +393,7 @@ class Strategy(ABC):
             PositionSide(data["S"]),
         )
         self.orders.get(symbol).remove_by_id(order_id)
-        self._LOGGER.info(
+        self.LOGGER.info(
             f"{og_order_type.value} order for {symbol} has been cancelled. (Side: {side.value})"
         )
 
@@ -400,18 +405,15 @@ class Strategy(ABC):
             PositionSide(data["S"]),
         )
         self.orders.get(symbol).remove_by_id(order_id)
-        self._LOGGER.info(
+        self.LOGGER.info(
             f"{og_order_type.value} order for {symbol} has expired. (Side: {side.value})"
         )
 
     @abstractmethod
-    def load(self, df: DataFrame) -> DataFrame:
-        ...
+    def load(self, df: DataFrame) -> DataFrame: ...
 
     @abstractmethod
-    def run(self, symbol: str) -> None:
-        ...
+    def run(self, symbol: str) -> None: ...
 
     @abstractmethod
-    def run_backtest(self, symbol: str, index: int) -> None:
-        ...
+    def run_backtest(self, symbol: str, index: int) -> None: ...

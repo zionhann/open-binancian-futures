@@ -51,6 +51,7 @@ class OrderList:
                     textwrap.dedent(
                         f"""
                         {order.type.value} ORDER EXPIRED @ {time}
+                        ID: {order.id}
                         Symbol: {order.symbol}
                         Side: {order.side.value}
                         Price: {order.price}
@@ -58,7 +59,7 @@ class OrderList:
                         """
                     )
                 )
-                self.remove_by_id(order.id)
+                self.clear()
 
     def filled_orders_backtesting(self, high: float, low: float) -> "OrderList":
         return OrderList(
@@ -72,12 +73,20 @@ class OrderList:
         )
 
     def _is_filled_backtesting(self, order: "Order", high: float, low: float) -> bool:
-        if order.is_type(OrderType.LIMIT, OrderType.TAKE_PROFIT_MARKET):
+        if order.is_type(OrderType.LIMIT):
             return (
                 order.price >= low
                 if order.side == PositionSide.BUY
                 else order.price <= high
             )
+
+        if order.is_type(OrderType.TAKE_PROFIT_MARKET):
+            return (
+                order.price <= high
+                if order.side == PositionSide.SELL
+                else order.price >= low
+            )
+
         if order.is_type(OrderType.STOP_MARKET):
             return (
                 order.price >= low
@@ -93,12 +102,14 @@ class OrderList:
             side: PositionSide,
             entry_price: float,
             entry_quantity: float,
+            time: Timestamp,
             gtd_time=0,
     ) -> None:
+        order_id = uuid.uuid4().int
         self.add(
             Order(
                 symbol=symbol,
-                id=uuid.uuid4().int,
+                id=order_id,
                 type=type,
                 side=side,
                 price=entry_price,
@@ -110,11 +121,13 @@ class OrderList:
         LOGGER.debug(
             textwrap.dedent(
                 f"""
+                Date: {time.strftime("%Y-%m-%d %H:%M:%S")}
                 OPEN {type.value} ORDER @ {entry_price}
+                ID: {order_id}
                 Symbol: {symbol}
                 Side: {side.value}
                 Quantity: {entry_quantity}
-                GTD: {gtd_time}
+                GTD: {time}
                 """
             )
         )

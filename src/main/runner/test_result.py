@@ -57,6 +57,7 @@ class TestResult:
             elif order.is_type(
                     OrderType.STOP_MARKET, OrderType.TAKE_PROFIT_MARKET
             ) and (position := positions.find_first()):
+
                 pnl = position.realized_pnl_backtesting(balance, order, time)
                 positions.clear()
                 orders.clear()
@@ -69,6 +70,8 @@ class TestResult:
                 else:
                     self.trade_count_sell += 1
                     self.win_count_sell += 1 if pnl > 0 else 0
+
+                return
 
     def print(self):
         trade_count = self.trade_count_buy + self.trade_count_sell

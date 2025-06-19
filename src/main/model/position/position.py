@@ -40,8 +40,8 @@ class Position:
         return self.amount * self.price / self.leverage
 
     def pnl_backtesting(self, filled: Order) -> float:
-        pnl = abs(self.price - filled.price) * self.amount
-        return pnl if filled.type == OrderType.TAKE_PROFIT_MARKET else -pnl
+        price_diff = filled.price - self.price if self.is_LONG() else self.price - filled.price
+        return price_diff * self.amount
 
     def realized_pnl_backtesting(
             self, balance: Balance, order: Order, time: Timestamp
@@ -54,6 +54,7 @@ class Position:
                 f"""
                 Date: {time.strftime("%Y-%m-%d %H:%M:%S")}
                 {order.side.value} {self.symbol} @ {order.price}
+                ID: {order.id}
                 Type: {order.type.value}
                 Realized PNL: {pnl:.2f} USDT ({pnl / margin * 100:.2f}%)
                 Balance: {balance}
