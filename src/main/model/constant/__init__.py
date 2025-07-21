@@ -25,7 +25,7 @@ class AppConfig(Enum):
     INTERVAL = os.getenv("INTERVAL", "1d")
     LEVERAGE = int(os.getenv("LEVERAGE", 1))
     SIZE = float(os.getenv("SIZE", 0.05))
-    MAX_AVERAGING = int(os.getenv("MAX_AVERAGING", 1))
+    AVERAGING = [float(ratio.strip()) for ratio in os.getenv("AVERAGING", "1").split(",")]
     IS_TESTNET = os.getenv("IS_TESTNET", "false") == "true"
     GTD_NLINES = int(os.getenv("GTD_NLINES", 3))
     WEBHOOK_URL = os.getenv("WEBHOOK_URL")

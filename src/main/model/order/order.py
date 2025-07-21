@@ -23,7 +23,7 @@ class Order:
         self.gtd = gtd
 
     def __repr__(self) -> str:
-        return f"\n{__class__.__name__}(symbol={self.symbol}, type={self.type}, side={self.side}, price={self.price})"
+        return f"\n\t{__class__.__name__}(symbol={self.symbol}, type={self.type}, side={self.side}, price={self.price})"
 
     def is_type(self, *args: OrderType) -> bool:
         return self.type in args

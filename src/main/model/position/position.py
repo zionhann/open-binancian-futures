@@ -4,7 +4,7 @@ import textwrap
 from pandas import Timestamp
 
 from model.balance import Balance
-from model.constant import OrderType, PositionSide
+from model.constant import PositionSide
 from model.order import Order
 
 LOGGER = logging.getLogger(__name__)
@@ -28,7 +28,7 @@ class Position:
         self.leverage = leverage
 
     def __repr__(self) -> str:
-        return f"\n{__class__.__name__}(symbol={self.symbol}, side={self.side}, leverage={self.leverage}, price={self.price}, amount={self.amount})"
+        return f"\n\t{__class__.__name__}(symbol={self.symbol}, side={self.side}, leverage={self.leverage}, price={self.price}, amount={self.amount})"
 
     def is_LONG(self) -> bool:
         return self.side == PositionSide.BUY

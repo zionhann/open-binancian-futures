@@ -12,6 +12,9 @@ class PositionBook:
     ) -> None:
         self.positions = positions
 
+    def __repr__(self) -> str:
+        return str(self.positions)
+
     def get(self, symbol: str) -> PositionList:
         return get_or_raise(
             self.positions.get(symbol),

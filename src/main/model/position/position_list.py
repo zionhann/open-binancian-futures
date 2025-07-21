@@ -13,14 +13,16 @@ LOGGER = logging.getLogger(__name__)
 class PositionList:
     def __init__(self, positions: list[Position] = []) -> None:
         self.positions: list[Position] = positions
-        self.averaging_count = 0 if not positions else 1
+        self.entry_count = 0 if not positions else 1
 
     def __repr__(self) -> str:
-        return str(self.positions)
+        if not self.positions:
+            return "[]"
+        return f"{__class__.__name__}(positions={self.positions}, entry_count={self.entry_count})"
 
     def clear(self) -> None:
         self.positions = []
-        self.averaging_count = 0
+        self.entry_count = 0
 
     def find_first(self) -> "Position | None":
         return next((position for position in self.positions), None)
@@ -34,15 +36,18 @@ class PositionList:
     def is_empty(self) -> bool:
         return not self.positions
 
-    def update(self, positions: list[Position]) -> None:
+    def update_positions(self, positions: list[Position]) -> None:
         self.positions = positions
+
+    def update_count(self, count: int) -> None:
+        self.entry_count = count
 
     def remove(self, position: Position) -> None:
         if position in self.positions:
             self.positions.remove(position)
 
     def open_position_backtesting(
-        self, balance: Balance, order: Order, time: Timestamp, leverage: int
+            self, balance: Balance, order: Order, time: Timestamp, leverage: int
     ) -> None:
         position = Position(
             symbol=order.symbol,

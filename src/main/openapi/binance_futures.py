@@ -78,7 +78,7 @@ def init_orders() -> OrderBook:
                     id=item["orderId"],
                     type=OrderType(item["origType"]),
                     side=PositionSide(item["side"]),
-                    price=float(item["price"]),
+                    price=float(item["price"]) or float(item["stopPrice"]),
                     quantity=float(item["origQty"]),
                     gtd=item["goodTillDate"],
                 )
