@@ -101,9 +101,11 @@ def init_positions() -> PositionBook:
                     amount=amount,
                     side=(PositionSide.BUY if amount > 0 else PositionSide.SELL),
                     leverage=AppConfig.LEVERAGE.value,
+                    bep=bep
                 )
                 for p in fetch(client.get_position_risk, symbol=symbol)["data"]
-                for price, amount in [(float(p["entryPrice"]), float(p["positionAmt"]))]
+                for price, amount, bep in
+                [(float(p["entryPrice"]), float(p["positionAmt"]), float(p["breakEvenPrice"]))]
                 if not (price == 0.0 or amount == 0.0)
             ]
         )

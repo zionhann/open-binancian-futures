@@ -28,7 +28,7 @@ class Position:
         self.leverage = leverage
 
     def __repr__(self) -> str:
-        return f"\n\t{__class__.__name__}(symbol={self.symbol}, side={self.side}, leverage={self.leverage}, price={self.price}, amount={self.amount})"
+        return f"\n\t{__class__.__name__}(symbol={self.symbol}, side={self.side}, price={self.price}, bep={self.break_even_price}, amount={self.amount}, leverage={self.leverage})"
 
     def is_LONG(self) -> bool:
         return self.side == PositionSide.BUY
