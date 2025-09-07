@@ -132,7 +132,7 @@ def init_indicators(limit: int | None = None) -> Indicator:
         df["Open_time"] = (
             pd.to_datetime(df["Open_time"], unit="ms")
             .dt.tz_localize("UTC")
-            .dt.tz_convert("Asia/Seoul")
+            .dt.tz_convert(AppConfig.TIMEZONE)
         )
         df.set_index("Open_time", inplace=True, drop=False)
 

@@ -233,7 +233,7 @@ class Strategy(ABC):
         open_time = (
             pd.to_datetime(data["t"], unit="ms")
             .tz_localize("UTC")
-            .tz_convert("Asia/Seoul")
+            .tz_convert(AppConfig.TIMEZONE)
         )
         symbol = data["s"]
         new_data = {
