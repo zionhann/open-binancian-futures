@@ -64,8 +64,8 @@ def fetch(request: Callable, base_delay=0.25, max_retries=3, **kwargs) -> dict:
 
 
 def gtd(timestamp: float, nlines: int) -> int:
-    unit = AppConfig.INTERVAL.value[-1]
-    base = INTERVAL_TO_SECONDS[unit] * int(AppConfig.INTERVAL.value[:-1])
+    unit = AppConfig.INTERVAL[-1]
+    base = INTERVAL_TO_SECONDS[unit] * int(AppConfig.INTERVAL[:-1])
     exp = max(base * nlines, MIN_EXP)
     gtd = int(timestamp + exp)
     return gtd * UNIT_MS
@@ -79,7 +79,10 @@ def decimal_places(num: float) -> int:
 T = TypeVar("T")
 
 
-def get_or_raise(value: T | None, raisable: Callable[[], Exception]) -> T:
+def get_or_raise(
+        value: T | None,
+        raisable: Callable[[], Exception] = lambda: ValueError("Value is None"),
+) -> T:
     if value is None:
         raise raisable()
     return value

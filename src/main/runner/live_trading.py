@@ -10,10 +10,11 @@ from openapi import binance_futures as futures
 from runner import Runner
 from strategy import Strategy
 from utils import fetch
+from webhook import Webhook
 
 LOGGER = logging.getLogger(__name__)
 LISTEN_KEY = "listenKey"
-KEEPALIVE_INTERVAL = 3600 * 23 + 60 * 55
+KEEPALIVE_INTERVAL = 3600 * 23
 
 
 class LiveTrading(Runner):
@@ -27,12 +28,13 @@ class LiveTrading(Runner):
             stream_url=self.stream_url,
             on_message=self._user_stream_handler,
         )
-
+        self.webhook = Webhook.of(AppConfig.WEBHOOK_URL)
         self.strategy: Final = Strategy.of(
-            name=Required.STRATEGY.value,
+            name=Required.STRATEGY,
             client=self.client,
+            webhook=self.webhook
         )
-        self.realized_profit = {s: 0.0 for s in AppConfig.SYMBOLS.value}
+        self.realized_profit = {s: 0.0 for s in AppConfig.SYMBOLS}
 
     def _market_stream_handler(self, _, stream) -> None:
         try:
@@ -64,6 +66,8 @@ class LiveTrading(Runner):
                     self.listen_key = fetch(self.client.new_listen_key).get(LISTEN_KEY)
                     fetch(self.client_ws_user.user_data, listen_key=self.listen_key)
 
+                    self.webhook.send_message("[ALERT] Recreated listen key.")
+
         except Exception as e:
             LOGGER.error(f"An error occurred in the user data handler: {e}")
 
@@ -74,7 +78,7 @@ class LiveTrading(Runner):
         status = OrderStatus(data["X"])
         realized_profit = float(data["rp"])
 
-        if symbol in AppConfig.SYMBOLS.value:
+        if symbol in AppConfig.SYMBOLS:
             if status == OrderStatus.NEW and og_order_type == curr_order_type:
                 self.strategy.on_new_order(data)
 
@@ -111,7 +115,7 @@ class LiveTrading(Runner):
         LOGGER.info("Connecting to User Data Stream...")
         fetch(self.client_ws_user.user_data, listen_key=self.listen_key)
 
-        for s in AppConfig.SYMBOLS.value:
+        for s in AppConfig.SYMBOLS:
             self._set_leverage(symbol=s)
             self._subscribe_to_stream(symbol=s)
 
@@ -121,13 +125,13 @@ class LiveTrading(Runner):
         fetch(
             self.client.change_leverage,
             symbol=symbol,
-            leverage=AppConfig.LEVERAGE.value,
+            leverage=AppConfig.LEVERAGE,
         )
-        LOGGER.info(f"Set leverage for {symbol} to {AppConfig.LEVERAGE.value}.")
+        LOGGER.info(f"Set leverage for {symbol} to {AppConfig.LEVERAGE}.")
 
     def _subscribe_to_stream(self, symbol: str):
-        fetch(self.client_ws.kline, symbol=symbol, interval=AppConfig.INTERVAL.value)
-        LOGGER.info(f"Subscribed to {symbol} klines by {AppConfig.INTERVAL.value}...")
+        fetch(self.client_ws.kline, symbol=symbol, interval=AppConfig.INTERVAL)
+        LOGGER.info(f"Subscribed to {symbol} klines by {AppConfig.INTERVAL}...")
 
     def _keepalive_stream(self):
         while True:
@@ -144,10 +148,11 @@ class LiveTrading(Runner):
                 stream_url=self.stream_url, on_message=self._user_stream_handler
             )
 
-            for s in AppConfig.SYMBOLS.value:
+            for s in AppConfig.SYMBOLS:
                 self._subscribe_to_stream(symbol=s)
 
             fetch(self.client_ws_user.user_data, listen_key=self.listen_key)
+            self.webhook.send_message("[ALERT] Reconnected to the stream.")
 
     def close(self) -> None:
         LOGGER.info("Initiating shutdown process...")

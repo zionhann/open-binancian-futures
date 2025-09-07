@@ -5,7 +5,7 @@ from enum import Enum
 INTERVAL_TO_SECONDS = {"m": 60, "h": 3600, "d": 86400}
 
 
-class Required(Enum):
+class Required:
     """
     Either (API_KEY, API_SECRET) or (API_KEY_TEST, API_SECRET_TEST) is required.
     STRATEGY: The class name of the strategy to use. It must be located in the `runner.core.strategy` module.
@@ -20,7 +20,7 @@ class Required(Enum):
     STRATEGY = os.getenv("STRATEGY")
 
 
-class AppConfig(Enum):
+class AppConfig:
     SYMBOLS = [s.strip() for s in os.getenv("SYMBOLS", "BTCUSDT").split(",")]
     INTERVAL = os.getenv("INTERVAL", "1d")
     LEVERAGE = int(os.getenv("LEVERAGE", 1))
@@ -31,31 +31,32 @@ class AppConfig(Enum):
     WEBHOOK_URL = os.getenv("WEBHOOK_URL")
 
 
-class BacktestConfig(Enum):
+class BacktestConfig:
     IS_BACKTEST = os.getenv("IS_BACKTEST", "false") == "true"
     BALANCE = float(os.getenv("BACKTEST_BALANCE", 100))
     KLINES_LIMIT = min(int(os.getenv("BACKTEST_KLINES_LIMIT", 1000)), 1000)
     INDICATOR_INIT_SIZE = int(
         os.getenv("BACKTEST_INDICATOR_INIT_SIZE", KLINES_LIMIT * 0.2)
     )
+    SAMPLE_SIZE = int(KLINES_LIMIT - INDICATOR_INIT_SIZE)
 
 
-class TPSL(Enum):
+class Bracket:
     STOP_LOSS_RATIO = float(os.getenv("TPSL_STOP_LOSS_RATIO", 0.05))
     TAKE_PROFIT_RATIO = float(os.getenv("TPSL_TAKE_PROFIT_RATIO", STOP_LOSS_RATIO * 2))
 
 
-class TS(Enum):
+class TrailingStop:
     ACTIVATION_RATIO = float(
         os.getenv(
             "TS_ACTIVATION_RATIO",
-            TPSL.TAKE_PROFIT_RATIO.value,
+            Bracket.TAKE_PROFIT_RATIO,
         )
     )
     CALLBACK_RATIO = float(
         os.getenv(
             "TS_CALLBACK_RATIO",
-            abs(ACTIVATION_RATIO - TPSL.STOP_LOSS_RATIO.value),
+            abs(ACTIVATION_RATIO - Bracket.STOP_LOSS_RATIO),
         )
     )
 

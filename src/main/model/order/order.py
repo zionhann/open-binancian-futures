@@ -30,3 +30,30 @@ class Order:
 
     def is_expired(self, time: Timestamp) -> bool:
         return self.gtd < int(time.timestamp() * 1000) if self.gtd else False
+
+    def is_filled_(self, high, low) -> bool:
+        if self.is_type(OrderType.MARKET):
+            return True
+
+        if self.is_type(OrderType.LIMIT):
+            return (
+                self.price >= low
+                if self.side == PositionSide.BUY
+                else self.price <= high
+            )
+
+        if self.is_type(OrderType.TAKE_PROFIT_MARKET):
+            return (
+                self.price <= high
+                if self.side == PositionSide.SELL
+                else self.price >= low
+            )
+
+        if self.is_type(OrderType.STOP_MARKET):
+            return (
+                self.price >= low
+                if self.side == PositionSide.SELL
+                else self.price <= high
+            )
+
+        return False

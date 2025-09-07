@@ -29,17 +29,17 @@ KLINES_COLUMNS = [
     "Ignore",
 ]
 
-if AppConfig.IS_TESTNET.value:
+if AppConfig.IS_TESTNET:
     _base_url, stream_url = BaseURL.TESTNET_REST.value, BaseURL.TESTNET_WS.value
     _api_key, _api_secret = (
-        Required.API_KEY_TEST.value,
-        Required.API_SECRET_TEST.value,
+        Required.API_KEY_TEST,
+        Required.API_SECRET_TEST,
     )
 else:
     _base_url, stream_url = BaseURL.MAINNET_REST.value, BaseURL.MAINNET_WS.value
     _api_key, _api_secret = (
-        Required.API_KEY.value,
-        Required.API_SECRET.value,
+        Required.API_KEY,
+        Required.API_SECRET,
     )
 
 client: Final = UMFutures(
@@ -52,7 +52,7 @@ client: Final = UMFutures(
 def init_exchange_info() -> ExchangeInfo:
     payload = fetch(client.exchange_info)
     target_symbols = filter(
-        lambda item: item["symbol"] in AppConfig.SYMBOLS.value, payload["symbols"]
+        lambda item: item["symbol"] in AppConfig.SYMBOLS, payload["symbols"]
     )
     return ExchangeInfo(target_symbols)
 
@@ -85,7 +85,7 @@ def init_orders() -> OrderBook:
                 for item in fetch(client.get_orders, symbol=symbol)["data"]
             ]
         )
-        for symbol in AppConfig.SYMBOLS.value
+        for symbol in AppConfig.SYMBOLS
     }
     LOGGER.info(f"Loaded open orders: {orders}")
     return OrderBook(orders)
@@ -100,7 +100,7 @@ def init_positions() -> PositionBook:
                     price=price,
                     amount=amount,
                     side=(PositionSide.BUY if amount > 0 else PositionSide.SELL),
-                    leverage=AppConfig.LEVERAGE.value,
+                    leverage=AppConfig.LEVERAGE,
                     bep=bep
                 )
                 for p in fetch(client.get_position_risk, symbol=symbol)["data"]
@@ -109,7 +109,7 @@ def init_positions() -> PositionBook:
                 if not (price == 0.0 or amount == 0.0)
             ]
         )
-        for symbol in AppConfig.SYMBOLS.value
+        for symbol in AppConfig.SYMBOLS
     }
     LOGGER.info(f"Loaded positions: {positions}")
     return PositionBook(positions)
@@ -118,13 +118,13 @@ def init_positions() -> PositionBook:
 def init_indicators(limit: int | None = None) -> Indicator:
     indicators = {}
 
-    for symbol in AppConfig.SYMBOLS.value:
-        LOGGER.info(f"Fetching {symbol} klines by {AppConfig.INTERVAL.value}...")
+    for symbol in AppConfig.SYMBOLS:
+        LOGGER.info(f"Fetching {symbol} klines by {AppConfig.INTERVAL}...")
 
         klines_data = fetch(
             client.klines,
             symbol=symbol,
-            interval=AppConfig.INTERVAL.value,
+            interval=AppConfig.INTERVAL,
             limit=limit,
         )["data"][:-1]
 

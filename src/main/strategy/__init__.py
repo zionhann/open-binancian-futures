@@ -17,7 +17,7 @@ from model.indicator import Indicator
 from model.order import Order, OrderBook
 from model.position import Position, PositionBook
 from openapi import binance_futures as futures
-from utils import decimal_places, fetch
+from utils import decimal_places, fetch, get_or_raise
 from webhook import Webhook
 
 BASIC_COLUMNS = [
@@ -43,6 +43,7 @@ class Strategy(ABC):
             balance: Balance | None = None,
             orders: OrderBook | None = None,
             positions: PositionBook | None = None,
+            webhook: Webhook | None = None,
             indicators: Indicator | None = None,
     ) -> "Strategy":
         if name is None:
@@ -57,6 +58,7 @@ class Strategy(ABC):
             balance=balance,
             orders=orders,
             positions=positions,
+            webhook=webhook,
             indicators=indicators,
         )
 
@@ -78,20 +80,20 @@ class Strategy(ABC):
             balance: Balance | None,
             orders: OrderBook | None,
             positions: PositionBook | None,
-            indicators: Indicator | None = None,
+            webhook: Webhook | None,
+            indicators: Indicator | None,
     ) -> None:
         self.client = client
         self.exchange_info = exchange_info or futures.init_exchange_info()
         self.balance = balance or futures.init_balance()
         self.orders = orders or futures.init_orders()
         self.positions = positions or futures.init_positions()
-        self.webhook = Webhook.of(AppConfig.WEBHOOK_URL.value)
-
+        self.webhook = webhook or Webhook.of(url=None)
         self.indicators = indicators or futures.init_indicators()
         self.add_indicators(self.indicators)
 
     def add_indicators(self, indicator: Indicator) -> None:
-        for symbol in AppConfig.SYMBOLS.value:
+        for symbol in AppConfig.SYMBOLS:
             df = indicator.get(symbol)[BASIC_COLUMNS]
             indicator.update(symbol, self.load(df))
 
@@ -107,14 +109,15 @@ class Strategy(ABC):
 
     def calculate_stop_price(
             self,
+            symbol: str,
             entry_price: float,
             order_type: OrderType,
             stop_side: PositionSide,
             tp_ratio: float | None = None,
             sl_ratio: float | None = None,
     ) -> float:
-        sl_ratio = (sl_ratio or TPSL.STOP_LOSS_RATIO.value) / AppConfig.LEVERAGE.value
-        tp_ratio = (tp_ratio or TPSL.TAKE_PROFIT_RATIO.value) / AppConfig.LEVERAGE.value
+        sl_ratio = (sl_ratio or Bracket.STOP_LOSS_RATIO) / AppConfig.LEVERAGE
+        tp_ratio = (tp_ratio or Bracket.TAKE_PROFIT_RATIO) / AppConfig.LEVERAGE
 
         ratio = (
             sl_ratio
@@ -134,8 +137,7 @@ class Strategy(ABC):
                )
             else (1 + ratio)
         )
-        decimals = decimal_places(entry_price)
-        return round(entry_price * factor, decimals)
+        return self.exchange_info.to_entry_price(symbol, entry_price * factor)
 
     def set_tpsl(
             self,
@@ -149,9 +151,6 @@ class Strategy(ABC):
             tp_ratio: float | None = None,
             sl_ratio: float | None = None,
     ) -> None:
-        if price is None and stop_price is None:
-            raise ValueError("Either price or stop_price must be provided")
-
         _order_types = (
             order_types
             if order_types is not None
@@ -164,7 +163,11 @@ class Strategy(ABC):
         for order_type in _order_types:
             reduce_only = None if close_position else True
             _stop_price = stop_price or self.calculate_stop_price(
-                entry_price=price,
+                symbol=symbol,
+                entry_price=get_or_raise(
+                    price,
+                    lambda: ValueError("Either price or stop_price must be provided"),
+                ),
                 order_type=order_type,
                 stop_side=position_side,
                 tp_ratio=tp_ratio,
@@ -179,7 +182,7 @@ class Strategy(ABC):
                 side=position_side.value,
                 type=order_type.value,
                 price=_price,
-                stopPrice=_stop_price,
+                stopPrice=self.exchange_info.to_entry_price(symbol, _stop_price),
                 quantity=_quantity,
                 closePosition=close_position,
                 timeInForce=TimeInForce.GTE_GTC.value,
@@ -195,7 +198,9 @@ class Strategy(ABC):
             activation_ratio: float | None = None,
             callback_ratio: float | None = None,
     ) -> None:
-        activation_ratio = (activation_ratio or TS.ACTIVATION_RATIO.value) / AppConfig.LEVERAGE.value
+        activation_ratio = (
+                                   activation_ratio or TrailingStop.ACTIVATION_RATIO
+                           ) / AppConfig.LEVERAGE
         factor = (
             (1 + activation_ratio)
             if position_side == PositionSide.SELL
@@ -204,7 +209,9 @@ class Strategy(ABC):
         decimals = decimal_places(price) if price else None
         activation_price = round(price * factor, decimals) if price else None
 
-        callback_ratio = (callback_ratio or TS.CALLBACK_RATIO.value) / AppConfig.LEVERAGE.value * 100
+        callback_ratio = (
+                (callback_ratio or TrailingStop.CALLBACK_RATIO) / AppConfig.LEVERAGE * 100
+        )
         safe_cb_rate = round(min(max(0.1, callback_ratio), 5), 2)
 
         fetch(
@@ -272,7 +279,7 @@ class Strategy(ABC):
                     price=price,
                     amount=amount,
                     side=(PositionSide.BUY if amount > 0 else PositionSide.SELL),
-                    leverage=AppConfig.LEVERAGE.value,
+                    leverage=AppConfig.LEVERAGE,
                     bep=bep,
                 )
             ]
@@ -327,7 +334,7 @@ class Strategy(ABC):
                 Symbol: {symbol}
                 Side: {side.value}
                 Quantity: {quantity or "N/A"}
-                Reduce-Only: {is_reduce_only}
+                Reduce-only: {is_reduce_only}
                 """
             )
         )
@@ -374,7 +381,7 @@ class Strategy(ABC):
         self.webhook.send_message(
             message=textwrap.dedent(
                 f"""
-                [{status.value}] {side.value} {filled} {symbol[:-4]} @ {average_price}
+                [{status.value}] {symbol[:-4]} {side.value} {filled} @ {average_price}
                 Order: {og_order_type.value}
                 PNL: {realized_profit} USDT
                 """

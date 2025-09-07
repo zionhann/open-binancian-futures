@@ -6,7 +6,7 @@ from logging.handlers import TimedRotatingFileHandler
 from model.constant import AppConfig
 
 BASE_DIR = "log"
-SUB_DIR = "test" if AppConfig.IS_TESTNET.value else "main"
+SUB_DIR = "test" if AppConfig.IS_TESTNET else "main"
 
 FILE_HANDLER_INTERVAL = 1
 FILE_HANDLER_BACKUP_COUNT = 7

@@ -14,5 +14,5 @@ class Balance:
         initial_margin = self._balance * size
         return initial_margin * leverage / entry_price
 
-    def update_backtesting(self, pnl: float) -> None:
+    def increase_(self, pnl: float) -> None:
         self._balance += pnl

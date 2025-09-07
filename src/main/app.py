@@ -14,7 +14,7 @@ if __name__ == "__main__":
     logger.info("Boot process initiated. Preparing to start the application...")
 
     try:
-        app = LiveTrading() if not BacktestConfig.IS_BACKTEST.value else Backtesting()
+        app = LiveTrading() if not BacktestConfig.IS_BACKTEST else Backtesting()
         app.run()
     except Exception as e:
         logger.error(f"Application terminated by {e}: {traceback.format_exc()}")

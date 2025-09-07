@@ -1,7 +1,7 @@
 from typing import Iterable
 
 from model.balance import Balance
-from model.constant import TPSL, AppConfig
+from model.constant import Bracket, AppConfig
 from model.exchange_info.filter import Filter
 from utils import decimal_places
 
@@ -16,7 +16,9 @@ class ExchangeInfo:
     def to_entry_price(self, symbol: str, initial_price: float) -> float:
         tick_size = self.filters[symbol].tick_size
         decimals = decimal_places(tick_size)
-        return round(int(initial_price / tick_size) * tick_size, decimals)
+        return initial_price \
+            if decimals == decimal_places(initial_price) \
+            else round(initial_price, decimals)
 
     def to_entry_quantity(
             self,
@@ -39,7 +41,9 @@ class ExchangeInfo:
     def trim_quantity_precision(self, symbol: str, quantity: float) -> float:
         step_size = self.filters[symbol].step_size
         decimals = decimal_places(step_size)
-        return round(int(quantity / step_size) * step_size, decimals)
+        return quantity \
+            if decimals == decimal_places(quantity) \
+            else round(quantity, decimals)
 
     def _is_notional_enough(
             self, symbol: str, entry_quantity: float, entry_price: float
@@ -54,6 +58,6 @@ class ExchangeInfo:
         Estimate the notional value required for TP/SL orders.
         This guarantees that TP/SL orders can be placed without any nominal value issues.
         """
-        max_tpsl = max(TPSL.TAKE_PROFIT_RATIO.value, TPSL.STOP_LOSS_RATIO.value)
-        factor = 1 - (max_tpsl / AppConfig.LEVERAGE.value)
+        max_tpsl = max(Bracket.TAKE_PROFIT_RATIO, Bracket.STOP_LOSS_RATIO)
+        factor = 1 - (max_tpsl / AppConfig.LEVERAGE)
         return entry_quantity * (entry_price * factor)

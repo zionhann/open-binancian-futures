@@ -32,6 +32,9 @@ class OrderList:
         self.orders = [order for order in self.orders if order.id != id]
 
     def clear(self) -> None:
+        LOGGER.debug(
+            textwrap.dedent(f"""{len(self.orders)} ORDERS CLEARED""")
+        )
         self.orders = []
 
     def size(self) -> int:
@@ -44,58 +47,7 @@ class OrderList:
     def find_by_type(self, type: OrderType) -> "Order | None":
         return next(filter(lambda o: o.type == type, self.orders), None)
 
-    def remove_expired_orders_backtesting(self, time: Timestamp) -> None:
-        for order in self.orders:
-            if order.type == OrderType.LIMIT and order.is_expired(time):
-                LOGGER.debug(
-                    textwrap.dedent(
-                        f"""
-                        {order.type.value} ORDER EXPIRED @ {time}
-                        ID: {order.id}
-                        Symbol: {order.symbol}
-                        Side: {order.side.value}
-                        Price: {order.price}
-                        Quantity: {order.quantity}
-                        """
-                    )
-                )
-                self.clear()
-
-    def filled_orders_backtesting(self, high: float, low: float) -> "OrderList":
-        return OrderList(
-            [
-                order
-                for order in self.find_all_by_type(
-                OrderType.LIMIT, OrderType.STOP_MARKET, OrderType.TAKE_PROFIT_MARKET
-            )
-                if self._is_filled_backtesting(order, high, low)
-            ],
-        )
-
-    def _is_filled_backtesting(self, order: "Order", high: float, low: float) -> bool:
-        if order.is_type(OrderType.LIMIT):
-            return (
-                order.price >= low
-                if order.side == PositionSide.BUY
-                else order.price <= high
-            )
-
-        if order.is_type(OrderType.TAKE_PROFIT_MARKET):
-            return (
-                order.price <= high
-                if order.side == PositionSide.SELL
-                else order.price >= low
-            )
-
-        if order.is_type(OrderType.STOP_MARKET):
-            return (
-                order.price >= low
-                if order.side == PositionSide.SELL
-                else order.price <= high
-            )
-        return False
-
-    def open_order_backtest(
+    def open_order_(
             self,
             symbol: str,
             type: OrderType,

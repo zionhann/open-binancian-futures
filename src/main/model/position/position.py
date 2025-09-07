@@ -1,11 +1,6 @@
 import logging
-import textwrap
 
-from pandas import Timestamp
-
-from model.balance import Balance
-from model.constant import PositionSide
-from model.order import Order
+from model.constant import PositionSide, AppConfig
 
 LOGGER = logging.getLogger(__name__)
 
@@ -17,7 +12,7 @@ class Position:
             price: float,
             amount: float,
             side: PositionSide,
-            leverage: int,
+            leverage: int | None = None,
             bep: float | None = None,
     ) -> None:
         self.symbol = symbol
@@ -25,40 +20,20 @@ class Position:
         self.break_even_price = bep or price
         self.amount = abs(amount)
         self.side = side
-        self.leverage = leverage
+        self.leverage = leverage or AppConfig.LEVERAGE
 
     def __repr__(self) -> str:
         return f"\n\t{__class__.__name__}(symbol={self.symbol}, side={self.side}, price={self.price}, bep={self.break_even_price}, amount={self.amount}, leverage={self.leverage})"
 
-    def is_LONG(self) -> bool:
+    def is_long(self) -> bool:
         return self.side == PositionSide.BUY
 
-    def is_SHORT(self) -> bool:
+    def is_short(self) -> bool:
         return self.side == PositionSide.SELL
 
     def initial_margin(self) -> float:
         return self.amount * self.price / self.leverage
 
-    def pnl_backtesting(self, filled: Order) -> float:
-        price_diff = filled.price - self.price if self.is_LONG() else self.price - filled.price
+    def simple_pnl(self, target_price: float) -> float:
+        price_diff = target_price - self.price if self.is_long() else self.price - target_price
         return price_diff * self.amount
-
-    def realized_pnl_backtesting(
-            self, balance: Balance, order: Order, time: Timestamp
-    ) -> float:
-        pnl, margin = self.pnl_backtesting(order), self.initial_margin()
-        balance.update_backtesting(pnl + margin)
-
-        LOGGER.info(
-            textwrap.dedent(
-                f"""
-                Date: {time.strftime("%Y-%m-%d %H:%M:%S")}
-                {order.side.value} {self.symbol} @ {order.price}
-                ID: {order.id}
-                Type: {order.type.value}
-                Realized PNL: {pnl:.2f} USDT ({pnl / margin * 100:.2f}%)
-                Balance: {balance}
-                """
-            )
-        )
-        return pnl
