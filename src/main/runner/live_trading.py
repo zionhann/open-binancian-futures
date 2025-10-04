@@ -1,82 +1,88 @@
+import asyncio
 import json
 import logging
-import time
-from typing import Any, Final
+from typing import Optional
 
-from binance.websocket.um_futures.websocket_client import UMFuturesWebsocketClient
+from binance_sdk_derivatives_trading_usds_futures.rest_api.models import (
+    StartUserDataStreamResponse,
+)
+from binance_sdk_derivatives_trading_usds_futures.websocket_streams.models import (
+    KlineCandlestickStreamsResponse,
+    OrderTradeUpdate,
+    OrderTradeUpdateO,
+    AccountUpdate,
+    AccountUpdateA,
+    Listenkeyexpired,
+)
 
 from model.constant import *
 from openapi import binance_futures as futures
 from runner import Runner
 from strategy import Strategy
-from utils import fetch
+from utils import fetch, get_or_raise
 from webhook import Webhook
 
 LOGGER = logging.getLogger(__name__)
-LISTEN_KEY = "listenKey"
-KEEPALIVE_INTERVAL = 3600 * 23
+MESSAGE = "message"
 
 
 class LiveTrading(Runner):
     def __init__(self) -> None:
-        self.client, self.stream_url = (futures.client, futures.stream_url)
-        self.listen_key = fetch(self.client.new_listen_key).get(LISTEN_KEY)
-        self.client_ws = UMFuturesWebsocketClient(
-            stream_url=self.stream_url, on_message=self._market_stream_handler
-        )
-        self.client_ws_user = UMFuturesWebsocketClient(
-            stream_url=self.stream_url,
-            on_message=self._user_stream_handler,
-        )
+        self.client = futures.client
         self.webhook = Webhook.of(AppConfig.WEBHOOK_URL)
-        self.strategy: Final = Strategy.of(
-            name=Required.STRATEGY,
-            client=self.client,
-            webhook=self.webhook
+        self.strategy = Strategy.of(
+            name=Required.STRATEGY, client=self.client, webhook=self.webhook
         )
         self.realized_profit = {s: 0.0 for s in AppConfig.SYMBOLS}
 
-    def _market_stream_handler(self, _, stream) -> None:
+    def _market_stream_handler(self, stream: KlineCandlestickStreamsResponse) -> None:
         try:
-            data = json.loads(stream)
-
-            if "e" in data:
-                if data["e"] == EventType.KLINE.value:
-                    self.strategy.on_new_candlestick(data=data["k"])
+            if stream.e == EventType.KLINE.value:
+                data = get_or_raise(stream.k)
+                self.strategy.on_new_candlestick(data)
         except Exception as e:
             LOGGER.error(f"An error occurred in the market stream handler: {e}")
+            self.webhook.send_message(
+                f"[ALERT] An error occurred in the market stream handler:\n{e}"
+            )
 
-    def _user_stream_handler(self, _, stream) -> None:
+    def _user_stream_handler(self, stream: dict) -> None:
         try:
-            data = json.loads(stream)
 
-            if "e" in data:
-                LOGGER.debug(
-                    f"Received {data['e']} event:\n{json.dumps(data, indent=2)}"
-                )
+            if event := stream.get("e"):
+                LOGGER.debug(f"Received {event} event:\n{json.dumps(stream, indent=2)}")
 
-                if data["e"] == EventType.ORDER_TRADE_UPDATE.value:
-                    self._handle_order_trade_update(data["o"])
+                if event == EventType.ORDER_TRADE_UPDATE.value:
+                    order_trade_update = get_or_raise(
+                        OrderTradeUpdate.from_dict(stream)
+                    )
+                    self._handle_order_trade_update(get_or_raise(order_trade_update.o))
 
-                elif data["e"] == EventType.ACCOUNT_UPDATE.value:
-                    self._handle_account_update(data["a"])
+                elif event == EventType.ACCOUNT_UPDATE.value:
+                    account_update = get_or_raise(AccountUpdate.from_dict(stream))
+                    self._handle_account_update(get_or_raise(account_update.a))
 
-                elif data["e"] == EventType.LISTEN_KEY_EXPIRED.value:
-                    LOGGER.info("Listen key has expired. Recreating listen key...")
-                    self.listen_key = fetch(self.client.new_listen_key).get(LISTEN_KEY)
-                    fetch(self.client_ws_user.user_data, listen_key=self.listen_key)
-
-                    self.webhook.send_message("[ALERT] Recreated listen key.")
+                elif event == EventType.LISTEN_KEY_EXPIRED.value:
+                    LOGGER.info("Listen key has expired. Opening a new one...")
+                    expired_key = get_or_raise(
+                        Listenkeyexpired.from_dict(stream)
+                    ).listenKey
+                    asyncio.create_task(
+                        self._subscribe_to_user_stream(expired_listen_key=expired_key)
+                    )
 
         except Exception as e:
             LOGGER.error(f"An error occurred in the user data handler: {e}")
+            self.webhook.send_message(
+                f"[ALERT] An error occurred in the user data handler: {e}"
+            )
 
-    def _handle_order_trade_update(self, data: dict[str, Any]):
-        symbol = data["s"]
-        og_order_type = OrderType(data["ot"])
-        curr_order_type = OrderType(data["o"])
-        status = OrderStatus(data["X"])
-        realized_profit = float(data["rp"])
+    def _handle_order_trade_update(self, data: OrderTradeUpdateO):
+        symbol = get_or_raise(data.s)
+        og_order_type = OrderType(get_or_raise(data.ot))
+        curr_order_type = OrderType(get_or_raise(data.o))
+        status = OrderStatus(get_or_raise(data.X))
+        realized_profit = float(get_or_raise(data.rp))
 
         if symbol in AppConfig.SYMBOLS:
             if status == OrderStatus.NEW and og_order_type == curr_order_type:
@@ -101,62 +107,71 @@ class LiveTrading(Runner):
             elif status == OrderStatus.EXPIRED:
                 self.strategy.on_expired_order(data)
 
-    def _handle_account_update(self, data: dict[str, Any]):
-        if "P" in data and data["P"]:
-            for position_data in data["P"]:
+    def _handle_account_update(self, data: AccountUpdateA):
+        if data.P:
+            for position_data in data.P:
                 self.strategy.on_position_update(position_data)
 
-        if "B" in data and data["B"]:
-            for balance_data in data["B"]:
+        if data.B:
+            for balance_data in data.B:
                 self.strategy.on_balance_update(balance_data)
 
     def run(self) -> None:
         LOGGER.info("Starting to run...")
         LOGGER.info("Connecting to User Data Stream...")
-        fetch(self.client_ws_user.user_data, listen_key=self.listen_key)
 
         for s in AppConfig.SYMBOLS:
             self._set_leverage(symbol=s)
-            self._subscribe_to_stream(symbol=s)
 
-        self._keepalive_stream()
+        asyncio.run(self._run_async())
+
+    async def _run_async(self) -> None:
+        await self.client.websocket_streams.create_connection()
+
+        tasks = [
+            *[self._subscribe_to_kline_stream(symbol=s) for s in AppConfig.SYMBOLS],
+            self._subscribe_to_user_stream(),
+        ]
+        await asyncio.gather(*tasks)
+        await asyncio.Event().wait()
 
     def _set_leverage(self, symbol: str):
         fetch(
-            self.client.change_leverage,
+            self.client.rest_api.change_initial_leverage,
             symbol=symbol,
             leverage=AppConfig.LEVERAGE,
         )
         LOGGER.info(f"Set leverage for {symbol} to {AppConfig.LEVERAGE}.")
 
-    def _subscribe_to_stream(self, symbol: str):
-        fetch(self.client_ws.kline, symbol=symbol, interval=AppConfig.INTERVAL)
+    async def _subscribe_to_kline_stream(self, symbol: str):
+        stream = await self.client.websocket_streams.kline_candlestick_streams(
+            symbol=symbol, interval=AppConfig.INTERVAL
+        )
+        stream.on(event=MESSAGE, callback=self._market_stream_handler)
         LOGGER.info(f"Subscribed to {symbol} klines by {AppConfig.INTERVAL}...")
 
-    def _keepalive_stream(self):
-        while True:
-            time.sleep(KEEPALIVE_INTERVAL)
-            LOGGER.info("Reconnecting to the stream to maintain the connection...")
+    async def _subscribe_to_user_stream(self, expired_listen_key: Optional[str] = None):
+        if expired_listen_key:
+            await self.client.websocket_streams.unsubscribe([expired_listen_key])
+            await asyncio.sleep(1)
 
-            fetch(self.client_ws.stop)
-            fetch(self.client_ws_user.stop)
+        data: StartUserDataStreamResponse = fetch(
+            self.client.rest_api.start_user_data_stream
+        )
+        listen_key = get_or_raise(data.listen_key)
 
-            self.client_ws = UMFuturesWebsocketClient(
-                stream_url=self.stream_url, on_message=self._market_stream_handler
-            )
-            self.client_ws_user = UMFuturesWebsocketClient(
-                stream_url=self.stream_url, on_message=self._user_stream_handler
-            )
-
-            for s in AppConfig.SYMBOLS:
-                self._subscribe_to_stream(symbol=s)
-
-            fetch(self.client_ws_user.user_data, listen_key=self.listen_key)
-            self.webhook.send_message("[ALERT] Reconnected to the stream.")
+        stream = await self.client.websocket_streams.user_data(listen_key)
+        stream.on(event=MESSAGE, callback=self._user_stream_handler)
+        LOGGER.info("Subscribed to user data stream...")
 
     def close(self) -> None:
         LOGGER.info("Initiating shutdown process...")
-        fetch(self.client.close_listen_key, listenKey=self.listen_key)
-        fetch(self.client_ws_user.stop)
-        fetch(self.client_ws.stop)
+        asyncio.run(self._close_async())
+        self.client.rest_api.close_user_data_stream()
         LOGGER.info("Shutdown process completed successfully.")
+
+    async def _close_async(self) -> None:
+        await asyncio.gather(
+            self.client.websocket_streams.close_connection(),
+            self.client.websocket_api.close_connection(),
+        )

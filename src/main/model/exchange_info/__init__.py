@@ -1,5 +1,9 @@
 from typing import Iterable
 
+from binance_sdk_derivatives_trading_usds_futures.rest_api.models import (
+    ExchangeInformationResponseSymbolsInner,
+)
+
 from model.balance import Balance
 from model.constant import Bracket, AppConfig
 from model.exchange_info.filter import Filter
@@ -7,18 +11,21 @@ from utils import decimal_places
 
 
 class ExchangeInfo:
-    def __init__(self, items: Iterable[dict]):
-        self.filters = {
-            item["symbol"]: Filter(item["filters"])
+    def __init__(self, items: Iterable[ExchangeInformationResponseSymbolsInner]):
+        self.filters: dict[str, Filter] = {
+            item.symbol: Filter(item.filters)
             for item in items
+            if item.symbol and item.filters
         }
 
     def to_entry_price(self, symbol: str, initial_price: float) -> float:
         tick_size = self.filters[symbol].tick_size
         decimals = decimal_places(tick_size)
-        return initial_price \
-            if decimals == decimal_places(initial_price) \
+        return (
+            initial_price
+            if decimals == decimal_places(initial_price)
             else round(initial_price, decimals)
+        )
 
     def to_entry_quantity(
             self,
@@ -41,9 +48,11 @@ class ExchangeInfo:
     def trim_quantity_precision(self, symbol: str, quantity: float) -> float:
         step_size = self.filters[symbol].step_size
         decimals = decimal_places(step_size)
-        return quantity \
-            if decimals == decimal_places(quantity) \
+        return (
+            quantity
+            if decimals == decimal_places(quantity)
             else round(quantity, decimals)
+        )
 
     def _is_notional_enough(
             self, symbol: str, entry_quantity: float, entry_price: float

@@ -1,5 +1,5 @@
-binance-futures-connector
-numpy==1.26.4
+binance-sdk-derivatives-trading-usds-futures
+numpy
 pandas
 pandas_ta
 python-dotenv

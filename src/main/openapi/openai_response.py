@@ -19,3 +19,4 @@ def ask(input: str, model: str, **kwargs) -> str | None:
         return response.output_text
     except Exception as e:
         LOGGER.error(f"Error in OpenAI API: {e}")
+        return None

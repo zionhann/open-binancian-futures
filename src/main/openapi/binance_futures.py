@@ -1,16 +1,38 @@
 import logging
-from typing import Final
+from typing import cast
 
 import pandas as pd
-from binance.um_futures import UMFutures
+from binance_common.configuration import (
+    ConfigurationWebSocketStreams,
+    ConfigurationWebSocketAPI,
+)
+from binance_common.constants import (
+    DERIVATIVES_TRADING_USDS_FUTURES_REST_API_TESTNET_URL as TESTNET_REST,
+    DERIVATIVES_TRADING_USDS_FUTURES_WS_STREAMS_TESTNET_URL as TESTNET_WS_STREAMS,
+    DERIVATIVES_TRADING_USDS_FUTURES_WS_API_TESTNET_URL as TESTNET_WS_API,
+)
+from binance_sdk_derivatives_trading_usds_futures import DerivativesTradingUsdsFutures
+from binance_sdk_derivatives_trading_usds_futures.derivatives_trading_usds_futures import (
+    ConfigurationRestAPI,
+    DERIVATIVES_TRADING_USDS_FUTURES_REST_API_PROD_URL as MAINNET_REST,
+    DERIVATIVES_TRADING_USDS_FUTURES_WS_STREAMS_PROD_URL as MAINNET_WS_STREAMS,
+    DERIVATIVES_TRADING_USDS_FUTURES_WS_API_PROD_URL as MAINNET_WS_API,
+)
+from binance_sdk_derivatives_trading_usds_futures.rest_api.models import (
+    ExchangeInformationResponse,
+    FuturesAccountBalanceV3Response,
+    AllOrdersResponse,
+    PositionInformationV3Response,
+    KlineCandlestickDataResponse,
+)
 
 from model.balance import Balance
-from model.constant import AppConfig, BaseURL, OrderType, PositionSide, Required
+from model.constant import AppConfig, OrderType, PositionSide, Required
 from model.exchange_info import ExchangeInfo
 from model.indicator import Indicator
 from model.order import Order, OrderBook, OrderList
 from model.position import Position, PositionBook, PositionList
-from utils import fetch
+from utils import fetch, get_or_raise
 
 LOGGER = logging.getLogger(__name__)
 
@@ -30,43 +52,75 @@ KLINES_COLUMNS = [
 ]
 
 if AppConfig.IS_TESTNET:
-    _base_url, stream_url = BaseURL.TESTNET_REST.value, BaseURL.TESTNET_WS.value
+    _rest_url, ws_stream_url, ws_api_url = (
+        TESTNET_REST,
+        TESTNET_WS_STREAMS,
+        TESTNET_WS_API,
+    )
+
+    if Required.API_KEY_TEST is None or Required.API_SECRET_TEST is None:
+        raise ValueError()
+
     _api_key, _api_secret = (
         Required.API_KEY_TEST,
         Required.API_SECRET_TEST,
     )
+
 else:
-    _base_url, stream_url = BaseURL.MAINNET_REST.value, BaseURL.MAINNET_WS.value
+    _rest_url, ws_stream_url, ws_api_url = (
+        MAINNET_REST,
+        MAINNET_WS_STREAMS,
+        MAINNET_WS_API,
+    )
+
+    if Required.API_KEY is None or Required.API_SECRET is None:
+        raise ValueError()
+
     _api_key, _api_secret = (
         Required.API_KEY,
         Required.API_SECRET,
     )
 
-client: Final = UMFutures(
-    key=_api_key,
-    secret=_api_secret,
-    base_url=_base_url,
+config_rest = ConfigurationRestAPI(
+    api_key=_api_key, api_secret=_api_secret, base_path=_rest_url, timeout=2000
+)
+config_ws_api = ConfigurationWebSocketAPI(
+    api_key=_api_key, api_secret=_api_secret, stream_url=ws_api_url
+)
+config_ws = ConfigurationWebSocketStreams(stream_url=ws_stream_url)
+
+client = DerivativesTradingUsdsFutures(
+    config_rest_api=config_rest,
+    config_ws_api=config_ws_api,
+    config_ws_streams=config_ws,
 )
 
 
 def init_exchange_info() -> ExchangeInfo:
-    payload = fetch(client.exchange_info)
-    target_symbols = filter(
-        lambda item: item["symbol"] in AppConfig.SYMBOLS, payload["symbols"]
-    )
+    data: ExchangeInformationResponse = fetch(client.rest_api.exchange_information)
+    symbols = get_or_raise(data.symbols)
+    target_symbols = [
+        item
+        for item in symbols
+        if item.symbol is not None and item.symbol in AppConfig.SYMBOLS
+    ]
     return ExchangeInfo(target_symbols)
 
 
 def init_balance() -> Balance:
-    LOGGER.info("Fetching available USDT balance...")
-    data = fetch(client.balance)["data"]
-    df = pd.DataFrame(data)
-    usdt_balance = df[df["asset"] == "USDT"]
+    LOGGER.info("Fetching available balance...")
+    data: list[FuturesAccountBalanceV3Response] = fetch(
+        client.rest_api.futures_account_balance_v3
+    )
 
-    available = float(usdt_balance["availableBalance"].iloc[0])
-    LOGGER.info(f'Available USDT balance: "{available:.2f}"')
+    if usdt_balance := list(filter(lambda item: item.asset == "USDT", data)):
+        available = get_or_raise(usdt_balance[0].available_balance)
+        initial_balance = float(available)
+        LOGGER.info(f'Available USDT balance: "{initial_balance:.2f}"')
 
-    return Balance(available)
+        return Balance(initial_balance)
+
+    return Balance(0.0)
 
 
 def init_orders() -> OrderBook:
@@ -75,14 +129,18 @@ def init_orders() -> OrderBook:
             [
                 Order(
                     symbol=symbol,
-                    id=item["orderId"],
-                    type=OrderType(item["origType"]),
-                    side=PositionSide(item["side"]),
-                    price=float(item["price"]) or float(item["stopPrice"]),
-                    quantity=float(item["origQty"]),
-                    gtd=item["goodTillDate"],
+                    id=get_or_raise(item.order_id),
+                    type=OrderType(get_or_raise(item.orig_type)),
+                    side=PositionSide(get_or_raise(item.side)),
+                    price=float(get_or_raise(item.price))
+                          or float(get_or_raise(item.stop_price)),
+                    quantity=float(get_or_raise(item.orig_qty)),
+                    gtd=get_or_raise(item.good_till_date),
                 )
-                for item in fetch(client.get_orders, symbol=symbol)["data"]
+                for item in cast(
+                list[AllOrdersResponse],
+                fetch(client.rest_api.all_orders, symbol=symbol),
+            )
             ]
         )
         for symbol in AppConfig.SYMBOLS
@@ -101,11 +159,19 @@ def init_positions() -> PositionBook:
                     amount=amount,
                     side=(PositionSide.BUY if amount > 0 else PositionSide.SELL),
                     leverage=AppConfig.LEVERAGE,
-                    bep=bep
+                    bep=bep,
                 )
-                for p in fetch(client.get_position_risk, symbol=symbol)["data"]
-                for price, amount, bep in
-                [(float(p["entryPrice"]), float(p["positionAmt"]), float(p["breakEvenPrice"]))]
+                for p in cast(
+                list[PositionInformationV3Response],
+                fetch(client.rest_api.position_information_v3, symbol=symbol),
+            )
+                for price, amount, bep in [
+                (
+                    float(get_or_raise(p.entry_price)),
+                    float(get_or_raise(p.position_amt)),
+                    float(get_or_raise(p.break_even_price)),
+                )
+            ]
                 if not (price == 0.0 or amount == 0.0)
             ]
         )
@@ -121,12 +187,12 @@ def init_indicators(limit: int | None = None) -> Indicator:
     for symbol in AppConfig.SYMBOLS:
         LOGGER.info(f"Fetching {symbol} klines by {AppConfig.INTERVAL}...")
 
-        klines_data = fetch(
-            client.klines,
+        klines_data: KlineCandlestickDataResponse = fetch(
+            client.rest_api.kline_candlestick_data,
             symbol=symbol,
             interval=AppConfig.INTERVAL,
             limit=limit,
-        )["data"][:-1]
+        )[:-1]
 
         df = pd.DataFrame(data=klines_data, columns=KLINES_COLUMNS)
         df["Open_time"] = (

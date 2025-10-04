@@ -82,6 +82,7 @@ class BacktestingResult:
             ),
             2,
         )
+        expectancy = self._cumulative_pnl / trade_count if trade_count else 0.0
 
         logger.info(
             textwrap.dedent(
@@ -96,7 +97,7 @@ class BacktestingResult:
                 - SELL Win Rate: {sell_win_rate}% ({self._win_count_sell}/{self._trade_count_sell})
 
                 Cumulative PNL: {self._cumulative_pnl:.2f} USDT
-                Expectancy: {self._cumulative_pnl / trade_count:.2f} USDT
+                Expectancy: {expectancy:.2f} USDT
                 """
             )
         )

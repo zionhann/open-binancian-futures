@@ -1,13 +1,18 @@
 import importlib
 import logging
-import pkgutil
-import sys
 import textwrap
 from abc import ABC, abstractmethod
-from typing import Any
 
 import pandas as pd
-from binance.um_futures import UMFutures
+from binance_sdk_derivatives_trading_usds_futures.derivatives_trading_usds_futures import (
+    DerivativesTradingUsdsFutures,
+)
+from binance_sdk_derivatives_trading_usds_futures.websocket_streams.models import (
+    KlineCandlestickStreamsResponseK,
+    OrderTradeUpdateO,
+    AccountUpdateAPInner,
+    AccountUpdateABInner,
+)
 from pandas import DataFrame
 
 from model.balance import Balance
@@ -38,7 +43,7 @@ class Strategy(ABC):
     @staticmethod
     def of(
             name: str | None,
-            client: UMFutures,
+            client: DerivativesTradingUsdsFutures,
             exchange_info: ExchangeInfo | None = None,
             balance: Balance | None = None,
             orders: OrderBook | None = None,
@@ -49,10 +54,10 @@ class Strategy(ABC):
         if name is None:
             raise ValueError("Strategy is not specified")
 
-        if name not in (strategies := Strategy._import_strategies()):
+        if (strategy := Strategy._import_strategy(name)) is None:
             raise ValueError(f"Invalid strategy: {name}")
 
-        return strategies[name](
+        return strategy(
             client=client,
             exchange_info=exchange_info,
             balance=balance,
@@ -63,19 +68,24 @@ class Strategy(ABC):
         )
 
     @staticmethod
-    def _import_strategies() -> dict[str, type["Strategy"]]:
-        if not Strategy.is_imported:
-            for _, mod_name, _ in pkgutil.iter_modules(
-                    sys.modules[__name__].__path__, __name__ + "."
-            ):
-                importlib.import_module(mod_name)
-            Strategy.is_imported = True
-
-        return {clazz.__name__: clazz for clazz in Strategy.__subclasses__()}
+    def _import_strategy(strategy_name: str) -> type["Strategy"] | None:
+        """Import strategy by file name and return the Strategy subclass."""
+        try:
+            mod = importlib.import_module(f"{__name__}.{strategy_name}")
+            subclasses = [
+                cls
+                for cls in mod.__dict__.values()
+                if isinstance(cls, type)
+                   and issubclass(cls, Strategy)
+                   and cls is not Strategy
+            ]
+            return subclasses[0] if subclasses else None
+        except ImportError:
+            return None
 
     def __init__(
             self,
-            client: UMFutures,
+            client: DerivativesTradingUsdsFutures,
             exchange_info: ExchangeInfo | None,
             balance: Balance | None,
             orders: OrderBook | None,
@@ -177,16 +187,16 @@ class Strategy(ABC):
             _quantity = quantity if reduce_only else None
 
             fetch(
-                self.client.new_order,
+                self.client.rest_api.new_order,
                 symbol=symbol,
                 side=position_side.value,
                 type=order_type.value,
                 price=_price,
-                stopPrice=self.exchange_info.to_entry_price(symbol, _stop_price),
+                stop_price=self.exchange_info.to_entry_price(symbol, _stop_price),
                 quantity=_quantity,
-                closePosition=close_position,
-                timeInForce=TimeInForce.GTE_GTC.value,
-                reduceOnly=reduce_only,
+                close_position=close_position,
+                time_in_force=TimeInForce.GTE_GTC.value,
+                reduce_only=reduce_only,
             )
 
     def set_trailing_stop(
@@ -215,35 +225,35 @@ class Strategy(ABC):
         safe_cb_rate = round(min(max(0.1, callback_ratio), 5), 2)
 
         fetch(
-            self.client.new_order,
+            self.client.rest_api.new_order,
             symbol=symbol,
             side=position_side.value,
             type=OrderType.TRAILING_STOP_MARKET.value,
             quantity=quantity,
-            timeInForce=TimeInForce.GTE_GTC.value,
-            reduceOnly=True,
-            activationPrice=activation_price,
-            callbackRate=safe_cb_rate,
+            time_in_force=TimeInForce.GTE_GTC.value,
+            reduce_only=True,
+            activation_price=activation_price,
+            callback_rate=safe_cb_rate,
         )
 
-    def on_new_candlestick(self, data: dict[str, Any]) -> None:
-        if not data["x"]:
+    def on_new_candlestick(self, data: KlineCandlestickStreamsResponseK) -> None:
+        if not get_or_raise(data.x):
             return
 
         open_time = (
-            pd.to_datetime(data["t"], unit="ms")
+            pd.to_datetime(get_or_raise(data.t), unit="ms")
             .tz_localize("UTC")
             .tz_convert(AppConfig.TIMEZONE)
         )
-        symbol = data["s"]
+        symbol = get_or_raise(data.s)
         new_data = {
             "Open_time": open_time,
             "Symbol": symbol,
-            "Open": float(data["o"]),
-            "High": float(data["h"]),
-            "Low": float(data["l"]),
-            "Close": float(data["c"]),
-            "Volume": float(data["v"]),
+            "Open": float(get_or_raise(data.o)),
+            "High": float(get_or_raise(data.h)),
+            "Low": float(get_or_raise(data.l)),
+            "Close": float(get_or_raise(data.c)),
+            "Volume": float(get_or_raise(data.v)),
         }
         new_df = pd.DataFrame([new_data], index=[open_time])
         df = pd.concat([self.indicators.get(symbol), new_df])
@@ -260,12 +270,12 @@ class Strategy(ABC):
         )
         self.run(symbol)
 
-    def on_position_update(self, data: dict[str, str]) -> None:
+    def on_position_update(self, data: AccountUpdateAPInner) -> None:
         symbol, price, amount, bep = (
-            data["s"],
-            float(data["ep"]),
-            float(data["pa"]),
-            float(data["bep"]),
+            get_or_raise(data.s),
+            float(get_or_raise(data.ep)),
+            float(get_or_raise(data.pa)),
+            float(get_or_raise(data.bep)),
         )
 
         if price == 0.0 or amount == 0.0:
@@ -286,12 +296,12 @@ class Strategy(ABC):
         )
         self.LOGGER.info(f"Updated positions: {self.positions.get(symbol)}")
 
-    def on_balance_update(self, data: dict[str, str]) -> None:
-        if data["a"] == "USDT":
-            self.balance = Balance(float(data["cw"]))
+    def on_balance_update(self, data: AccountUpdateABInner) -> None:
+        if data.a == "USDT":
+            self.balance = Balance(float(get_or_raise(data.cw)))
             self.LOGGER.info(f"Updated available USDT: {self.balance}")
 
-    def on_new_order(self, data: dict[str, Any]) -> None:
+    def on_new_order(self, data: OrderTradeUpdateO) -> None:
         (
             order_id,
             symbol,
@@ -303,15 +313,15 @@ class Strategy(ABC):
             gtd,
             is_reduce_only,
         ) = (
-            int(data["i"]),
-            str(data["s"]),
-            OrderType(data["ot"]),
-            PositionSide(data["S"]),
-            float(data["p"]),
-            float(data["sp"]),
-            float(data["q"]),
-            int(data["gtd"]),
-            bool(data["R"]),
+            int(get_or_raise(data.i)),
+            str(get_or_raise(data.s)),
+            OrderType(get_or_raise(data.ot)),
+            PositionSide(get_or_raise(data.S)),
+            float(get_or_raise(data.p)),
+            float(get_or_raise(data.sp)),
+            float(get_or_raise(data.q)),
+            int(get_or_raise(data.gtd)),
+            bool(get_or_raise(data.R)),
         )
         valid_price = price or stop_price
 
@@ -341,7 +351,7 @@ class Strategy(ABC):
 
     def on_filled_order(
             self,
-            data: dict[str, Any],
+            data: OrderTradeUpdateO,
             realized_profit: float,
     ) -> None:
         (
@@ -354,16 +364,16 @@ class Strategy(ABC):
             quantity,
             status,
         ) = (
-            int(data["i"]),
-            str(data["s"]),
-            OrderType(data["ot"]),
-            PositionSide(data["S"]),
-            float(data["p"]),
-            float(data["z"]),
-            float(data["q"]),
-            OrderStatus(data["X"]),
+            int(get_or_raise(data.i)),
+            str(get_or_raise(data.s)),
+            OrderType(get_or_raise(data.ot)),
+            PositionSide(get_or_raise(data.S)),
+            float(get_or_raise(data.p)),
+            float(get_or_raise(data.z)),
+            float(get_or_raise(data.q)),
+            OrderStatus(get_or_raise(data.X)),
         )
-        average_price = round(float(data["ap"]), decimal_places(price))
+        average_price = round(float(get_or_raise(data.ap)), decimal_places(price))
         filled_percentage = (filled / quantity) * 100
 
         self.LOGGER.info(
@@ -389,24 +399,24 @@ class Strategy(ABC):
         )
         self.orders.get(symbol).remove_by_id(order_id)
 
-    def on_cancelled_order(self, data: dict[str, Any]) -> None:
+    def on_cancelled_order(self, data: OrderTradeUpdateO) -> None:
         symbol, order_id, og_order_type, side = (
-            data["s"],
-            data["i"],
-            OrderType(data["ot"]),
-            PositionSide(data["S"]),
+            get_or_raise(data.s),
+            get_or_raise(data.i),
+            OrderType(get_or_raise(data.ot)),
+            PositionSide(get_or_raise(data.S)),
         )
         self.orders.get(symbol).remove_by_id(order_id)
         self.LOGGER.info(
             f"{og_order_type.value} order for {symbol} has been cancelled. (Side: {side.value})"
         )
 
-    def on_expired_order(self, data: dict[str, Any]) -> None:
+    def on_expired_order(self, data: OrderTradeUpdateO) -> None:
         symbol, order_id, og_order_type, side = (
-            data["s"],
-            data["i"],
-            OrderType(data["ot"]),
-            PositionSide(data["S"]),
+            get_or_raise(data.s),
+            get_or_raise(data.i),
+            OrderType(get_or_raise(data.ot)),
+            PositionSide(get_or_raise(data.S)),
         )
         self.orders.get(symbol).remove_by_id(order_id)
         self.LOGGER.info(

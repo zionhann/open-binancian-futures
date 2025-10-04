@@ -1,15 +1,27 @@
+from typing import Iterable
+
+from binance_sdk_derivatives_trading_usds_futures.rest_api.models import (
+    ExchangeInformationResponseSymbolsInnerFiltersInner,
+)
+
 from model.constant import FilterType
 
 
 class Filter:
-    def __init__(self, filters: list[dict]) -> None:
-        filter_types = {f["filterType"]: f for f in filters}
+    def __init__(
+            self, filters: Iterable[ExchangeInformationResponseSymbolsInnerFiltersInner]
+    ) -> None:
+        filter_types: dict[str, ExchangeInformationResponseSymbolsInnerFiltersInner] = {
+            f.filter_type: f for f in filters if f.filter_type is not None
+        }
+        if (pf := filter_types.get(FilterType.PRICE_FILTER.value)) and pf.tick_size:
+            self._tick_size = float(pf.tick_size)
 
-        self._tick_size = float(filter_types[FilterType.PRICE_FILTER.value]["tickSize"])
-        self._step_size = float(filter_types[FilterType.LOT_SIZE.value]["stepSize"])
-        self._min_notional = int(
-            filter_types[FilterType.MIN_NOTIONAL.value]["notional"]
-        )
+        if (ls := filter_types.get(FilterType.LOT_SIZE.value)) and ls.step_size:
+            self._step_size = float(ls.step_size)
+
+        if (mn := filter_types.get(FilterType.MIN_NOTIONAL.value)) and mn.notional:
+            self._min_notional = int(mn.notional)
 
     @property
     def tick_size(self) -> float:

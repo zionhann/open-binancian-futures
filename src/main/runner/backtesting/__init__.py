@@ -122,6 +122,7 @@ class Backtesting(Runner):
                 f"""
                 Date: {time.strftime("%Y-%m-%d %H:%M:%S")}
                 {order.side.value} {position.symbol} @ {position.price}
+                ID: {order.id}
                 Type: {order.type.value}
                 Size: {order.quantity} {position.symbol[:-4]}
                 """
