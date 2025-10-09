@@ -139,7 +139,7 @@ def init_orders() -> OrderBook:
                 )
                 for item in cast(
                 list[AllOrdersResponse],
-                fetch(client.rest_api.all_orders, symbol=symbol),
+                fetch(client.rest_api.current_all_open_orders, symbol=symbol),
             )
             ]
         )
