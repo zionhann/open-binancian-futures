@@ -24,6 +24,7 @@ from webhook import Webhook
 
 LOGGER = logging.getLogger(__name__)
 MESSAGE = "message"
+KEEPALIVE_USER_STREAM_INTERVAL = 60 * 50
 
 
 class LiveTrading(Runner):
@@ -127,12 +128,11 @@ class LiveTrading(Runner):
 
     async def _run_async(self) -> None:
         await self.client.websocket_streams.create_connection()
-
-        tasks = [
+        await asyncio.gather(
             *[self._subscribe_to_kline_stream(symbol=s) for s in AppConfig.SYMBOLS],
             self._subscribe_to_user_stream(),
-        ]
-        await asyncio.gather(*tasks)
+        )
+        asyncio.create_task(self._keepalive_user_stream())
         await asyncio.Event().wait()
 
     def _set_leverage(self, symbol: str):
@@ -163,6 +163,12 @@ class LiveTrading(Runner):
         stream = await self.client.websocket_streams.user_data(listen_key)
         stream.on(event=MESSAGE, callback=self._user_stream_handler)
         LOGGER.info("Subscribed to user data stream...")
+
+    async def _keepalive_user_stream(self):
+        while True:
+            await asyncio.sleep(KEEPALIVE_USER_STREAM_INTERVAL)
+            fetch(self.client.rest_api.keepalive_user_data_stream)
+            LOGGER.info("Successfully sent keepalive for user data stream.")
 
     def close(self) -> None:
         LOGGER.info("Initiating shutdown process...")
