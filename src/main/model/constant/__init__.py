@@ -29,7 +29,7 @@ class AppConfig:
     IS_TESTNET = os.getenv("IS_TESTNET", "false") == "true"
     GTD_NLINES = int(os.getenv("GTD_NLINES", 3))
     WEBHOOK_URL = os.getenv("WEBHOOK_URL")
-    TIMEZONE = os.getenv("TIMEZONE")
+    TIMEZONE = os.getenv("TIMEZONE", "UTC")
 
 
 class BacktestConfig:
