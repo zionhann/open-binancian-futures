@@ -25,6 +25,7 @@ from webhook import Webhook
 LOGGER = logging.getLogger(__name__)
 MESSAGE = "message"
 KEEPALIVE_USER_STREAM_INTERVAL = 60 * 50
+lock: Optional[asyncio.Lock] = None
 
 
 class LiveTrading(Runner):
@@ -40,7 +41,7 @@ class LiveTrading(Runner):
         try:
             if stream.e == EventType.KLINE.value:
                 data = get_or_raise(stream.k)
-                self.strategy.on_new_candlestick(data)
+                asyncio.create_task(self.strategy.on_new_candlestick(data))
         except Exception as e:
             LOGGER.error(f"An error occurred in the market stream handler: {e}")
             self.webhook.send_message(
@@ -127,6 +128,9 @@ class LiveTrading(Runner):
         asyncio.run(self._run_async())
 
     async def _run_async(self) -> None:
+        global lock
+        lock = asyncio.Lock()
+
         await self.client.websocket_streams.create_connection()
         await asyncio.gather(
             *[self._subscribe_to_kline_stream(symbol=s) for s in AppConfig.SYMBOLS],

@@ -42,14 +42,14 @@ class Strategy(ABC):
 
     @staticmethod
     def of(
-            name: str | None,
-            client: DerivativesTradingUsdsFutures,
-            exchange_info: ExchangeInfo | None = None,
-            balance: Balance | None = None,
-            orders: OrderBook | None = None,
-            positions: PositionBook | None = None,
-            webhook: Webhook | None = None,
-            indicators: Indicator | None = None,
+        name: str | None,
+        client: DerivativesTradingUsdsFutures,
+        exchange_info: ExchangeInfo | None = None,
+        balance: Balance | None = None,
+        orders: OrderBook | None = None,
+        positions: PositionBook | None = None,
+        webhook: Webhook | None = None,
+        indicators: Indicator | None = None,
     ) -> "Strategy":
         if name is None:
             raise ValueError("Strategy is not specified")
@@ -76,22 +76,23 @@ class Strategy(ABC):
                 cls
                 for cls in mod.__dict__.values()
                 if isinstance(cls, type)
-                   and issubclass(cls, Strategy)
-                   and cls is not Strategy
+                and issubclass(cls, Strategy)
+                and cls is not Strategy
             ]
             return subclasses[0] if subclasses else None
         except ImportError:
+            Strategy.LOGGER.error(f"Failed to import strategy '{strategy_name}':")
             return None
 
     def __init__(
-            self,
-            client: DerivativesTradingUsdsFutures,
-            exchange_info: ExchangeInfo | None,
-            balance: Balance | None,
-            orders: OrderBook | None,
-            positions: PositionBook | None,
-            webhook: Webhook | None,
-            indicators: Indicator | None,
+        self,
+        client: DerivativesTradingUsdsFutures,
+        exchange_info: ExchangeInfo | None,
+        balance: Balance | None,
+        orders: OrderBook | None,
+        positions: PositionBook | None,
+        webhook: Webhook | None,
+        indicators: Indicator | None,
     ) -> None:
         self.client = client
         self.exchange_info = exchange_info or futures.init_exchange_info()
@@ -118,13 +119,13 @@ class Strategy(ABC):
             )
 
     def calculate_stop_price(
-            self,
-            symbol: str,
-            entry_price: float,
-            order_type: OrderType,
-            stop_side: PositionSide,
-            tp_ratio: float | None = None,
-            sl_ratio: float | None = None,
+        self,
+        symbol: str,
+        entry_price: float,
+        order_type: OrderType,
+        stop_side: PositionSide,
+        tp_ratio: float | None = None,
+        sl_ratio: float | None = None,
     ) -> float:
         sl_ratio = (sl_ratio or Bracket.STOP_LOSS_RATIO) / AppConfig.LEVERAGE
         tp_ratio = (tp_ratio or Bracket.TAKE_PROFIT_RATIO) / AppConfig.LEVERAGE
@@ -137,29 +138,29 @@ class Strategy(ABC):
         factor = (
             (1 - ratio)
             if (
-                       order_type in [OrderType.STOP_MARKET, OrderType.STOP_LIMIT]
-                       and stop_side == PositionSide.SELL
-               )
-               or (
-                       order_type
-                       in [OrderType.TAKE_PROFIT_MARKET, OrderType.TAKE_PROFIT_LIMIT]
-                       and stop_side == PositionSide.BUY
-               )
+                order_type in [OrderType.STOP_MARKET, OrderType.STOP_LIMIT]
+                and stop_side == PositionSide.SELL
+            )
+            or (
+                order_type
+                in [OrderType.TAKE_PROFIT_MARKET, OrderType.TAKE_PROFIT_LIMIT]
+                and stop_side == PositionSide.BUY
+            )
             else (1 + ratio)
         )
         return self.exchange_info.to_entry_price(symbol, entry_price * factor)
 
     def set_tpsl(
-            self,
-            symbol: str,
-            position_side: PositionSide,
-            price: float | None = None,
-            stop_price: float | None = None,
-            close_position: bool | None = None,
-            order_types: list[OrderType] | None = None,
-            quantity: float | None = None,
-            tp_ratio: float | None = None,
-            sl_ratio: float | None = None,
+        self,
+        symbol: str,
+        position_side: PositionSide,
+        price: float | None = None,
+        stop_price: float | None = None,
+        close_position: bool | None = None,
+        order_types: list[OrderType] | None = None,
+        quantity: float | None = None,
+        tp_ratio: float | None = None,
+        sl_ratio: float | None = None,
     ) -> None:
         _order_types = (
             order_types
@@ -200,17 +201,17 @@ class Strategy(ABC):
             )
 
     def set_trailing_stop(
-            self,
-            symbol: str,
-            position_side: PositionSide,
-            quantity: float,
-            price: float | None = None,
-            activation_ratio: float | None = None,
-            callback_ratio: float | None = None,
+        self,
+        symbol: str,
+        position_side: PositionSide,
+        quantity: float,
+        price: float | None = None,
+        activation_ratio: float | None = None,
+        callback_ratio: float | None = None,
     ) -> None:
         activation_ratio = (
-                                   activation_ratio or TrailingStop.ACTIVATION_RATIO
-                           ) / AppConfig.LEVERAGE
+            activation_ratio or TrailingStop.ACTIVATION_RATIO
+        ) / AppConfig.LEVERAGE
         factor = (
             (1 + activation_ratio)
             if position_side == PositionSide.SELL
@@ -220,7 +221,7 @@ class Strategy(ABC):
         activation_price = round(price * factor, decimals) if price else None
 
         callback_ratio = (
-                (callback_ratio or TrailingStop.CALLBACK_RATIO) / AppConfig.LEVERAGE * 100
+            (callback_ratio or TrailingStop.CALLBACK_RATIO) / AppConfig.LEVERAGE * 100
         )
         safe_cb_rate = round(min(max(0.1, callback_ratio), 5), 2)
 
@@ -236,7 +237,7 @@ class Strategy(ABC):
             callback_rate=safe_cb_rate,
         )
 
-    def on_new_candlestick(self, data: KlineCandlestickStreamsResponseK) -> None:
+    async def on_new_candlestick(self, data: KlineCandlestickStreamsResponseK) -> None:
         if not get_or_raise(data.x):
             return
 
@@ -268,7 +269,7 @@ class Strategy(ABC):
         self.LOGGER.info(
             f"Updated indicators for {symbol}:\n{self.indicators.get(symbol).tail().to_string(index=False)}"
         )
-        self.run(symbol)
+        await self.run(symbol)
 
     def on_position_update(self, data: AccountUpdateAPInner) -> None:
         symbol, price, amount, bep = (
@@ -350,9 +351,9 @@ class Strategy(ABC):
         )
 
     def on_filled_order(
-            self,
-            data: OrderTradeUpdateO,
-            realized_profit: float,
+        self,
+        data: OrderTradeUpdateO,
+        realized_profit: float,
     ) -> None:
         (
             order_id,
@@ -424,13 +425,10 @@ class Strategy(ABC):
         )
 
     @abstractmethod
-    def load(self, df: DataFrame) -> DataFrame:
-        ...
+    def load(self, df: DataFrame) -> DataFrame: ...
 
     @abstractmethod
-    def run(self, symbol: str) -> None:
-        ...
+    async def run(self, symbol: str) -> None: ...
 
     @abstractmethod
-    def run_backtest(self, symbol: str, index: int) -> None:
-        ...
+    def run_backtest(self, symbol: str, index: int) -> None: ...

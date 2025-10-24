@@ -1,17 +1,18 @@
 import logging
 import os
+from typing import Optional
 
-from openai import OpenAI
+from openai import AsyncOpenAI
 
 LOGGER = logging.getLogger(__name__)
 API_KEY = os.getenv("OPENAI_API_KEY")
 
-client = OpenAI(api_key=API_KEY)
+client = AsyncOpenAI(api_key=API_KEY)
 
 
-def ask(input: str, model: str, **kwargs) -> str | None:
+async def ask(input: str, model: str, **kwargs) -> Optional[str]:
     try:
-        response = client.responses.create(
+        response = await client.responses.create(
             model=model,
             input=input,
             **kwargs,

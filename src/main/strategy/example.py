@@ -1,6 +1,7 @@
+import asyncio
 import textwrap
 import time
-from typing import override
+from typing import cast, override
 
 import pandas_ta as ta
 from binance_sdk_derivatives_trading_usds_futures import DerivativesTradingUsdsFutures
@@ -25,6 +26,7 @@ from model.position import PositionBook
 from strategy import Strategy
 from utils import decimal_places, fetch, gtd, get_or_raise
 from webhook import Webhook
+from runner.live_trading import lock
 
 
 class Example(Strategy):
@@ -62,7 +64,7 @@ class Example(Strategy):
         return df.assign(**indicators)
 
     @override
-    def run(self, symbol: str) -> None:
+    async def run(self, symbol: str) -> None:
         latest = self.indicators.get(symbol).iloc[-1]
 
         (high, low, close, rsi) = (
@@ -84,46 +86,48 @@ class Example(Strategy):
             typical_price = (high + low + close) / 3.0
             entry_price = self.exchange_info.to_entry_price(symbol, typical_price)
 
-            if entry_quantity := self.exchange_info.to_entry_quantity(
-                symbol=symbol,
-                entry_price=entry_price,
-                size=AppConfig.SIZE * AppConfig.AVERAGING[0],
-                leverage=AppConfig.LEVERAGE,
-                balance=self.balance,
-            ):
-                fetch(
-                    self.client.rest_api.new_order,
+            async with cast(asyncio.Lock, lock):
+                if entry_quantity := self.exchange_info.to_entry_quantity(
                     symbol=symbol,
-                    side=NewOrderSideEnum.BUY,
-                    type=OrderType.LIMIT.value,
-                    price=float(entry_price),
-                    quantity=float(entry_quantity),
-                    time_in_force=NewOrderTimeInForceEnum.GTD,
-                    good_till_date=gtd(time.time(), AppConfig.GTD_NLINES),
-                )
+                    entry_price=entry_price,
+                    size=AppConfig.SIZE * AppConfig.AVERAGING[0],
+                    leverage=AppConfig.LEVERAGE,
+                    balance=self.balance,
+                ):
+                    fetch(
+                        self.client.rest_api.new_order,
+                        symbol=symbol,
+                        side=NewOrderSideEnum.BUY,
+                        type=OrderType.LIMIT.value,
+                        price=float(entry_price),
+                        quantity=float(entry_quantity),
+                        time_in_force=NewOrderTimeInForceEnum.GTD,
+                        good_till_date=gtd(time.time(), AppConfig.GTD_NLINES),
+                    )
 
         # SELL/SHORT Signal
         elif rsi > 70:
             typical_price = (high + low + close) / 3.0
             entry_price = self.exchange_info.to_entry_price(symbol, typical_price)
 
-            if entry_quantity := self.exchange_info.to_entry_quantity(
-                symbol=symbol,
-                entry_price=entry_price,
-                size=AppConfig.SIZE * AppConfig.AVERAGING[0],
-                leverage=AppConfig.LEVERAGE,
-                balance=self.balance,
-            ):
-                fetch(
-                    self.client.rest_api.new_order,
+            async with cast(asyncio.Lock, lock):
+                if entry_quantity := self.exchange_info.to_entry_quantity(
                     symbol=symbol,
-                    side=NewOrderSideEnum.SELL,
-                    type=OrderType.LIMIT.value,
-                    price=float(entry_price),
-                    quantity=float(entry_quantity),
-                    time_in_force=NewOrderTimeInForceEnum.GTD,
-                    good_till_date=gtd(time.time(), AppConfig.GTD_NLINES),
-                )
+                    entry_price=entry_price,
+                    size=AppConfig.SIZE * AppConfig.AVERAGING[0],
+                    leverage=AppConfig.LEVERAGE,
+                    balance=self.balance,
+                ):
+                    fetch(
+                        self.client.rest_api.new_order,
+                        symbol=symbol,
+                        side=NewOrderSideEnum.SELL,
+                        type=OrderType.LIMIT.value,
+                        price=float(entry_price),
+                        quantity=float(entry_quantity),
+                        time_in_force=NewOrderTimeInForceEnum.GTD,
+                        good_till_date=gtd(time.time(), AppConfig.GTD_NLINES),
+                    )
 
     @override
     def on_new_order(self, data: OrderTradeUpdateO) -> None:
