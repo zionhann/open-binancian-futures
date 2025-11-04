@@ -1,7 +1,7 @@
 import asyncio
 import textwrap
 import time
-from typing import cast, override
+from typing import Optional, cast, override
 
 import pandas_ta as ta
 from binance_sdk_derivatives_trading_usds_futures import DerivativesTradingUsdsFutures
@@ -26,7 +26,6 @@ from model.position import PositionBook
 from strategy import Strategy
 from utils import decimal_places, fetch, gtd, get_or_raise
 from webhook import Webhook
-from runner.live_trading import lock
 
 
 class Example(Strategy):
@@ -39,6 +38,7 @@ class Example(Strategy):
         positions: PositionBook,
         webhook: Webhook,
         indicators: Indicator,
+        lock: Optional[asyncio.Lock],
     ) -> None:
         super().__init__(
             client=client,
@@ -48,6 +48,7 @@ class Example(Strategy):
             positions=positions,
             webhook=webhook,
             indicators=indicators,
+            lock=lock,
         )
 
     @override
@@ -86,7 +87,7 @@ class Example(Strategy):
             typical_price = (high + low + close) / 3.0
             entry_price = self.exchange_info.to_entry_price(symbol, typical_price)
 
-            async with cast(asyncio.Lock, lock):
+            async with cast(asyncio.Lock, self.lock):
                 if entry_quantity := self.exchange_info.to_entry_quantity(
                     symbol=symbol,
                     entry_price=entry_price,
@@ -110,7 +111,7 @@ class Example(Strategy):
             typical_price = (high + low + close) / 3.0
             entry_price = self.exchange_info.to_entry_price(symbol, typical_price)
 
-            async with cast(asyncio.Lock, lock):
+            async with cast(asyncio.Lock, self.lock):
                 if entry_quantity := self.exchange_info.to_entry_quantity(
                     symbol=symbol,
                     entry_price=entry_price,

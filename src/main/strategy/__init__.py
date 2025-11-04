@@ -1,3 +1,4 @@
+import asyncio
 import importlib
 import logging
 import textwrap
@@ -38,7 +39,6 @@ BASIC_COLUMNS = [
 
 class Strategy(ABC):
     LOGGER = logging.getLogger(__name__)
-    is_imported = False
 
     @staticmethod
     def of(
@@ -50,6 +50,7 @@ class Strategy(ABC):
         positions: PositionBook | None = None,
         webhook: Webhook | None = None,
         indicators: Indicator | None = None,
+        lock: asyncio.Lock | None = None,
     ) -> "Strategy":
         if name is None:
             raise ValueError("Strategy is not specified")
@@ -65,6 +66,7 @@ class Strategy(ABC):
             positions=positions,
             webhook=webhook,
             indicators=indicators,
+            lock=lock,
         )
 
     @staticmethod
@@ -93,6 +95,7 @@ class Strategy(ABC):
         positions: PositionBook | None,
         webhook: Webhook | None,
         indicators: Indicator | None,
+        lock: asyncio.Lock | None = None,
     ) -> None:
         self.client = client
         self.exchange_info = exchange_info or futures.init_exchange_info()
@@ -102,6 +105,7 @@ class Strategy(ABC):
         self.webhook = webhook or Webhook.of(url=None)
         self.indicators = indicators or futures.init_indicators()
         self.add_indicators(self.indicators)
+        self.lock = lock
 
     def add_indicators(self, indicator: Indicator) -> None:
         for symbol in AppConfig.SYMBOLS:

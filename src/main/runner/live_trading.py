@@ -25,7 +25,6 @@ from webhook import Webhook
 LOGGER = logging.getLogger(__name__)
 MESSAGE = "message"
 KEEPALIVE_USER_STREAM_INTERVAL = 60 * 50
-lock: Optional[asyncio.Lock] = None
 
 
 class LiveTrading(Runner):
@@ -128,8 +127,7 @@ class LiveTrading(Runner):
         asyncio.run(self._run_async())
 
     async def _run_async(self) -> None:
-        global lock
-        lock = asyncio.Lock()
+        self.strategy.lock = asyncio.Lock()
 
         await self.client.websocket_streams.create_connection()
         await asyncio.gather(
