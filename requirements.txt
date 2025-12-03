@@ -8,3 +8,5 @@ slack_sdk
 TA-Lib
 openai
 anthropic
+git+https://github.com/toon-format/toon-python.git
+tiktoken
