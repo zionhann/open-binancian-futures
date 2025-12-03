@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import textwrap
 from typing import override
@@ -46,7 +47,7 @@ class Backtesting(Runner):
                 current = klines.iloc[-1]
                 time, high, low = current["Open_time"], current["High"], current["Low"]
 
-                self.strategy.run_backtest(symbol, i)
+                asyncio.run(self.strategy.run_backtest(symbol, i))
                 self._expire_orders(symbol, time)
                 self._eval_orders(symbol, high, low, time)
 
@@ -60,7 +61,9 @@ class Backtesting(Runner):
     def _expire_orders(self, symbol: str, time: Timestamp) -> None:
         orders = self.orders.get(symbol)
 
-        if (order := orders.find_by_type(OrderType.LIMIT)) is not None and order.is_expired(time):
+        if (
+            order := orders.find_by_type(OrderType.LIMIT)
+        ) is not None and order.is_expired(time):
             LOGGER.debug(
                 textwrap.dedent(
                     f"""
@@ -76,7 +79,7 @@ class Backtesting(Runner):
             orders.clear()
 
     def _eval_orders(
-            self, symbol: str, high: float, low: float, time: Timestamp
+        self, symbol: str, high: float, low: float, time: Timestamp
     ) -> None:
         for order in self._filled_orders(symbol, high, low):
             test_result = get_or_raise(
@@ -89,11 +92,11 @@ class Backtesting(Runner):
                 test_result.increment_hit_count(order.side)
 
             if (position := self.positions.get(symbol).find_first()) is not None and (
-                    order.is_type(
-                        OrderType.TAKE_PROFIT_MARKET,
-                        OrderType.STOP_MARKET,
-                        OrderType.MARKET,
-                    )
+                order.is_type(
+                    OrderType.TAKE_PROFIT_MARKET,
+                    OrderType.STOP_MARKET,
+                    OrderType.MARKET,
+                )
             ):
                 pnl = self._close_position(position, order, time)
                 test_result.increase_pnl(pnl)
@@ -130,7 +133,7 @@ class Backtesting(Runner):
         )
 
     def _close_position(
-            self, position: Position, order: Order, time: Timestamp
+        self, position: Position, order: Order, time: Timestamp
     ) -> float:
         pnl, margin = position.simple_pnl(order.price), position.initial_margin()
         self.balance.increase_(pnl + margin)
