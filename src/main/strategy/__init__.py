@@ -8,6 +8,10 @@ import pandas as pd
 from binance_sdk_derivatives_trading_usds_futures.derivatives_trading_usds_futures import (
     DerivativesTradingUsdsFutures,
 )
+
+from binance_sdk_derivatives_trading_usds_futures.rest_api.models import (
+    NewAlgoOrderSideEnum,
+)
 from binance_sdk_derivatives_trading_usds_futures.websocket_streams.models import (
     KlineCandlestickStreamsResponseK,
     OrderTradeUpdateO,
@@ -192,12 +196,13 @@ class Strategy(ABC):
             _quantity = quantity if reduce_only else None
 
             fetch(
-                self.client.rest_api.new_order,
+                self.client.rest_api.new_algo_order,
+                algo_type="CONDITIONAL",
                 symbol=symbol,
                 side=position_side.value,
                 type=order_type.value,
                 price=_price,
-                stop_price=self.exchange_info.to_entry_price(symbol, _stop_price),
+                trigger_price=self.exchange_info.to_entry_price(symbol, _stop_price),
                 quantity=_quantity,
                 close_position=close_position,
                 time_in_force=TimeInForce.GTE_GTC.value,

@@ -67,7 +67,7 @@ class LiveTrading(Runner):
                     LOGGER.info("Listen key has expired. Opening a new one...")
                     expired_key = get_or_raise(
                         Listenkeyexpired.from_dict(stream)
-                    ).listenKey
+                    ).listen_key
                     asyncio.create_task(
                         self._subscribe_to_user_stream(expired_listen_key=expired_key)
                     )
