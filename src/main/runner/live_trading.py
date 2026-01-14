@@ -10,12 +10,15 @@ from binance_sdk_derivatives_trading_usds_futures.websocket_streams.models impor
     KlineCandlestickStreamsResponse,
     OrderTradeUpdate,
     OrderTradeUpdateO,
+    AlgoUpdate,
+    AlgoUpdateO,
     AccountUpdate,
     AccountUpdateA,
     Listenkeyexpired,
 )
 
 from model.constant import *
+from model.order import OrderEvent
 from openapi import binance_futures as futures
 from runner import Runner
 from strategy import Strategy
@@ -34,7 +37,6 @@ class LiveTrading(Runner):
         self.strategy = Strategy.of(
             name=Required.STRATEGY, client=self.client, webhook=self.webhook
         )
-        self.realized_profit = {s: 0.0 for s in AppConfig.SYMBOLS}
 
     def _market_stream_handler(self, stream: KlineCandlestickStreamsResponse) -> None:
         try:
@@ -59,6 +61,10 @@ class LiveTrading(Runner):
                     )
                     self._handle_order_trade_update(get_or_raise(order_trade_update.o))
 
+                elif event == EventType.ALGO_UPDATE.value:
+                    algo_update = get_or_raise(AlgoUpdate.from_dict(stream))
+                    self._handle_algo_update(get_or_raise(algo_update.o))
+
                 elif event == EventType.ACCOUNT_UPDATE.value:
                     account_update = get_or_raise(AccountUpdate.from_dict(stream))
                     self._handle_account_update(get_or_raise(account_update.a))
@@ -79,34 +85,43 @@ class LiveTrading(Runner):
             )
 
     def _handle_order_trade_update(self, data: OrderTradeUpdateO):
-        symbol = get_or_raise(data.s)
-        og_order_type = OrderType(get_or_raise(data.ot))
+        event = OrderEvent.from_order_trade_update(data)
         curr_order_type = OrderType(get_or_raise(data.o))
-        status = OrderStatus(get_or_raise(data.X))
-        realized_profit = float(get_or_raise(data.rp))
 
-        if symbol in AppConfig.SYMBOLS:
-            if status == OrderStatus.NEW and og_order_type == curr_order_type:
-                self.strategy.on_new_order(data)
+        if event.symbol in AppConfig.SYMBOLS:
+            if event.status == OrderStatus.NEW and event.order_type == curr_order_type:
+                self.strategy.on_new_order(event)
 
-            elif status in [
+            elif event.status in [
                 OrderStatus.PARTIALLY_FILLED,
                 OrderStatus.FILLED,
             ]:
-                self.realized_profit[symbol] += realized_profit
+                self.strategy.accumulate_realized_profit(
+                    event.symbol, event.realized_profit or 0.0
+                )
+                if event.status == OrderStatus.FILLED:
+                    self.strategy.on_filled_order(event)
 
-                if status == OrderStatus.FILLED:
-                    self.strategy.on_filled_order(
-                        data=data,
-                        realized_profit=self.realized_profit[symbol],
-                    )
-                    self.realized_profit[symbol] = 0.0
+            elif event.status == OrderStatus.CANCELED:
+                self.strategy.on_cancelled_order(event)
 
-            elif status == OrderStatus.CANCELED:
-                self.strategy.on_cancelled_order(data)
+            elif event.status == OrderStatus.EXPIRED:
+                self.strategy.on_expired_order(event)
 
-            elif status == OrderStatus.EXPIRED:
-                self.strategy.on_expired_order(data)
+    def _handle_algo_update(self, data: AlgoUpdateO):
+        event = OrderEvent.from_algo_update(data)
+
+        if event.symbol not in AppConfig.SYMBOLS:
+            return
+
+        if event.status == AlgoStatus.NEW:
+            self.strategy.on_new_order(event)
+
+        elif event.status == AlgoStatus.CANCELED:
+            self.strategy.on_cancelled_order(event)
+
+        elif event.status == AlgoStatus.EXPIRED:
+            self.strategy.on_expired_order(event)
 
     def _handle_account_update(self, data: AccountUpdateA):
         if data.P:

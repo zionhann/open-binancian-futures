@@ -24,6 +24,7 @@ from binance_sdk_derivatives_trading_usds_futures.rest_api.models import (
     AllOrdersResponse,
     PositionInformationV3Response,
     KlineCandlestickDataResponse,
+    CurrentAllAlgoOpenOrdersResponse,
 )
 
 from model.balance import Balance
@@ -123,26 +124,50 @@ def init_balance() -> Balance:
     return Balance(0.0)
 
 
-def init_orders() -> OrderBook:
-    orders = {
-        symbol: OrderList(
-            [
-                Order(
-                    symbol=symbol,
-                    id=get_or_raise(item.order_id),
-                    type=OrderType(get_or_raise(item.orig_type)),
-                    side=PositionSide(get_or_raise(item.side)),
-                    price=float(get_or_raise(item.price))
-                          or float(get_or_raise(item.stop_price)),
-                    quantity=float(get_or_raise(item.orig_qty)),
-                    gtd=get_or_raise(item.good_till_date),
-                )
-                for item in cast(
-                list[AllOrdersResponse],
-                fetch(client.rest_api.current_all_open_orders, symbol=symbol),
-            )
-            ]
+def _fetch_regular_orders(symbol: str) -> list[Order]:
+    """Fetch regular open orders for a symbol."""
+    return [
+        Order(
+            symbol=symbol,
+            id=get_or_raise(item.order_id),
+            type=OrderType(get_or_raise(item.orig_type)),
+            side=PositionSide(get_or_raise(item.side)),
+            price=float(get_or_raise(item.price))
+            or float(get_or_raise(item.stop_price)),
+            quantity=float(get_or_raise(item.orig_qty)),
+            gtd=get_or_raise(item.good_till_date),
         )
+        for item in cast(
+            list[AllOrdersResponse],
+            fetch(client.rest_api.current_all_open_orders, symbol=symbol),
+        )
+    ]
+
+
+def _fetch_algo_orders(symbol: str) -> list[Order]:
+    """Fetch algo open orders for a symbol."""
+    return [
+        Order(
+            symbol=symbol,
+            id=get_or_raise(item.algo_id),
+            type=OrderType(get_or_raise(item.order_type)),
+            side=PositionSide(get_or_raise(item.side)),
+            price=float(get_or_raise(item.price))
+            or float(get_or_raise(item.trigger_price)),
+            quantity=float(get_or_raise(item.quantity)),
+            gtd=get_or_raise(item.good_till_date),
+        )
+        for item in cast(
+            list[CurrentAllAlgoOpenOrdersResponse],
+            fetch(client.rest_api.current_all_algo_open_orders, symbol=symbol),
+        )
+    ]
+
+
+def init_orders() -> OrderBook:
+    """Initialize OrderBook with both regular and algo orders."""
+    orders = {
+        symbol: OrderList(_fetch_regular_orders(symbol) + _fetch_algo_orders(symbol))
         for symbol in AppConfig.SYMBOLS
     }
     LOGGER.info(f"Loaded open orders: {orders}")
@@ -162,16 +187,16 @@ def init_positions() -> PositionBook:
                     bep=bep,
                 )
                 for p in cast(
-                list[PositionInformationV3Response],
-                fetch(client.rest_api.position_information_v3, symbol=symbol),
-            )
-                for price, amount, bep in [
-                (
-                    float(get_or_raise(p.entry_price)),
-                    float(get_or_raise(p.position_amt)),
-                    float(get_or_raise(p.break_even_price)),
+                    list[PositionInformationV3Response],
+                    fetch(client.rest_api.position_information_v3, symbol=symbol),
                 )
-            ]
+                for price, amount, bep in [
+                    (
+                        float(get_or_raise(p.entry_price)),
+                        float(get_or_raise(p.position_amt)),
+                        float(get_or_raise(p.break_even_price)),
+                    )
+                ]
                 if not (price == 0.0 or amount == 0.0)
             ]
         )

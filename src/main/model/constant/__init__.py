@@ -25,7 +25,9 @@ class AppConfig:
     INTERVAL = os.getenv("INTERVAL", "1d")
     LEVERAGE = int(os.getenv("LEVERAGE", 1))
     SIZE = float(os.getenv("SIZE", 0.05))
-    AVERAGING = [float(ratio.strip()) for ratio in os.getenv("AVERAGING", "1").split(",")]
+    AVERAGING = [
+        float(ratio.strip()) for ratio in os.getenv("AVERAGING", "1").split(",")
+    ]
     IS_TESTNET = os.getenv("IS_TESTNET", "false") == "true"
     GTD_NLINES = int(os.getenv("GTD_NLINES", 3))
     WEBHOOK_URL = os.getenv("WEBHOOK_URL")
@@ -85,6 +87,7 @@ class EventType(Enum):
     ACCOUNT_UPDATE = "ACCOUNT_UPDATE"
     LISTEN_KEY_EXPIRED = "listenKeyExpired"
     TRADE_LITE = "TRADE_LITE"
+    ALGO_UPDATE = "ALGO_UPDATE"
 
 
 class OrderStatus(Enum):
@@ -94,6 +97,16 @@ class OrderStatus(Enum):
     CANCELED = "CANCELED"
     EXPIRED = "EXPIRED"
     EXPIRED_IN_MATCH = "EXPIRED_IN_MATCH"
+
+
+class AlgoStatus(Enum):
+    NEW = "NEW"
+    CANCELED = "CANCELED"
+    TRIGGERING = "TRIGGERING"
+    TRIGGERED = "TRIGGERED"
+    FINISHED = "FINISHED"
+    REJECTED = "REJECTED"
+    EXPIRED = "EXPIRED"
 
 
 class PositionSide(Enum):

@@ -14,7 +14,6 @@ from binance_sdk_derivatives_trading_usds_futures.rest_api.models import (
 )
 from binance_sdk_derivatives_trading_usds_futures.websocket_streams.models import (
     KlineCandlestickStreamsResponseK,
-    OrderTradeUpdateO,
     AccountUpdateAPInner,
     AccountUpdateABInner,
 )
@@ -24,7 +23,7 @@ from model.balance import Balance
 from model.constant import *
 from model.exchange_info import ExchangeInfo
 from model.indicator import Indicator
-from model.order import Order, OrderBook
+from model.order import OrderBook, OrderEvent
 from model.position import Position, PositionBook
 from openapi import binance_futures as futures
 from utils import decimal_places, fetch, get_or_raise
@@ -110,6 +109,7 @@ class Strategy(ABC):
         self.indicators = indicators or futures.init_indicators()
         self.add_indicators(self.indicators)
         self.lock = lock
+        self._realized_profit = {s: 0.0 for s in AppConfig.SYMBOLS}
 
     def add_indicators(self, indicator: Indicator) -> None:
         for symbol in AppConfig.SYMBOLS:
@@ -311,88 +311,44 @@ class Strategy(ABC):
             self.balance = Balance(float(get_or_raise(data.cw)))
             self.LOGGER.info(f"Updated available USDT: {self.balance}")
 
-    def on_new_order(self, data: OrderTradeUpdateO) -> None:
-        (
-            order_id,
-            symbol,
-            og_order_type,
-            side,
-            price,
-            stop_price,
-            quantity,
-            gtd,
-            is_reduce_only,
-        ) = (
-            int(get_or_raise(data.i)),
-            str(get_or_raise(data.s)),
-            OrderType(get_or_raise(data.ot)),
-            PositionSide(get_or_raise(data.S)),
-            float(get_or_raise(data.p)),
-            float(get_or_raise(data.sp)),
-            float(get_or_raise(data.q)),
-            int(get_or_raise(data.gtd)),
-            bool(get_or_raise(data.R)),
-        )
-        valid_price = price or stop_price
+    def accumulate_realized_profit(self, symbol: str, profit: float) -> None:
+        """Accumulate realized profit for partial fills."""
+        self._realized_profit[symbol] += profit
 
-        self.orders.get(symbol).add(
-            Order(
-                symbol=symbol,
-                id=order_id,
-                type=og_order_type,
-                side=side,
-                price=valid_price,
-                quantity=quantity,
-                gtd=gtd,
-            )
-        )
+    def on_new_order(self, event: OrderEvent) -> None:
+        if event.can_convert_to_order():
+            self.orders.get(event.symbol).add(event.to_order())
+
+        valid_price = event.price or event.stop_price
 
         self.LOGGER.info(
             textwrap.dedent(
                 f"""
-                Opened {og_order_type.value} order @ {valid_price}
-                Symbol: {symbol}
-                Side: {side.value}
-                Quantity: {quantity or "N/A"}
-                Reduce-only: {is_reduce_only}
+                Opened {event.display_order_type} order @ {valid_price}
+                Symbol: {event.symbol}
+                Side: {event.side.value if event.side else "N/A"}
+                Quantity: {event.quantity or "N/A"}
+                Reduce-only: {event.is_reduce_only}
                 """
             )
         )
 
-    def on_filled_order(
-        self,
-        data: OrderTradeUpdateO,
-        realized_profit: float,
-    ) -> None:
-        (
-            order_id,
-            symbol,
-            og_order_type,
-            side,
-            price,
-            filled,
-            quantity,
-            status,
-        ) = (
-            int(get_or_raise(data.i)),
-            str(get_or_raise(data.s)),
-            OrderType(get_or_raise(data.ot)),
-            PositionSide(get_or_raise(data.S)),
-            float(get_or_raise(data.p)),
-            float(get_or_raise(data.z)),
-            float(get_or_raise(data.q)),
-            OrderStatus(get_or_raise(data.X)),
-        )
-        average_price = round(float(get_or_raise(data.ap)), decimal_places(price))
-        filled_percentage = (filled / quantity) * 100
+    def on_filled_order(self, event: OrderEvent) -> None:
+        price = event.price or 0.0
+        filled = event.filled or 0.0
+        quantity = event.quantity or 0.0
+        average_price = round(event.average_price or 0.0, decimal_places(price))
+        filled_percentage = (filled / quantity * 100) if quantity else 0.0
+        side_str = event.side.value if event.side else "N/A"
+        realized_profit = self._realized_profit[event.symbol]
 
         self.LOGGER.info(
             textwrap.dedent(
                 f"""
-                {og_order_type.value} order has been filled @ {average_price}
-                Symbol: {symbol}
-                Side: {side.value}
-                Quantity: {filled}/{quantity} {symbol[:-4]} ({filled_percentage:.2f}%)
+                {event.display_order_type} order has been filled @ {average_price}
+                Symbol: {event.symbol}
+                Side: {side_str}
+                Quantity: {filled}/{quantity} {event.symbol[:-4]} ({filled_percentage:.2f}%)
                 Realized Profit: {realized_profit} USDT
                 """
             )
@@ -401,36 +357,27 @@ class Strategy(ABC):
         self.webhook.send_message(
             message=textwrap.dedent(
                 f"""
-                [{status.value}] {symbol[:-4]} {side.value} {filled} @ {average_price}
-                Order: {og_order_type.value}
+                [{event.status.value}] {event.symbol[:-4]} {side_str} {filled} @ {average_price}
+                Order: {event.display_order_type}
                 PNL: {realized_profit} USDT
                 """
             )
         )
-        self.orders.get(symbol).remove_by_id(order_id)
+        self.orders.get(event.symbol).remove_by_id(event.order_id)
+        self._realized_profit[event.symbol] = 0.0
 
-    def on_cancelled_order(self, data: OrderTradeUpdateO) -> None:
-        symbol, order_id, og_order_type, side = (
-            get_or_raise(data.s),
-            get_or_raise(data.i),
-            OrderType(get_or_raise(data.ot)),
-            PositionSide(get_or_raise(data.S)),
-        )
-        self.orders.get(symbol).remove_by_id(order_id)
+    def on_cancelled_order(self, event: OrderEvent) -> None:
+        self.orders.get(event.symbol).remove_by_id(event.order_id)
+        side_str = event.side.value if event.side else "N/A"
         self.LOGGER.info(
-            f"{og_order_type.value} order for {symbol} has been cancelled. (Side: {side.value})"
+            f"{event.display_order_type} order for {event.symbol} has been cancelled. (Side: {side_str})"
         )
 
-    def on_expired_order(self, data: OrderTradeUpdateO) -> None:
-        symbol, order_id, og_order_type, side = (
-            get_or_raise(data.s),
-            get_or_raise(data.i),
-            OrderType(get_or_raise(data.ot)),
-            PositionSide(get_or_raise(data.S)),
-        )
-        self.orders.get(symbol).remove_by_id(order_id)
+    def on_expired_order(self, event: OrderEvent) -> None:
+        self.orders.get(event.symbol).remove_by_id(event.order_id)
+        side_str = event.side.value if event.side else "N/A"
         self.LOGGER.info(
-            f"{og_order_type.value} order for {symbol} has expired. (Side: {side.value})"
+            f"{event.display_order_type} order for {event.symbol} has expired. (Side: {side_str})"
         )
 
     @abstractmethod
