@@ -214,28 +214,18 @@ class Strategy(ABC):
         symbol: str,
         position_side: PositionSide,
         quantity: float,
-        price: float | None = None,
-        activation_ratio: float | None = None,
+        activation_price: float | None = None,
         callback_ratio: float | None = None,
     ) -> None:
-        activation_ratio = (
-            activation_ratio or TrailingStop.ACTIVATION_RATIO
-        ) / AppConfig.LEVERAGE
-        factor = (
-            (1 + activation_ratio)
-            if position_side == PositionSide.SELL
-            else (1 - activation_ratio)
-        )
-        decimals = decimal_places(price) if price else None
-        activation_price = round(price * factor, decimals) if price else None
-
-        callback_ratio = (
+        _callback_ratio = (
             (callback_ratio or TrailingStop.CALLBACK_RATIO) / AppConfig.LEVERAGE * 100
         )
-        safe_cb_rate = round(min(max(0.1, callback_ratio), 5), 2)
+        max_cb_ratio = min(100 // AppConfig.LEVERAGE, 10)
+        safe_cb_ratio = round(min(max(0.1, _callback_ratio), max_cb_ratio), 2)
 
         fetch(
-            self.client.rest_api.new_order,
+            self.client.rest_api.new_algo_order,
+            algo_type="CONDITIONAL",
             symbol=symbol,
             side=position_side.value,
             type=OrderType.TRAILING_STOP_MARKET.value,
@@ -243,7 +233,7 @@ class Strategy(ABC):
             time_in_force=TimeInForce.GTE_GTC.value,
             reduce_only=True,
             activation_price=activation_price,
-            callback_rate=safe_cb_rate,
+            callback_rate=safe_cb_ratio,
         )
 
     async def on_new_candlestick(self, data: KlineCandlestickStreamsResponseK) -> None:
@@ -331,6 +321,12 @@ class Strategy(ABC):
                 Reduce-only: {event.is_reduce_only}
                 """
             )
+        )
+
+    def on_triggered_algo(self, event: OrderEvent) -> None:
+        self.orders.get(event.symbol).remove_by_id(event.order_id)
+        self.LOGGER.info(
+            f"{event.display_order_type} order for {event.symbol} has been triggered."
         )
 
     def on_filled_order(self, event: OrderEvent) -> None:

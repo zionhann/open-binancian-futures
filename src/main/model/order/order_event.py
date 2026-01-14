@@ -7,7 +7,7 @@ from binance_sdk_derivatives_trading_usds_futures.websocket_streams.models impor
     AlgoUpdateO,
 )
 
-from main.model.order.order import Order
+from model.order.order import Order
 from model.constant import OrderStatus, OrderType, PositionSide, AlgoStatus
 
 

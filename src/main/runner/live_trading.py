@@ -117,6 +117,9 @@ class LiveTrading(Runner):
         if event.status == AlgoStatus.NEW:
             self.strategy.on_new_order(event)
 
+        if event.status == AlgoStatus.TRIGGERED:
+            self.strategy.on_triggered_algo(event)
+
         elif event.status == AlgoStatus.CANCELED:
             self.strategy.on_cancelled_order(event)
 
