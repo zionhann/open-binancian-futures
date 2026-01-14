@@ -13,7 +13,8 @@ class BacktestingSummary:
         self._total_trade_count = 0
         self._total_hit_count = 0
         self._total_win_count = 0
-        self._cumulative_pnl = 0.0
+        self._total_profit = 0.0
+        self._total_loss = 0.0
 
     def print(self):
         self._print_details()
@@ -21,34 +22,50 @@ class BacktestingSummary:
 
     def _print_details(self):
         for result in self._results:
-            self._total_trade_count += result.total_trade_count
-            self._total_hit_count += result.total_hit_count
-            self._total_win_count += result.total_win_count
-            self._cumulative_pnl += result.cumulative_pnl
+            self._total_trade_count += result.trade_count
+            self._total_hit_count += result.hit_count
+            self._total_win_count += result.win_count
+            self._total_profit += result._profit
+            self._total_loss += result._loss
+
             result.print()
 
     def _print_summary(self):
         total_hit_rate = (
-            self._total_hit_count / BacktestConfig.SAMPLE_SIZE * 100
+            self._total_hit_count / BacktestConfig.SAMPLE_SIZE
             if BacktestConfig.SAMPLE_SIZE > 0
             else 0
         )
         total_win_rate = (
-            self._total_win_count / self._total_trade_count * 100
+            self._total_win_count / self._total_trade_count
             if self._total_trade_count > 0
             else 0
         )
-        roi = self._cumulative_pnl / BacktestConfig.BALANCE * 100
-        expectancy = self._cumulative_pnl / self._total_trade_count
+        cumulative_pnl = self._total_profit + self._total_loss
+        roi = cumulative_pnl / BacktestConfig.BALANCE * 100
+
+        total_average_win = (
+            self._total_profit / self._total_win_count if self._total_win_count else 0.0
+        )
+        total_average_loss = self._total_loss / (
+            self._total_trade_count - self._total_win_count
+        )
+
+        expectancy = (total_win_rate * total_average_win) - (
+            (1 - total_win_rate) * total_average_loss
+        )
 
         LOGGER.info(
             textwrap.dedent(
                 f"""
                 ===Overall Results===
-                Hit Rate: {total_hit_rate:.2f}%
-                Win Rate: {total_win_rate:.2f}%
-                Cumulative PNL: {self._cumulative_pnl:.2f} USDT ({roi:.2f}%)
+                Hit Rate: {total_hit_rate*100:.2f}%
+                Win Rate: {total_win_rate*100:.2f}%
+                Cumulative PNL: {cumulative_pnl:.2f} USDT ({roi:.2f}%)
+                
                 Expectancy: {expectancy:.2f} USDT
+                Risk-Reward Ratio: {total_average_win/abs(total_average_loss):.2f}
+                Profit Factor: {self._total_profit/abs(self._total_loss):.2f}
                 """
             )
         )
