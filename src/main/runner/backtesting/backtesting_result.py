@@ -109,6 +109,10 @@ class BacktestingResult:
             (1 - win_rate) * self.average_loss
         )
 
+        rr = self.average_win / abs(self.average_loss) if self.average_loss else 0.0
+        pf = self._profit / abs(self._loss) if self._loss else 0.0
+
+
         logger.info(
             textwrap.dedent(
                 f"""
@@ -123,8 +127,8 @@ class BacktestingResult:
 
                 Cumulative PNL: {self._profit+self._loss:.2f} USDT
                 Expectancy: {expectancy:.2f} USDT
-                Risk-Reward Ratio: {self.average_win/abs(self.average_loss):.2f}
-                Profit Factor: {self._profit/abs(self._loss):.2f}
+                Risk-Reward Ratio: {rr:.2f}
+                Profit Factor: {pf:.2f}
                 """
             )
         )

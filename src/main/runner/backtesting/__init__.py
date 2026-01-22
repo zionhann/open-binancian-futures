@@ -106,7 +106,7 @@ class Backtesting(Runner):
 
     def _filled_orders(self, symbol: str, high: float, low: float) -> OrderList:
         return OrderList(
-            [order for order in self.orders.get(symbol) if order.is_filled_(high, low)]
+            [order for order in self.orders.get(symbol) if order.is_filled(high, low)]
         )
 
     def _open_position(self, order: Order, time: Timestamp) -> None:
@@ -115,10 +115,11 @@ class Backtesting(Runner):
             amount=order.quantity,
             price=order.price,
             side=order.side,
+            leverage=AppConfig.LEVERAGE,
         )
         self.orders.get(order.symbol).remove_by_id(order.id)
         self.positions.get(order.symbol).update_positions([position])
-        self.balance.increase_(-position.initial_margin())
+        self.balance.add_pnl(-position.initial_margin())
 
         LOGGER.info(
             textwrap.dedent(
@@ -136,7 +137,7 @@ class Backtesting(Runner):
         self, position: Position, order: Order, time: Timestamp
     ) -> float:
         pnl, margin = position.simple_pnl(order.price), position.initial_margin()
-        self.balance.increase_(pnl + margin)
+        self.balance.add_pnl(pnl + margin)
 
         LOGGER.info(
             textwrap.dedent(
@@ -159,7 +160,7 @@ class Backtesting(Runner):
     def _flush_position(self, symbol: str) -> None:
         for position in self.positions.get(symbol):
             margin = position.initial_margin()
-            self.balance.increase_(margin)
+            self.balance.add_pnl(margin)
 
             LOGGER.info(
                 textwrap.dedent(

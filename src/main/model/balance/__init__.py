@@ -14,5 +14,5 @@ class Balance:
         initial_margin = self._balance * size
         return initial_margin * leverage / entry_price
 
-    def increase_(self, pnl: float) -> None:
+    def add_pnl(self, pnl: float) -> None:
         self._balance += pnl
