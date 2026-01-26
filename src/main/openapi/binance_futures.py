@@ -109,59 +109,66 @@ def init_exchange_info() -> ExchangeInfo:
 
 
 def init_balance() -> Balance:
+    """Fetch and return the available USDT balance."""
     LOGGER.info("Fetching available balance...")
     data: list[FuturesAccountBalanceV3Response] = fetch(
         client.rest_api.futures_account_balance_v3
     )
 
-    if usdt_balance := list(filter(lambda item: item.asset == "USDT", data)):
-        available = get_or_raise(usdt_balance[0].available_balance)
+    # Use next() instead of filter() for finding single item
+    usdt_balance = next((item for item in data if item.asset == "USDT"), None)
+
+    if usdt_balance:
+        available = get_or_raise(usdt_balance.available_balance)
         initial_balance = float(available)
         LOGGER.info(f'Available USDT balance: "{initial_balance:.2f}"')
-
         return Balance(initial_balance)
 
     return Balance(0.0)
 
 
+def _create_order_from_regular_response(item: AllOrdersResponse, symbol: str) -> Order:
+    """Create Order from regular order API response."""
+    return Order(
+        symbol=symbol,
+        id=get_or_raise(item.order_id),
+        type=OrderType(get_or_raise(item.orig_type)),
+        side=PositionSide(get_or_raise(item.side)),
+        price=float(get_or_raise(item.price)) or float(get_or_raise(item.stop_price)),
+        quantity=float(get_or_raise(item.orig_qty)),
+        gtd=get_or_raise(item.good_till_date),
+    )
+
+
+def _create_order_from_algo_response(item: CurrentAllAlgoOpenOrdersResponse, symbol: str) -> Order:
+    """Create Order from algo order API response."""
+    return Order(
+        symbol=symbol,
+        id=get_or_raise(item.algo_id),
+        type=OrderType(get_or_raise(item.order_type)),
+        side=PositionSide(get_or_raise(item.side)),
+        price=float(get_or_raise(item.price)) or float(get_or_raise(item.trigger_price)),
+        quantity=float(get_or_raise(item.quantity)),
+        gtd=get_or_raise(item.good_till_date),
+    )
+
+
 def _fetch_regular_orders(symbol: str) -> list[Order]:
     """Fetch regular open orders for a symbol."""
-    return [
-        Order(
-            symbol=symbol,
-            id=get_or_raise(item.order_id),
-            type=OrderType(get_or_raise(item.orig_type)),
-            side=PositionSide(get_or_raise(item.side)),
-            price=float(get_or_raise(item.price))
-            or float(get_or_raise(item.stop_price)),
-            quantity=float(get_or_raise(item.orig_qty)),
-            gtd=get_or_raise(item.good_till_date),
-        )
-        for item in cast(
-            list[AllOrdersResponse],
-            fetch(client.rest_api.current_all_open_orders, symbol=symbol),
-        )
-    ]
+    items = cast(
+        list[AllOrdersResponse],
+        fetch(client.rest_api.current_all_open_orders, symbol=symbol),
+    )
+    return [_create_order_from_regular_response(item, symbol) for item in items]
 
 
 def _fetch_algo_orders(symbol: str) -> list[Order]:
     """Fetch algo open orders for a symbol."""
-    return [
-        Order(
-            symbol=symbol,
-            id=get_or_raise(item.algo_id),
-            type=OrderType(get_or_raise(item.order_type)),
-            side=PositionSide(get_or_raise(item.side)),
-            price=float(get_or_raise(item.price))
-            or float(get_or_raise(item.trigger_price)),
-            quantity=float(get_or_raise(item.quantity)),
-            gtd=get_or_raise(item.good_till_date),
-        )
-        for item in cast(
-            list[CurrentAllAlgoOpenOrdersResponse],
-            fetch(client.rest_api.current_all_algo_open_orders, symbol=symbol),
-        )
-    ]
+    items = cast(
+        list[CurrentAllAlgoOpenOrdersResponse],
+        fetch(client.rest_api.current_all_algo_open_orders, symbol=symbol),
+    )
+    return [_create_order_from_algo_response(item, symbol) for item in items]
 
 
 def init_orders() -> OrderBook:
@@ -174,34 +181,46 @@ def init_orders() -> OrderBook:
     return OrderBook(orders)
 
 
+def _create_position_from_response(item: PositionInformationV3Response, symbol: str) -> Position | None:
+    """
+    Create Position from API response, returning None if position is empty.
+
+    A position is considered empty if price or amount is 0.0.
+    """
+    price = float(get_or_raise(item.entry_price))
+    amount = float(get_or_raise(item.position_amt))
+    bep = float(get_or_raise(item.break_even_price))
+
+    # Filter out empty positions
+    if price == 0.0 or amount == 0.0:
+        return None
+
+    return Position(
+        symbol=symbol,
+        price=price,
+        amount=amount,
+        side=(PositionSide.BUY if amount > 0 else PositionSide.SELL),
+        leverage=AppConfig.LEVERAGE,
+        break_even_price=bep,
+    )
+
+
 def init_positions() -> PositionBook:
-    positions = {
-        symbol: PositionList(
-            [
-                Position(
-                    symbol=symbol,
-                    price=price,
-                    amount=amount,
-                    side=(PositionSide.BUY if amount > 0 else PositionSide.SELL),
-                    leverage=AppConfig.LEVERAGE,
-                    bep=bep,
-                )
-                for p in cast(
-                    list[PositionInformationV3Response],
-                    fetch(client.rest_api.position_information_v3, symbol=symbol),
-                )
-                for price, amount, bep in [
-                    (
-                        float(get_or_raise(p.entry_price)),
-                        float(get_or_raise(p.position_amt)),
-                        float(get_or_raise(p.break_even_price)),
-                    )
-                ]
-                if not (price == 0.0 or amount == 0.0)
-            ]
+    """Initialize PositionBook by fetching current positions from API."""
+    positions = {}
+
+    for symbol in AppConfig.SYMBOLS:
+        items = cast(
+            list[PositionInformationV3Response],
+            fetch(client.rest_api.position_information_v3, symbol=symbol),
         )
-        for symbol in AppConfig.SYMBOLS
-    }
+        # Create positions, filtering out None values (empty positions)
+        position_list = [
+            pos for item in items
+            if (pos := _create_position_from_response(item, symbol)) is not None
+        ]
+        positions[symbol] = PositionList(position_list)
+
     LOGGER.info(f"Loaded positions: {positions}")
     return PositionBook(positions)
 
