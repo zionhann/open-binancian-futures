@@ -87,7 +87,7 @@ class Backtesting(Runner):
                 lambda: KeyError(f"Test result not found for symbol: {symbol}"),
             )
 
-            if self.positions.get(symbol).is_empty() and order.is_type(OrderType.LIMIT):
+            if not self.positions.get(symbol) and order.is_type(OrderType.LIMIT):
                 self._open_position(order, time)
                 test_result.increment_hit_count(order.side)
 

@@ -13,7 +13,7 @@ from utils import decimal_places
 class ExchangeInfo:
     def __init__(self, items: Iterable[ExchangeInformationResponseSymbolsInner]):
         self.filters: dict[str, Filter] = {
-            item.symbol: Filter(item.filters)
+            item.symbol: Filter.from_binance(item.filters)
             for item in items
             if item.symbol and item.filters
         }
