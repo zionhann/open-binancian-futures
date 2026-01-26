@@ -52,49 +52,98 @@ KLINES_COLUMNS = [
     "Ignore",
 ]
 
-if AppConfig.IS_TESTNET:
-    _rest_url, ws_stream_url, ws_api_url = (
-        TESTNET_REST,
-        TESTNET_WS_STREAMS,
-        TESTNET_WS_API,
-    )
 
-    if Required.API_KEY_TEST is None or Required.API_SECRET_TEST is None:
-        raise ValueError()
+class BinanceClientManager:
+    """
+    Manages Binance Futures API client lifecycle.
 
-    _api_key, _api_secret = (
-        Required.API_KEY_TEST,
-        Required.API_SECRET_TEST,
-    )
+    Handles configuration selection (testnet vs mainnet), API key validation,
+    and client initialization.
+    """
 
-else:
-    _rest_url, ws_stream_url, ws_api_url = (
-        MAINNET_REST,
-        MAINNET_WS_STREAMS,
-        MAINNET_WS_API,
-    )
+    def __init__(self):
+        self._client: DerivativesTradingUsdsFutures | None = None
 
-    if Required.API_KEY is None or Required.API_SECRET is None:
-        raise ValueError()
+    def _get_config(self) -> tuple[str, str, str, str, str]:
+        """
+        Get configuration based on testnet/mainnet setting.
 
-    _api_key, _api_secret = (
-        Required.API_KEY,
-        Required.API_SECRET,
-    )
+        Returns:
+            Tuple of (rest_url, ws_stream_url, ws_api_url, api_key, api_secret)
 
-config_rest = ConfigurationRestAPI(
-    api_key=_api_key, api_secret=_api_secret, base_path=_rest_url, timeout=2000
-)
-config_ws_api = ConfigurationWebSocketAPI(
-    api_key=_api_key, api_secret=_api_secret, stream_url=ws_api_url
-)
-config_ws = ConfigurationWebSocketStreams(stream_url=ws_stream_url)
+        Raises:
+            ValueError: If required API credentials are missing
+        """
+        if AppConfig.IS_TESTNET:
+            if Required.API_KEY_TEST is None or Required.API_SECRET_TEST is None:
+                raise ValueError("Testnet API credentials not configured")
 
-client = DerivativesTradingUsdsFutures(
-    config_rest_api=config_rest,
-    config_ws_api=config_ws_api,
-    config_ws_streams=config_ws,
-)
+            return (
+                TESTNET_REST,
+                TESTNET_WS_STREAMS,
+                TESTNET_WS_API,
+                Required.API_KEY_TEST,
+                Required.API_SECRET_TEST,
+            )
+        else:
+            if Required.API_KEY is None or Required.API_SECRET is None:
+                raise ValueError("Mainnet API credentials not configured")
+
+            return (
+                MAINNET_REST,
+                MAINNET_WS_STREAMS,
+                MAINNET_WS_API,
+                Required.API_KEY,
+                Required.API_SECRET,
+            )
+
+    @property
+    def client(self) -> DerivativesTradingUsdsFutures:
+        """
+        Get or create the Binance Futures client (lazy initialization).
+
+        Returns:
+            Configured DerivativesTradingUsdsFutures client
+        """
+        if self._client is None:
+            rest_url, ws_stream_url, ws_api_url, api_key, api_secret = self._get_config()
+
+            config_rest = ConfigurationRestAPI(
+                api_key=api_key,
+                api_secret=api_secret,
+                base_path=rest_url,
+                timeout=2000
+            )
+            config_ws_api = ConfigurationWebSocketAPI(
+                api_key=api_key,
+                api_secret=api_secret,
+                stream_url=ws_api_url
+            )
+            config_ws = ConfigurationWebSocketStreams(stream_url=ws_stream_url)
+
+            self._client = DerivativesTradingUsdsFutures(
+                config_rest_api=config_rest,
+                config_ws_api=config_ws_api,
+                config_ws_streams=config_ws,
+            )
+
+            network = "Testnet" if AppConfig.IS_TESTNET else "Mainnet"
+            LOGGER.info(f"Binance Futures client initialized ({network})")
+
+        return self._client
+
+    def cleanup(self) -> None:
+        """Cleanup client resources (placeholder for future connection closing)."""
+        if self._client is not None:
+            # Future: Close WebSocket connections, cleanup resources
+            LOGGER.info("Binance client cleanup completed")
+
+
+# Global client manager instance
+_client_manager = BinanceClientManager()
+
+# Backward compatibility: expose client directly
+client = _client_manager.client
 
 
 def init_exchange_info() -> ExchangeInfo:
