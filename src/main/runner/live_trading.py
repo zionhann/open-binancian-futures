@@ -21,7 +21,7 @@ from model.constant import *
 from model.order import OrderEvent
 from openapi import binance_futures as futures
 from runner import Runner
-from strategy import Strategy
+from strategy import Strategy, StrategyContext
 from utils import fetch, get_or_raise
 from webhook import Webhook
 
@@ -34,9 +34,8 @@ class LiveTrading(Runner):
     def __init__(self) -> None:
         self.client = futures.client
         self.webhook = Webhook.of(AppConfig.WEBHOOK_URL)
-        self.strategy = Strategy.of(
-            name=Required.STRATEGY, client=self.client, webhook=self.webhook
-        )
+        context = StrategyContext(client=self.client, webhook=self.webhook)
+        self.strategy = Strategy.of(name=Required.STRATEGY, context=context)
 
     def _market_stream_handler(self, stream: KlineCandlestickStreamsResponse) -> None:
         try:
