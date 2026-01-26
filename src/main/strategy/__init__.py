@@ -18,7 +18,14 @@ from binance_sdk_derivatives_trading_usds_futures.websocket_streams.models impor
 from pandas import DataFrame
 
 from model.balance import Balance
-from model.constant import *
+from model.constant import (
+    AppConfig,
+    Bracket,
+    OrderType,
+    PositionSide,
+    TimeInForce,
+    TrailingStop,
+)
 from model.exchange_info import ExchangeInfo
 from model.indicator import Indicator
 from model.order import OrderBook, OrderEvent
