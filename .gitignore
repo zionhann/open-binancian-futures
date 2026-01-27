@@ -6,3 +6,6 @@ __pycache__
 log
 **/strategy/strategy_*.py
 .idea
+
+# Preset directory - work in progress, excluded from commits
+src/main/preset/

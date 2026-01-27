@@ -1,0 +1,21 @@
+FROM python:3-slim
+
+RUN apt-get update && apt-get install -y build-essential cmake pkg-config wget
+
+WORKDIR /app
+RUN mkdir -p .log/main .log/test
+
+RUN wget https://github.com/TA-Lib/ta-lib/releases/download/v0.6.4/ta-lib-0.6.4-src.tar.gz && \
+    tar -xzf ta-lib-0.6.4-src.tar.gz && \
+    cd ta-lib-0.6.4 && \
+    ./configure && \
+    make && \
+    make install
+
+COPY requirements.txt .
+RUN pip install --upgrade pip
+RUN pip install -r requirements.txt
+
+COPY src/ .
+
+CMD ["python", "-u", "main.py"]
