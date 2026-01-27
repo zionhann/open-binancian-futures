@@ -11,7 +11,7 @@ from model.order import OrderBook, OrderList, Order
 from model.position import PositionBook, Position
 from openapi import binance_futures as futures
 from runner import Runner
-from strategy import Strategy
+from strategy import Strategy, StrategyContext
 from utils import get_or_raise
 from .backtesting_result import BacktestingResult
 from .backtesting_summary import BacktestingSummary
@@ -26,14 +26,14 @@ class Backtesting(Runner):
         self.orders = OrderBook()
         self.positions = PositionBook()
         self.indicators = futures.init_indicators(limit=BacktestConfig.KLINES_LIMIT)
-        self.strategy = Strategy.of(
-            name=Required.STRATEGY,
+        context = StrategyContext(
             client=self.client,
             balance=self.balance,
             orders=self.orders,
             positions=self.positions,
             indicators=self.indicators,
         )
+        self.strategy = Strategy.of(name=Required.STRATEGY, context=context)
         self.test_results = {s: BacktestingResult(s) for s in AppConfig.SYMBOLS}
 
     @override
@@ -87,7 +87,7 @@ class Backtesting(Runner):
                 lambda: KeyError(f"Test result not found for symbol: {symbol}"),
             )
 
-            if self.positions.get(symbol).is_empty() and order.is_type(OrderType.LIMIT):
+            if not self.positions.get(symbol) and order.is_type(OrderType.LIMIT):
                 self._open_position(order, time)
                 test_result.increment_hit_count(order.side)
 

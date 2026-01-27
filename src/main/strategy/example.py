@@ -76,7 +76,7 @@ class Example(Strategy):
         )
         orders, positions = self.orders.get(symbol), self.positions.get(symbol)
 
-        if orders.has_type(OrderType.LIMIT) or not positions.is_empty():
+        if orders.has_type(OrderType.LIMIT) or positions:
             self.LOGGER.info(
                 f"Skipping {symbol} as there are existing orders/positions."
             )
@@ -185,7 +185,7 @@ class Example(Strategy):
         orders, positions = self.orders.get(symbol), self.positions.get(symbol)
         gtd_time = gtd(int(date.timestamp()), AppConfig.GTD_NLINES)
 
-        if orders.has_type(OrderType.LIMIT) or not positions.is_empty():
+        if orders.has_type(OrderType.LIMIT) or positions:
             return
 
         if rsi < 30:
@@ -199,7 +199,7 @@ class Example(Strategy):
                 leverage=AppConfig.LEVERAGE,
                 balance=self.balance,
             ):
-                orders.open_order_(
+                orders.open_order(
                     symbol=symbol,
                     type=OrderType.LIMIT,
                     side=PositionSide.BUY,
@@ -223,7 +223,7 @@ class Example(Strategy):
                         order_type=type,
                         stop_side=PositionSide.SELL,
                     )
-                    orders.open_order_(
+                    orders.open_order(
                         symbol=symbol,
                         type=type,
                         side=PositionSide.SELL,
@@ -244,7 +244,7 @@ class Example(Strategy):
                 leverage=AppConfig.LEVERAGE,
                 balance=self.balance,
             ):
-                orders.open_order_(
+                orders.open_order(
                     symbol=symbol,
                     type=OrderType.LIMIT,
                     side=PositionSide.SELL,
@@ -268,7 +268,7 @@ class Example(Strategy):
                         order_type=type,
                         stop_side=PositionSide.BUY,
                     )
-                    orders.open_order_(
+                    orders.open_order(
                         symbol=symbol,
                         type=type,
                         side=PositionSide.BUY,

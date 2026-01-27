@@ -1,14 +1,21 @@
 from model.constant import AppConfig
-from utils import get_or_raise
+from model.container import SymbolContainer
 from .order_list import OrderList
 
 
-class OrderBook:
-    def __init__(self, orders=None) -> None:
-        self._orders = orders or {s: OrderList() for s in AppConfig.SYMBOLS}
+class OrderBook(SymbolContainer[OrderList]):
+    """Container for managing orders per symbol with bracket notation access.
 
-    def get(self, symbol: str) -> OrderList:
-        return get_or_raise(
-            self._orders.get(symbol, None),
-            lambda: KeyError(f"Order not found for symbol: {symbol}"),
-        )
+    Example:
+        >>> orders = OrderBook()
+        >>> orders["BTCUSDT"].add(order)
+        >>> len(orders["BTCUSDT"])
+    """
+
+    def __init__(self, orders: dict[str, OrderList] | None = None) -> None:
+        if orders is not None:
+            # Initialize from existing dict
+            super().__init__(OrderList, [])
+            self._items = orders
+        else:
+            super().__init__(OrderList, AppConfig.SYMBOLS)

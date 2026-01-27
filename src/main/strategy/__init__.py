@@ -3,14 +3,12 @@ import importlib
 import logging
 import textwrap
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
+import traceback
 
 import pandas as pd
 from binance_sdk_derivatives_trading_usds_futures.derivatives_trading_usds_futures import (
     DerivativesTradingUsdsFutures,
-)
-
-from binance_sdk_derivatives_trading_usds_futures.rest_api.models import (
-    NewAlgoOrderSideEnum,
 )
 from binance_sdk_derivatives_trading_usds_futures.websocket_streams.models import (
     KlineCandlestickStreamsResponseK,
@@ -20,7 +18,14 @@ from binance_sdk_derivatives_trading_usds_futures.websocket_streams.models impor
 from pandas import DataFrame
 
 from model.balance import Balance
-from model.constant import *
+from model.constant import (
+    AppConfig,
+    Bracket,
+    OrderType,
+    PositionSide,
+    TimeInForce,
+    TrailingStop,
+)
 from model.exchange_info import ExchangeInfo
 from model.indicator import Indicator
 from model.order import OrderBook, OrderEvent
@@ -40,21 +45,37 @@ BASIC_COLUMNS = [
 ]
 
 
+@dataclass
+class StrategyContext:
+    """Context object containing all dependencies for a strategy."""
+    client: DerivativesTradingUsdsFutures
+    exchange_info: ExchangeInfo | None = None
+    balance: Balance | None = None
+    orders: OrderBook | None = None
+    positions: PositionBook | None = None
+    webhook: Webhook | None = None
+    indicators: Indicator | None = None
+    lock: asyncio.Lock | None = None
+
+
 class Strategy(ABC):
     LOGGER = logging.getLogger(__name__)
 
     @staticmethod
-    def of(
-        name: str | None,
-        client: DerivativesTradingUsdsFutures,
-        exchange_info: ExchangeInfo | None = None,
-        balance: Balance | None = None,
-        orders: OrderBook | None = None,
-        positions: PositionBook | None = None,
-        webhook: Webhook | None = None,
-        indicators: Indicator | None = None,
-        lock: asyncio.Lock | None = None,
-    ) -> "Strategy":
+    def of(name: str | None, context: StrategyContext) -> "Strategy":
+        """
+        Factory method to create a strategy instance.
+
+        Args:
+            name: Strategy name (file name without .py extension)
+            context: StrategyContext containing all dependencies
+
+        Returns:
+            Strategy instance
+
+        Raises:
+            ValueError: If strategy name is None or invalid
+        """
         if name is None:
             raise ValueError("Strategy is not specified")
 
@@ -62,14 +83,14 @@ class Strategy(ABC):
             raise ValueError(f"Invalid strategy: {name}")
 
         return strategy(
-            client=client,
-            exchange_info=exchange_info,
-            balance=balance,
-            orders=orders,
-            positions=positions,
-            webhook=webhook,
-            indicators=indicators,
-            lock=lock,
+            client=context.client,
+            exchange_info=context.exchange_info,
+            balance=context.balance,
+            orders=context.orders,
+            positions=context.positions,
+            webhook=context.webhook,
+            indicators=context.indicators,
+            lock=context.lock,
         )
 
     @staticmethod
@@ -85,8 +106,9 @@ class Strategy(ABC):
                 and cls is not Strategy
             ]
             return subclasses[0] if subclasses else None
-        except ImportError:
+        except ImportError as e:
             Strategy.LOGGER.error(f"Failed to import strategy '{strategy_name}':")
+            Strategy.LOGGER.error(f"Application terminated by {e}: {traceback.format_exc()}")
             return None
 
     def __init__(
@@ -112,18 +134,13 @@ class Strategy(ABC):
         self._realized_profit = {s: 0.0 for s in AppConfig.SYMBOLS}
 
     def add_indicators(self, indicator: Indicator) -> None:
+        """Load custom indicators for all symbols."""
         for symbol in AppConfig.SYMBOLS:
-            df = indicator.get(symbol)[BASIC_COLUMNS]
-            indicator.update(symbol, self.load(df))
+            # Use bracket notation for cleaner, more Pythonic access
+            indicator[symbol] = self.load(indicator[symbol][BASIC_COLUMNS])
 
-            """
-            # Use this if displaying rows in vertical alignment
-            self._LOGGER.info(
-                f"Loaded indicators for {symbol}:\n{initial_indicators.tail().T.to_string(header=False)}"
-            )
-            """
             self.LOGGER.info(
-                f"Loaded indicators for {symbol}:\n{indicator.get(symbol).tail().to_string(index=False)}"
+                f"Loaded indicators for {symbol}:\n{indicator[symbol].tail().to_string(index=False)}"
             )
 
     def calculate_stop_price(
@@ -135,27 +152,36 @@ class Strategy(ABC):
         tp_ratio: float | None = None,
         sl_ratio: float | None = None,
     ) -> float:
+        """
+        Calculate stop price for TP/SL orders based on order type and position side.
+
+        The price moves in opposite direction for stop-loss vs take-profit,
+        and the direction depends on whether we're closing a long or short position.
+        """
+        # Normalize ratios by leverage
         sl_ratio = (sl_ratio or Bracket.STOP_LOSS_RATIO) / AppConfig.LEVERAGE
         tp_ratio = (tp_ratio or Bracket.TAKE_PROFIT_RATIO) / AppConfig.LEVERAGE
 
-        ratio = (
-            sl_ratio
-            if order_type in [OrderType.STOP_MARKET, OrderType.STOP_LIMIT]
-            else tp_ratio
+        # Determine if this is a stop-loss or take-profit order
+        stop_order_types = {OrderType.STOP_MARKET, OrderType.STOP_LIMIT}
+        take_profit_order_types = {OrderType.TAKE_PROFIT_MARKET, OrderType.TAKE_PROFIT_LIMIT}
+
+        is_stop_loss = order_type in stop_order_types
+        is_take_profit = order_type in take_profit_order_types
+
+        # Select appropriate ratio
+        ratio = sl_ratio if is_stop_loss else tp_ratio
+
+        # Calculate price movement direction
+        # SL SELL (close long) or TP BUY (close short) → price decreases (1 - ratio)
+        # SL BUY (close short) or TP SELL (close long) → price increases (1 + ratio)
+        should_decrease_price = (
+            (is_stop_loss and stop_side == PositionSide.SELL) or
+            (is_take_profit and stop_side == PositionSide.BUY)
         )
-        factor = (
-            (1 - ratio)
-            if (
-                order_type in [OrderType.STOP_MARKET, OrderType.STOP_LIMIT]
-                and stop_side == PositionSide.SELL
-            )
-            or (
-                order_type
-                in [OrderType.TAKE_PROFIT_MARKET, OrderType.TAKE_PROFIT_LIMIT]
-                and stop_side == PositionSide.BUY
-            )
-            else (1 + ratio)
-        )
+
+        factor = (1 - ratio) if should_decrease_price else (1 + ratio)
+
         return self.exchange_info.to_entry_price(symbol, entry_price * factor)
 
     def set_tpsl(
@@ -217,6 +243,11 @@ class Strategy(ABC):
         activation_price: float | None = None,
         callback_ratio: float | None = None,
     ) -> None:
+        _activation_price = (
+            self.exchange_info.to_entry_price(symbol, activation_price)
+            if activation_price
+            else None
+        )
         _callback_ratio = (
             (callback_ratio or TrailingStop.CALLBACK_RATIO) / AppConfig.LEVERAGE * 100
         )
@@ -232,7 +263,7 @@ class Strategy(ABC):
             quantity=quantity,
             time_in_force=TimeInForce.GTE_GTC.value,
             reduce_only=True,
-            activation_price=activation_price,
+            activate_price=_activation_price,
             callback_rate=safe_cb_ratio,
         )
 
@@ -256,17 +287,11 @@ class Strategy(ABC):
             "Volume": float(get_or_raise(data.v)),
         }
         new_df = pd.DataFrame([new_data], index=[open_time])
-        df = pd.concat([self.indicators.get(symbol), new_df])
-        self.indicators.update(symbol, self.load(df))
+        df = pd.concat([self.indicators[symbol], new_df])
+        self.indicators[symbol] = self.load(df)
 
-        """
-        # Use this if displaying rows in vertical alignment
-        self._LOGGER.info(
-            f"Updated indicators for {symbol}:\n{self.indicators[symbol].tail().T.to_string(header=False)}"
-        )
-        """
         self.LOGGER.info(
-            f"Updated indicators for {symbol}:\n{self.indicators.get(symbol).tail().to_string(index=False)}"
+            f"Updated indicators for {symbol}:\n{self.indicators[symbol].tail().to_string(index=False)}"
         )
         await self.run(symbol)
 
@@ -290,7 +315,7 @@ class Strategy(ABC):
                     amount=amount,
                     side=(PositionSide.BUY if amount > 0 else PositionSide.SELL),
                     leverage=AppConfig.LEVERAGE,
-                    bep=bep,
+                    break_even_price=bep,
                 )
             ]
         )
@@ -362,19 +387,25 @@ class Strategy(ABC):
         self.orders.get(event.symbol).remove_by_id(event.order_id)
         self._realized_profit[event.symbol] = 0.0
 
-    def on_cancelled_order(self, event: OrderEvent) -> None:
+    def _handle_order_removal(self, event: OrderEvent, reason: str) -> None:
+        """
+        Common logic for removing orders (cancelled, expired, etc.).
+
+        Args:
+            event: OrderEvent containing order details
+            reason: Human-readable reason (e.g., "cancelled", "expired")
+        """
         self.orders.get(event.symbol).remove_by_id(event.order_id)
         side_str = event.side.value if event.side else "N/A"
         self.LOGGER.info(
-            f"{event.display_order_type} order for {event.symbol} has been cancelled. (Side: {side_str})"
+            f"{event.display_order_type} order for {event.symbol} has been {reason}. (Side: {side_str})"
         )
 
+    def on_cancelled_order(self, event: OrderEvent) -> None:
+        self._handle_order_removal(event, "cancelled")
+
     def on_expired_order(self, event: OrderEvent) -> None:
-        self.orders.get(event.symbol).remove_by_id(event.order_id)
-        side_str = event.side.value if event.side else "N/A"
-        self.LOGGER.info(
-            f"{event.display_order_type} order for {event.symbol} has expired. (Side: {side_str})"
-        )
+        self._handle_order_removal(event, "expired")
 
     @abstractmethod
     def load(self, df: DataFrame) -> DataFrame: ...
