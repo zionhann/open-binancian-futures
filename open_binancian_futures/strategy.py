@@ -1,6 +1,10 @@
 import asyncio
 import importlib
+import importlib.util
+import inspect
 import logging
+import os
+import sys
 import textwrap
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
@@ -17,16 +21,16 @@ from binance_sdk_derivatives_trading_usds_futures.websocket_streams.models impor
 )
 from pandas import DataFrame
 
-from open_binancian_futures.models import Balance
-from open_binancian_futures.constants import settings
-from open_binancian_futures.types import OrderType, PositionSide, TimeInForce
-from open_binancian_futures.models import ExchangeInfo
-from open_binancian_futures.models import Indicator
-from open_binancian_futures.models import OrderBook, OrderEvent
-from open_binancian_futures.models import Position, PositionBook
-from open_binancian_futures import exchange as futures
-from open_binancian_futures.utils import decimal_places, fetch, get_or_raise
-from open_binancian_futures.webhook import Webhook
+from .models import Balance
+from .constants import settings
+from .types import OrderType, PositionSide, TimeInForce
+from .models import ExchangeInfo
+from .models import Indicator
+from .models import OrderBook, OrderEvent
+from .models import Position, PositionBook
+from . import exchange as futures
+from .utils import decimal_places, fetch, get_or_raise
+from .webhook import Webhook
 
 BASIC_COLUMNS = [
     "Open_time",
@@ -39,9 +43,51 @@ BASIC_COLUMNS = [
 ]
 
 
+# Custom exceptions for strategy loading
+class StrategyLoadError(Exception):
+    """Base exception for strategy loading failures."""
+
+    pass
+
+
+class StrategyNotFoundError(StrategyLoadError):
+    """Strategy file or module not found."""
+
+    pass
+
+
+def _validate_strategy_class(cls: type) -> bool:
+    """
+    Validate that a Strategy subclass can be instantiated.
+
+    Checks:
+    1. Class is not abstract
+    2. All required methods (load, run, run_backtest) are implemented
+
+    Args:
+        cls: Strategy subclass to validate
+
+    Returns:
+        True if valid, False otherwise
+    """
+    # Check if class is abstract
+    if inspect.isabstract(cls):
+        return False
+
+    # Check required methods are implemented
+    required_methods = ["load", "run", "run_backtest"]
+    for method_name in required_methods:
+        method = getattr(cls, method_name, None)
+        if method is None or getattr(method, "__isabstractmethod__", False):
+            return False
+
+    return True
+
+
 @dataclass
 class StrategyContext:
     """Context object containing all dependencies for a strategy."""
+
     client: DerivativesTradingUsdsFutures
     exchange_info: ExchangeInfo | None = None
     balance: Balance | None = None
@@ -68,57 +114,124 @@ class Strategy(ABC):
             Strategy instance
 
         Raises:
-            ValueError: If strategy name is None or invalid
+            ValueError: If strategy name is None
+            StrategyLoadError: If strategy cannot be loaded or instantiated
         """
         if name is None:
-            raise ValueError("Strategy is not specified")
+            raise ValueError("Strategy name is required")
 
-        if (strategy := Strategy._import_strategy(name)) is None:
-            raise ValueError(f"Invalid strategy: {name}")
-
-        return strategy(
-            client=context.client,
-            exchange_info=context.exchange_info,
-            balance=context.balance,
-            orders=context.orders,
-            positions=context.positions,
-            webhook=context.webhook,
-            indicators=context.indicators,
-            lock=context.lock,
-        )
+        try:
+            strategy_class = Strategy._import_strategy(name)
+            return strategy_class(
+                client=context.client,
+                exchange_info=context.exchange_info,
+                balance=context.balance,
+                orders=context.orders,
+                positions=context.positions,
+                webhook=context.webhook,
+                indicators=context.indicators,
+                lock=context.lock,
+            )
+        except StrategyLoadError:
+            Strategy.LOGGER.error(f"Failed to load strategy '{name}'")
+            raise
+        except TypeError as e:
+            raise StrategyLoadError(
+                f"Strategy '{name}' cannot be instantiated. "
+                f"Check __init__ signature: {e}"
+            ) from e
+        except Exception as e:
+            Strategy.LOGGER.error(f"Unexpected error loading strategy '{name}': {e}")
+            Strategy.LOGGER.debug(traceback.format_exc())
+            raise StrategyLoadError(f"Failed to load strategy '{name}': {e}") from e
 
     @staticmethod
-    def _import_strategy(strategy_name: str) -> type["Strategy"] | None:
+    def _import_strategy(strategy_name: str) -> type["Strategy"]:
         """
-        Import strategy by file name and return the Strategy subclass.
-        Tries to import from package first, then falls back to direct import.
+        Import strategy by file path or module name and return the Strategy subclass.
+
+        Supports two loading modes:
+        1. File-based (*.py): Loads strategy from file path
+        2. Module-based: Uses standard Python import
+
+        Args:
+            strategy_name: File path (*.py) or module import path
+
+        Returns:
+            Strategy subclass ready for instantiation
+
+        Raises:
+            StrategyNotFoundError: Strategy file or module not found
+            StrategyLoadError: Strategy cannot be loaded or has no valid subclass
         """
-        modules_to_try = [
-            f"open_binancian_futures.preset.{strategy_name}",  # Try presets
-            strategy_name,                                    # Try external/user module
+        # Import the module
+        try:
+            if strategy_name.endswith(".py"):
+                # File-based loading
+                abs_path = os.path.abspath(strategy_name)
+                if not os.path.exists(abs_path):
+                    raise StrategyNotFoundError(f"Strategy file not found: {abs_path}")
+
+                module_name = os.path.basename(abs_path)[:-3]
+                dir_name = os.path.dirname(abs_path)
+
+                # Add directory to path temporarily
+                sys.path.insert(0, dir_name)
+                try:
+                    spec = importlib.util.spec_from_file_location(module_name, abs_path)
+                    if not spec or not spec.loader:
+                        raise StrategyLoadError(f"Cannot load strategy from {abs_path}")
+
+                    mod = importlib.util.module_from_spec(spec)
+                    spec.loader.exec_module(mod)
+                finally:
+                    try:
+                        sys.path.remove(dir_name)
+                    except ValueError:
+                        pass
+            else:
+                # Module-based loading
+                mod = importlib.import_module(strategy_name)
+
+        except (ImportError, FileNotFoundError) as e:
+            raise StrategyNotFoundError(
+                f"Cannot import strategy '{strategy_name}': {e}"
+            ) from e
+        except StrategyLoadError:
+            raise
+        except Exception as e:
+            raise StrategyLoadError(
+                f"Error loading strategy '{strategy_name}': {e}"
+            ) from e
+
+        # Find valid Strategy subclass
+        subclasses = [
+            cls
+            for cls in mod.__dict__.values()
+            if isinstance(cls, type)
+            and issubclass(cls, Strategy)
+            and cls is not Strategy
         ]
 
-        for module_path in modules_to_try:
-            try:
-                mod = importlib.import_module(module_path)
-                subclasses = [
-                    cls
-                    for cls in mod.__dict__.values()
-                    if isinstance(cls, type)
-                    and issubclass(cls, Strategy)
-                    and cls is not Strategy
-                ]
-                if subclasses:
-                    return subclasses[0]
-            except ImportError:
-                continue
-            except Exception as e:
-                # Log other errors (syntax, etc) but keep trying/fail gracefully
-                Strategy.LOGGER.error(f"Error loading strategy from {module_path}: {e}")
-                Strategy.LOGGER.debug(traceback.format_exc())
+        if not subclasses:
+            raise StrategyLoadError(f"No Strategy subclass found in '{strategy_name}'")
 
-        Strategy.LOGGER.error(f"Failed to find valid Strategy subclass in: {modules_to_try}")
-        return None
+        # Find first valid (non-abstract) strategy
+        valid_strategies = [cls for cls in subclasses if _validate_strategy_class(cls)]
+
+        if not valid_strategies:
+            raise StrategyLoadError(
+                f"Found {len(subclasses)} Strategy subclass(es) in '{strategy_name}', "
+                f"but none are concrete implementations"
+            )
+
+        if len(valid_strategies) > 1:
+            Strategy.LOGGER.warning(
+                f"Multiple Strategy subclasses found in {strategy_name}. "
+                f"Using '{valid_strategies[0].__name__}'"
+            )
+
+        return valid_strategies[0]
 
     def __init__(
         self,
@@ -158,8 +271,7 @@ class Strategy(ABC):
         entry_price: float,
         order_type: OrderType,
         stop_side: PositionSide,
-        tp_ratio: float | None = None,
-        sl_ratio: float | None = None,
+        ratio: float,
     ) -> float:
         """
         Calculate stop price for TP/SL orders based on order type and position side.
@@ -167,29 +279,20 @@ class Strategy(ABC):
         The price moves in opposite direction for stop-loss vs take-profit,
         and the direction depends on whether we're closing a long or short position.
         """
+        sl_orders = {OrderType.STOP_MARKET, OrderType.STOP_LIMIT}
+        tp_orders = {OrderType.TAKE_PROFIT_MARKET, OrderType.TAKE_PROFIT_LIMIT}
+
         # Normalize ratios by leverage
-        sl_ratio = (sl_ratio or settings.stop_loss_ratio) / settings.leverage
-        tp_ratio = (tp_ratio or settings.effective_take_profit_ratio) / settings.leverage
-
-        # Determine if this is a stop-loss or take-profit order
-        stop_order_types = {OrderType.STOP_MARKET, OrderType.STOP_LIMIT}
-        take_profit_order_types = {OrderType.TAKE_PROFIT_MARKET, OrderType.TAKE_PROFIT_LIMIT}
-
-        is_stop_loss = order_type in stop_order_types
-        is_take_profit = order_type in take_profit_order_types
-
-        # Select appropriate ratio
-        ratio = sl_ratio if is_stop_loss else tp_ratio
+        _ratio = ratio / settings.leverage
 
         # Calculate price movement direction
         # SL SELL (close long) or TP BUY (close short) → price decreases (1 - ratio)
         # SL BUY (close short) or TP SELL (close long) → price increases (1 + ratio)
         should_decrease_price = (
-            (is_stop_loss and stop_side == PositionSide.SELL) or
-            (is_take_profit and stop_side == PositionSide.BUY)
-        )
+            order_type in sl_orders and stop_side == PositionSide.SELL
+        ) or (order_type in tp_orders and stop_side == PositionSide.BUY)
 
-        factor = (1 - ratio) if should_decrease_price else (1 + ratio)
+        factor = (1 - _ratio) if should_decrease_price else (1 + _ratio)
 
         return self.exchange_info.to_entry_price(symbol, entry_price * factor)
 
@@ -197,69 +300,55 @@ class Strategy(ABC):
         self,
         symbol: str,
         position_side: PositionSide,
+        order_type: OrderType,
+        ratio: float,
         price: float | None = None,
         stop_price: float | None = None,
         close_position: bool | None = None,
-        order_types: list[OrderType] | None = None,
         quantity: float | None = None,
-        tp_ratio: float | None = None,
-        sl_ratio: float | None = None,
     ) -> None:
-        _order_types = (
-            order_types
-            if order_types is not None
-            else [
-                OrderType.STOP_MARKET,
-                OrderType.TAKE_PROFIT_MARKET,
-            ]
+        reduce_only = None if close_position else True
+        _quantity = quantity if reduce_only else None
+        _stop_price = stop_price or self.calculate_stop_price(
+            symbol=symbol,
+            entry_price=get_or_raise(
+                price,
+                lambda: ValueError("Either price or stop_price must be provided"),
+            ),
+            order_type=order_type,
+            stop_side=position_side,
+            ratio=ratio,
         )
+        _price = _stop_price if reduce_only else None
 
-        for order_type in _order_types:
-            reduce_only = None if close_position else True
-            _stop_price = stop_price or self.calculate_stop_price(
-                symbol=symbol,
-                entry_price=get_or_raise(
-                    price,
-                    lambda: ValueError("Either price or stop_price must be provided"),
-                ),
-                order_type=order_type,
-                stop_side=position_side,
-                tp_ratio=tp_ratio,
-                sl_ratio=sl_ratio,
-            )
-            _price = (_stop_price or price) if reduce_only else None
-            _quantity = quantity if reduce_only else None
-
-            fetch(
-                self.client.rest_api.new_algo_order,
-                algo_type="CONDITIONAL",
-                symbol=symbol,
-                side=position_side.value,
-                type=order_type.value,
-                price=_price,
-                trigger_price=self.exchange_info.to_entry_price(symbol, _stop_price),
-                quantity=_quantity,
-                close_position=close_position,
-                time_in_force=TimeInForce.GTE_GTC.value,
-                reduce_only=reduce_only,
-            )
+        fetch(
+            self.client.rest_api.new_algo_order,
+            algo_type="CONDITIONAL",
+            symbol=symbol,
+            side=position_side.value,
+            type=order_type.value,
+            price=_price,
+            trigger_price=self.exchange_info.to_entry_price(symbol, _stop_price),
+            quantity=_quantity,
+            close_position=close_position,
+            time_in_force=TimeInForce.GTE_GTC.value,
+            reduce_only=reduce_only,
+        )
 
     def set_trailing_stop(
         self,
         symbol: str,
         position_side: PositionSide,
         quantity: float,
+        callback_ratio: float,
         activation_price: float | None = None,
-        callback_ratio: float | None = None,
     ) -> None:
         _activation_price = (
             self.exchange_info.to_entry_price(symbol, activation_price)
             if activation_price
             else None
         )
-        _callback_ratio = (
-            (callback_ratio or settings.effective_callback_ratio) / settings.leverage * 100
-        )
+        _callback_ratio = callback_ratio / settings.leverage * 100
         max_cb_ratio = min(100 // settings.leverage, 10)
         safe_cb_ratio = round(min(max(0.1, _callback_ratio), max_cb_ratio), 2)
 
@@ -313,10 +402,10 @@ class Strategy(ABC):
         )
 
         if price == 0.0 or amount == 0.0:
-            self.positions.get(symbol).clear()
+            self.positions[symbol].clear()
             return
 
-        self.positions.get(symbol).update_positions(
+        self.positions[symbol].update_positions(
             [
                 Position(
                     symbol=symbol,
@@ -328,7 +417,7 @@ class Strategy(ABC):
                 )
             ]
         )
-        self.LOGGER.info(f"Updated positions: {self.positions.get(symbol)}")
+        self.LOGGER.info(f"Updated positions: {self.positions[symbol]}")
 
     def on_balance_update(self, data: AccountUpdateABInner) -> None:
         if data.a == "USDT":
@@ -341,7 +430,7 @@ class Strategy(ABC):
 
     def on_new_order(self, event: OrderEvent) -> None:
         if event.can_convert_to_order():
-            self.orders.get(event.symbol).add(event.to_order())
+            self.orders[event.symbol].add(event.to_order())
 
         valid_price = event.price or event.stop_price
 
@@ -358,7 +447,7 @@ class Strategy(ABC):
         )
 
     def on_triggered_algo(self, event: OrderEvent) -> None:
-        self.orders.get(event.symbol).remove_by_id(event.order_id)
+        self.orders[event.symbol].remove_by_id(event.order_id)
         self.LOGGER.info(
             f"{event.display_order_type} order for {event.symbol} has been triggered."
         )
@@ -393,7 +482,7 @@ class Strategy(ABC):
                 """
             )
         )
-        self.orders.get(event.symbol).remove_by_id(event.order_id)
+        self.orders[event.symbol].remove_by_id(event.order_id)
         self._realized_profit[event.symbol] = 0.0
 
     def _handle_order_removal(self, event: OrderEvent, reason: str) -> None:
@@ -404,7 +493,7 @@ class Strategy(ABC):
             event: OrderEvent containing order details
             reason: Human-readable reason (e.g., "cancelled", "expired")
         """
-        self.orders.get(event.symbol).remove_by_id(event.order_id)
+        self.orders[event.symbol].remove_by_id(event.order_id)
         side_str = event.side.value if event.side else "N/A"
         self.LOGGER.info(
             f"{event.display_order_type} order for {event.symbol} has been {reason}. (Side: {side_str})"

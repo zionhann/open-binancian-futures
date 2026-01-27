@@ -18,14 +18,11 @@ class Webhook(ABC):
     def of(url: str | None) -> "Webhook":
         if not url:
             return DefaultWebhook()
-
-        elif url.startswith(HOOKS_SLACK_PREFIX):
+        if "slack.com" in url:
             return SlackWebhook(url)
-
-        elif url.startswith(HOOKS_DISCORD_PREFIX):
+        if "discord.com" in url:
             return DiscordWebhook(url)
-
-        raise ValueError(f"Unsupported webhook type: {url}")
+        raise ValueError(f"Unsupported webhook URL: {url}")
 
     @abstractmethod
     def send_message(self, message: str, **kwargs): ...
@@ -70,9 +67,7 @@ class DiscordWebhook(Webhook):
         """
         try:
             response = requests.post(
-                url=self.url,
-                json={**kwargs, "content": message},
-                timeout=self.timeout
+                url=self.url, json={**kwargs, "content": message}, timeout=self.timeout
             )
             response.raise_for_status()
             LOGGER.debug(f"Discord message sent successfully: {message[:100]}")

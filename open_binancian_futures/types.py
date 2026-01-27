@@ -1,5 +1,6 @@
 from enum import Enum
 
+
 class OrderType(Enum):
     LIMIT = "LIMIT"
     STOP_LIMIT = "STOP"
@@ -10,10 +11,12 @@ class OrderType(Enum):
     TRAILING_STOP_MARKET = "TRAILING_STOP_MARKET"
     LIQUIDATION = "LIQUIDATION"
 
+
 class TimeInForce(Enum):
     GTC = "GTC"
     GTD = "GTD"
     GTE_GTC = "GTE_GTC"
+
 
 class EventType(Enum):
     KLINE = "kline"
@@ -23,13 +26,14 @@ class EventType(Enum):
     TRADE_LITE = "TRADE_LITE"
     ALGO_UPDATE = "ALGO_UPDATE"
 
+
 class OrderStatus(Enum):
     NEW = "NEW"
     PARTIALLY_FILLED = "PARTIALLY_FILLED"
     FILLED = "FILLED"
     CANCELED = "CANCELED"
     EXPIRED = "EXPIRED"
-    EXPIRED_IN_MATCH = "EXPIRED_IN_MATCH"
+
 
 class AlgoStatus(Enum):
     NEW = "NEW"
@@ -40,25 +44,17 @@ class AlgoStatus(Enum):
     REJECTED = "REJECTED"
     EXPIRED = "EXPIRED"
 
-class OrderSide(Enum):
-    BUY = "BUY"
-    SELL = "SELL"
 
 class PositionSide(Enum):
-    BOTH = "BOTH"
-    LONG = "LONG"
-    SHORT = "SHORT"
     BUY = "BUY"
     SELL = "SELL"
 
-class PositionMarginType(Enum):
-    ISOLATED = "isolated"
-    CROSSED = "crossed"
 
 class FilterType(Enum):
     PRICE_FILTER = "PRICE_FILTER"
     LOT_SIZE = "LOT_SIZE"
     MIN_NOTIONAL = "MIN_NOTIONAL"
+
 
 class BaseURL(Enum):
     MAINNET_REST = "https://fapi.binance.com"

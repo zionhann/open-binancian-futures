@@ -1,6 +1,6 @@
 import logging
 from decimal import Decimal
-from typing import Callable, TypeVar
+from typing import Callable, Optional, TypeVar
 
 from binance_common.models import ApiResponse
 
@@ -22,7 +22,10 @@ def fetch(request: Callable, **kwargs):
         raise
 
 
-def gtd(timestamp: float, nlines: int) -> int:
+def gtd(timestamp: float, nlines: Optional[int]) -> Optional[int]:
+    if nlines is None:
+        return None
+
     unit = settings.interval[-1]
     base = INTERVAL_TO_SECONDS[unit] * int(settings.interval[:-1])
     exp = max(base * nlines, MIN_EXP)
@@ -39,8 +42,8 @@ T = TypeVar("T")
 
 
 def get_or_raise(
-        value: T | None,
-        raisable: Callable[[], Exception] = lambda: ValueError("Value is None"),
+    value: T | None,
+    raisable: Callable[[], Exception] = lambda: ValueError("Value is None"),
 ) -> T:
     if value is None:
         raise raisable()

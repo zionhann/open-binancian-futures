@@ -1,6 +1,6 @@
 import typer
 from typing import Optional
-from open_binancian_futures.constants import reload_settings
+from open_binancian_futures.constants import settings
 from open_binancian_futures.runners import Backtesting, LiveTrading
 import open_binancian_futures.logging_config as logging_config
 import traceback
@@ -8,19 +8,22 @@ import traceback
 app = typer.Typer(help="Open Binancian Futures CLI")
 logger = logging_config.init(__name__)
 
+
 @app.command()
 def run(
     strategy: str = typer.Argument(..., help="Strategy to use."),
-    testnet: Optional[bool] = typer.Option(None, "--testnet/--mainnet", help="Use Binance Testnet. (Overrides .env)"),
-    backtest: Optional[bool] = typer.Option(None, "--backtest/--live", help="Run in backtest mode. (Overrides .env)"),
-    symbols: Optional[str] = typer.Option(None, "--symbols", help="Comma-separated list of symbols. (Overrides .env)"),
+    testnet: Optional[bool] = typer.Option(
+        None, "--testnet/--mainnet", help="Use Binance Testnet. (Overrides .env)"
+    ),
+    backtest: Optional[bool] = typer.Option(
+        None, "--backtest/--live", help="Run in backtest mode. (Overrides .env)"
+    ),
+    symbols: Optional[str] = typer.Option(
+        None, "--symbols", help="Comma-separated list of symbols. (Overrides .env)"
+    ),
 ):
     """Run the trading bot or backtest."""
-    # Reload settings
-    reload_settings()
-    
-    # Apply overrides (simplistic approach for now)
-    from open_binancian_futures.constants import settings
+    # Apply CLI overrides to settings
     if strategy:
         settings.strategy = strategy
     if testnet is not None:
@@ -29,7 +32,7 @@ def run(
         settings.is_backtest = backtest
     if symbols:
         settings.symbols = symbols
-        
+
     logger.info("Boot process initiated. Preparing to start the application...")
 
     # Select runner based on configuration

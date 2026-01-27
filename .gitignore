@@ -4,5 +4,14 @@ __pycache__
 .env
 .DS_Store
 log
-**/strategy/strategy_*.py
 .idea
+*.skill
+
+# Build artifacts
+build/
+dist/
+*.egg-info/
+.eggs/
+MANIFEST
+.gemini/
+gha-creds-*.json

@@ -1,13 +1,9 @@
 import logging
-import math
-import textwrap
 import uuid
-from collections.abc import MutableMapping, Iterator
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Callable, Generic, Iterable, Optional, TypeVar
+from typing import Any, Iterable, Optional, TypeVar
 
-import pandas as pd
 from pandas import DataFrame, Series, Timestamp
 
 from binance_sdk_derivatives_trading_usds_futures.rest_api.models import (
@@ -16,8 +12,8 @@ from binance_sdk_derivatives_trading_usds_futures.rest_api.models import (
 )
 from binance_sdk_derivatives_trading_usds_futures.websocket_streams.models import (
     OrderTradeUpdateO,
+    AlgoUpdateO,
 )
-AlgoUpdateO = Any
 
 from open_binancian_futures.types import (
     AlgoStatus,
@@ -32,48 +28,15 @@ from open_binancian_futures.utils import decimal_places
 LOGGER = logging.getLogger(__name__)
 T = TypeVar("T")
 
-# --- Base Container ---
-
-class SymbolContainer(MutableMapping[str, T], Generic[T]):
-    def __init__(self, default_factory: Callable[[], T], symbols: list[str]) -> None:
-        self._items: dict[str, T] = {s: default_factory() for s in symbols}
-        self._default_factory = default_factory
-
-    def __getitem__(self, symbol: str) -> T:
-        if symbol not in self._items:
-            raise KeyError(f"Symbol not found: {symbol}")
-        return self._items[symbol]
-
-    def __setitem__(self, symbol: str, value: T) -> None:
-        self._items[symbol] = value
-
-    def __delitem__(self, symbol: str) -> None:
-        del self._items[symbol]
-
-    def __iter__(self) -> Iterator[str]:
-        return iter(self._items)
-
-    def __len__(self) -> int:
-        return len(self._items)
-
-    def __repr__(self) -> str:
-        return f"{self.__class__.__name__}({list(self._items.keys())})"
-
-    def get(self, symbol: str) -> T:
-        return self[symbol]
-
-    def update_item(self, symbol: str, value: T) -> None:
-        self[symbol] = value
-
 
 # --- Balance ---
 
-@dataclass
+
 class Balance:
-    _balance: float
+    """Account balance tracker with precision rounding."""
 
     def __init__(self, balance: float):
-        self._balance = math.floor(balance * 100) / 100
+        self._balance = round(balance, 2)
 
     def __str__(self):
         return f"{self._balance:.2f}"
@@ -82,15 +45,16 @@ class Balance:
     def balance(self) -> float:
         return self._balance
 
-    def calculate_quantity(self, entry_price: float, size: float, leverage: int) -> float:
-        initial_margin = self._balance * size
-        return initial_margin * leverage / entry_price
+    def calculate_quantity(self, entry_price: float) -> float:
+        initial_margin = self._balance * settings.size
+        return initial_margin * settings.leverage / entry_price
 
     def add_pnl(self, pnl: float) -> None:
         self._balance += pnl
 
 
 # --- Order ---
+
 
 @dataclass
 class Order:
@@ -100,10 +64,12 @@ class Order:
     side: PositionSide
     price: float
     quantity: float
-    gtd: int = 0
+    gtd: Optional[int] = None
 
     def __repr__(self) -> str:
-        return f"\n\t{self.__class__.__name__}(symbol={self.symbol}, type={self.type}, side={self.side}, price={self.price})"
+        return (
+            f"Order({self.symbol}, {self.type.value}, {self.side.value}, {self.price})"
+        )
 
     def is_type(self, *args: OrderType) -> bool:
         return self.type in args
@@ -115,19 +81,33 @@ class Order:
         if self.is_type(OrderType.MARKET):
             return True
         if self.is_type(OrderType.LIMIT):
-            return self.price >= low if self.side == PositionSide.BUY else self.price <= high
+            return (
+                self.price >= low
+                if self.side == PositionSide.BUY
+                else self.price <= high
+            )
         if self.is_type(OrderType.TAKE_PROFIT_MARKET):
-            return self.price <= high if self.side == PositionSide.SELL else self.price >= low
+            return (
+                self.price <= high
+                if self.side == PositionSide.SELL
+                else self.price >= low
+            )
         if self.is_type(OrderType.STOP_MARKET):
-            return self.price >= low if self.side == PositionSide.SELL else self.price <= high
+            return (
+                self.price >= low
+                if self.side == PositionSide.SELL
+                else self.price <= high
+            )
         return False
 
 
 class OrderList:
+    """Wrapper around list[Order] with convenience methods."""
+
     def __init__(self, orders: list[Order] | None = None) -> None:
         self.orders = orders if orders is not None else []
 
-    def __iter__(self) -> Iterator[Order]:
+    def __iter__(self):
         return iter(self.orders)
 
     def __len__(self) -> int:
@@ -152,7 +132,7 @@ class OrderList:
         self.orders[:] = [order for order in self.orders if order.id != id]
 
     def clear(self) -> None:
-        LOGGER.debug(f"{len(self.orders)} ORDERS CLEARED")
+        LOGGER.debug(f"{len(self.orders)} orders cleared")
         self.orders.clear()
 
     def find_all_by_type(self, *args: OrderType) -> "OrderList":
@@ -162,27 +142,58 @@ class OrderList:
     def find_by_type(self, type: OrderType) -> "Order | None":
         return next((o for o in self.orders if o.type == type), None)
 
-    def open_order(self, symbol: str, type: OrderType, side: PositionSide, entry_price: float, entry_quantity: float, time: Timestamp, gtd_time: int = 0) -> None:
+    def open_order(
+        self,
+        symbol: str,
+        type: OrderType,
+        side: PositionSide,
+        entry_price: float,
+        entry_quantity: float,
+        time: Timestamp,
+        gtd_time: Optional[int] = None,
+    ) -> None:
         order_id = uuid.uuid4().int
-        self.add(Order(symbol=symbol, id=order_id, type=type, side=side, price=entry_price, quantity=entry_quantity, gtd=gtd_time))
-        LOGGER.debug(textwrap.dedent(f"""
-                Date: {time.strftime("%Y-%m-%d %H:%M:%S")}
-                OPEN {type.value} ORDER @ {entry_price}
-                ID: {order_id}
-                Symbol: {symbol}
-                Side: {side.value}
-                Quantity: {entry_quantity}
-                GTD: {time}
-                """))
+        self.add(
+            Order(
+                symbol=symbol,
+                id=order_id,
+                type=type,
+                side=side,
+                price=entry_price,
+                quantity=entry_quantity,
+                gtd=gtd_time,
+            )
+        )
+        LOGGER.debug(
+            f"Date: {time.strftime('%Y-%m-%d %H:%M:%S')}\n"
+            f"OPEN {type.value} ORDER @ {entry_price}\n"
+            f"ID: {order_id}, Symbol: {symbol}, Side: {side.value}, Quantity: {entry_quantity}"
+        )
 
 
-class OrderBook(SymbolContainer[OrderList]):
+class OrderBook(dict[str, OrderList]):
+    """Dict mapping symbol to OrderList with guaranteed non-null access."""
+
     def __init__(self, orders: dict[str, OrderList] | None = None) -> None:
         if orders is not None:
-            super().__init__(OrderList, [])
-            self._items = orders
+            super().__init__(orders)
         else:
-            super().__init__(OrderList, settings.symbols_list)
+            super().__init__({symbol: OrderList() for symbol in settings.symbols_list})
+
+    def __getitem__(self, key: str) -> OrderList:
+        """
+        Get OrderList for symbol, auto-creating if missing.
+
+        Logs warning if symbol not in settings.symbols_list to aid debugging.
+        """
+        if key not in self:
+            if key not in settings.symbols_list:
+                LOGGER.warning(
+                    f"OrderBook accessed with unknown symbol '{key}'. "
+                    f"Configured symbols: {settings.symbols_list}"
+                )
+            self[key] = OrderList()
+        return super().__getitem__(key)
 
 
 class OrderEventSource(Enum):
@@ -245,9 +256,13 @@ class OrderEvent:
 
     def to_order(self) -> "Order":
         if self.order_type is None:
-            raise ValueError(f"Cannot convert {self.source.value} event to Order: order_type is required")
+            raise ValueError(
+                f"Cannot convert {self.source.value} event to Order: order_type is required"
+            )
         if self.side is None:
-            raise ValueError(f"Cannot convert {self.source.value} event to Order: side is required")
+            raise ValueError(
+                f"Cannot convert {self.source.value} event to Order: side is required"
+            )
         return Order(
             symbol=self.symbol,
             id=self.order_id,
@@ -274,6 +289,7 @@ class OrderEvent:
 
 # --- Position ---
 
+
 @dataclass
 class Position:
     symbol: str
@@ -289,10 +305,7 @@ class Position:
             self.break_even_price = self.price
 
     def __repr__(self) -> str:
-        return (
-            f"\n\t{self.__class__.__name__}(symbol={self.symbol}, side={self.side}, price={self.price}, "
-            f"bep={self.break_even_price}, amount={self.amount}, leverage={self.leverage})"
-        )
+        return f"Position({self.symbol}, {self.side.value}, {self.amount}@{self.price})"
 
     def is_long(self) -> bool:
         return self.side == PositionSide.BUY
@@ -304,15 +317,21 @@ class Position:
         return self.amount * self.price / self.leverage
 
     def simple_pnl(self, target_price: float) -> float:
-        price_diff = target_price - self.price if self.is_long() else self.price - target_price
+        price_diff = (
+            target_price - self.price if self.is_long() else self.price - target_price
+        )
         return price_diff * self.amount
 
     def roi(self, current_price: float) -> float:
-        price_change = current_price - self.price if self.is_long() else self.price - current_price
+        price_change = (
+            current_price - self.price if self.is_long() else self.price - current_price
+        )
         return (price_change / self.price) * self.leverage
 
 
 class PositionList:
+    """Wrapper around list[Position] with convenience methods."""
+
     def __init__(self, positions: list[Position] | None = None) -> None:
         self.positions: list[Position] = positions if positions is not None else []
         self.entry_count = 0 if not self.positions else 1
@@ -332,7 +351,9 @@ class PositionList:
     def __repr__(self) -> str:
         if not self.positions:
             return "[]"
-        return f"{__class__.__name__}(positions={self.positions}, entry_count={self.entry_count})"
+        return (
+            f"PositionList(positions={self.positions}, entry_count={self.entry_count})"
+        )
 
     def clear(self) -> None:
         self.positions.clear()
@@ -351,16 +372,35 @@ class PositionList:
         self.positions[:] = positions
 
 
-class PositionBook(SymbolContainer[PositionList]):
+class PositionBook(dict[str, PositionList]):
+    """Dict mapping symbol to PositionList with guaranteed non-null access."""
+
     def __init__(self, positions: dict[str, PositionList] | None = None) -> None:
         if positions is not None:
-            super().__init__(PositionList, [])
-            self._items = positions
+            super().__init__(positions)
         else:
-            super().__init__(PositionList, settings.symbols_list)
+            super().__init__(
+                {symbol: PositionList() for symbol in settings.symbols_list}
+            )
+
+    def __getitem__(self, key: str) -> PositionList:
+        """
+        Get PositionList for symbol, auto-creating if missing.
+
+        Logs warning if symbol not in settings.symbols_list to aid debugging.
+        """
+        if key not in self:
+            if key not in settings.symbols_list:
+                LOGGER.warning(
+                    f"PositionBook accessed with unknown symbol '{key}'. "
+                    f"Configured symbols: {settings.symbols_list}"
+                )
+            self[key] = PositionList()
+        return super().__getitem__(key)
 
 
 # --- ExchangeInfo & Filter ---
+
 
 @dataclass(frozen=True)
 class Filter:
@@ -369,13 +409,21 @@ class Filter:
     min_notional: float
 
     @classmethod
-    def from_binance(cls, filters: Iterable[ExchangeInformationResponseSymbolsInnerFiltersInner]) -> "Filter":
-        filter_types: dict[str, ExchangeInformationResponseSymbolsInnerFiltersInner] = {
-            f.filter_type: f for f in filters if f.filter_type is not None
-        }
-        tick_size = float(pf.tick_size) if (pf := filter_types.get(FilterType.PRICE_FILTER.value)) and pf.tick_size else 0.0
-        step_size = float(ls.step_size) if (ls := filter_types.get(FilterType.LOT_SIZE.value)) and ls.step_size else 0.0
-        min_notional = float(mn.notional) if (mn := filter_types.get(FilterType.MIN_NOTIONAL.value)) and mn.notional else 0.0
+    def from_binance(
+        cls, filters: Iterable[ExchangeInformationResponseSymbolsInnerFiltersInner]
+    ) -> "Filter":
+        tick_size = 0.0
+        step_size = 0.0
+        min_notional = 0.0
+
+        for f in filters:
+            if f.filter_type == FilterType.PRICE_FILTER.value and f.tick_size:
+                tick_size = float(f.tick_size)
+            elif f.filter_type == FilterType.LOT_SIZE.value and f.step_size:
+                step_size = float(f.step_size)
+            elif f.filter_type == FilterType.MIN_NOTIONAL.value and f.notional:
+                min_notional = float(f.notional)
+
         return cls(tick_size=tick_size, step_size=step_size, min_notional=min_notional)
 
 
@@ -383,47 +431,71 @@ class ExchangeInfo:
     def __init__(self, items: Iterable[ExchangeInformationResponseSymbolsInner]):
         self.filters: dict[str, Filter] = {
             item.symbol: Filter.from_binance(item.filters)
-            for item in items if item.symbol and item.filters
+            for item in items
+            if item.symbol and item.filters
         }
 
     def to_entry_price(self, symbol: str, initial_price: float) -> float:
         tick_size = self.filters[symbol].tick_size
         decimals = decimal_places(tick_size)
-        return initial_price if decimals == decimal_places(initial_price) else round(initial_price, decimals)
+        return (
+            initial_price
+            if decimals == decimal_places(initial_price)
+            else round(initial_price, decimals)
+        )
 
-    def to_entry_quantity(self, symbol: str, entry_price: float, size: float, leverage: int, balance: Balance) -> float:
+    def to_entry_quantity(
+        self,
+        symbol: str,
+        entry_price: float,
+        balance: Balance,
+    ) -> float:
         step_size = self.filters[symbol].step_size
-        initial_quantity = balance.calculate_quantity(entry_price, size, leverage)
         decimals = decimal_places(step_size)
+
+        initial_quantity = balance.calculate_quantity(entry_price)
         entry_quantity = round(int(initial_quantity / step_size) * step_size, decimals)
-        return entry_quantity if self._is_notional_enough(symbol, entry_quantity, entry_price) else 0.0
+
+        return (
+            entry_quantity
+            if self._is_notional_enough(symbol, entry_quantity, entry_price)
+            else 0.0
+        )
 
     def trim_quantity_precision(self, symbol: str, quantity: float) -> float:
         step_size = self.filters[symbol].step_size
         decimals = decimal_places(step_size)
-        return quantity if decimals == decimal_places(quantity) else round(quantity, decimals)
+        return (
+            quantity
+            if decimals == decimal_places(quantity)
+            else round(quantity, decimals)
+        )
 
-    def _is_notional_enough(self, symbol: str, entry_quantity: float, entry_price: float) -> bool:
-        return self._calculate_notional(entry_quantity, entry_price) >= self.filters[symbol].min_notional
+    def _is_notional_enough(
+        self, symbol: str, entry_quantity: float, entry_price: float
+    ) -> bool:
+        return (
+            self._calculate_notional(entry_quantity, entry_price)
+            >= self.filters[symbol].min_notional
+        )
 
     def _calculate_notional(self, entry_quantity: float, entry_price: float) -> float:
-        max_tpsl = max(settings.effective_take_profit_ratio, settings.stop_loss_ratio)
-        factor = 1 - (max_tpsl / settings.leverage)
-        return entry_quantity * (entry_price * factor)
+        return entry_quantity * entry_price
 
 
 # --- Indicator ---
 
-class Indicator(SymbolContainer[DataFrame]):
-    def __init__(self, indicators: dict[str, DataFrame]) -> None:
-        super().__init__(DataFrame, [])
-        self._items = indicators
+
+class Indicator(dict[str, DataFrame]):
+    """Simple dict mapping symbol to DataFrame with indicators."""
 
     def update(self, symbol: str, df: DataFrame) -> None:
         self[symbol] = df
 
 
-def vwap(high: Series, low: Series, close: Series, volume: Series, length: int) -> Series:
+def vwap(
+    high: Series, low: Series, close: Series, volume: Series, length: int
+) -> Series:
     tp = (high + low + close) / 3
     tpv = tp * volume
     wpv = tpv.rolling(window=length, min_periods=1).sum()
