@@ -1,0 +1,83 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "open-binancian-futures"
+dynamic = ["version"]
+description = "A robust framework for creating, backtesting, and deploying trading bots for Binance USDⓈ-M Futures"
+readme = "README.md"
+license = {text = "MIT"}
+authors = [
+    {name = "HAN Sion", email = "its.zionhan@gmail.com"}
+]
+keywords = [
+    "binance", "futures", "trading", "cryptocurrency",
+    "algorithmic-trading", "backtesting", "trading-bot"
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Financial and Insurance Industry",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Typing :: Typed",
+]
+requires-python = ">=3.8"
+
+dependencies = [
+    "binance-sdk-derivatives-trading-usds-futures",
+    "binance-common",
+    "numpy<2.4",
+    "pandas",
+    "pandas-ta",
+    "python-dotenv",
+    "pydantic-settings>=2.0.0",
+    "setuptools",
+    "TA-Lib",
+    "toon-format @ git+https://github.com/toon-format/toon-python.git",
+    "typer",
+]
+
+[project.optional-dependencies]
+ai = [
+    "openai",
+    "anthropic",
+    "tiktoken",
+]
+webhook = [
+    "slack-sdk",
+]
+dev = [
+    "pytest>=7.0",
+    "pytest-asyncio",
+    "pytest-cov",
+    "black",
+    "isort",
+    "mypy",
+    "ruff",
+]
+all = [
+    "open-binancian-futures[ai,webhook,dev]",
+]
+
+[project.urls]
+Homepage = "https://github.com/zionhann/open-binancian-futures"
+Repository = "https://github.com/zionhann/open-binancian-futures.git"
+Issues = "https://github.com/zionhann/open-binancian-futures/issues"
+
+[project.scripts]
+open-binancian-futures = "open_binancian_futures.__main__:main"
+
+[tool.setuptools]
+packages = {find = {}}
+
+[tool.setuptools.dynamic]
+version = {attr = "open_binancian_futures.__version__"}
+
+[tool.setuptools.package-data]
+open_binancian_futures = ["py.typed"]

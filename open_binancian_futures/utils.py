@@ -4,7 +4,7 @@ from typing import Callable, TypeVar
 
 from binance_common.models import ApiResponse
 
-from model.constant import INTERVAL_TO_SECONDS, AppConfig
+from open_binancian_futures.constants import INTERVAL_TO_SECONDS, settings
 
 UNIT_MS = 1000
 MIN_EXP = 660
@@ -23,8 +23,8 @@ def fetch(request: Callable, **kwargs):
 
 
 def gtd(timestamp: float, nlines: int) -> int:
-    unit = AppConfig.INTERVAL[-1]
-    base = INTERVAL_TO_SECONDS[unit] * int(AppConfig.INTERVAL[:-1])
+    unit = settings.interval[-1]
+    base = INTERVAL_TO_SECONDS[unit] * int(settings.interval[:-1])
     exp = max(base * nlines, MIN_EXP)
     gtd = int(timestamp + exp)
     return gtd * UNIT_MS

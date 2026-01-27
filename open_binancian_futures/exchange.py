@@ -1,7 +1,12 @@
 import logging
-from typing import cast
+import os
+from typing import Any, cast, Iterable, Optional
 
 import pandas as pd
+from anthropic import AsyncAnthropic
+from anthropic.types import MessageParam, Message
+from openai import AsyncOpenAI
+
 from binance_common.configuration import (
     ConfigurationWebSocketStreams,
     ConfigurationWebSocketAPI,
@@ -24,18 +29,21 @@ from binance_sdk_derivatives_trading_usds_futures.rest_api.models import (
     AllOrdersResponse,
     PositionInformationV3Response,
     KlineCandlestickDataResponse,
-    CurrentAllAlgoOpenOrdersResponse,
 )
+CurrentAllAlgoOpenOrdersResponse = Any
 
-from model.balance import Balance
-from model.constant import AppConfig, OrderType, PositionSide, Required
-from model.exchange_info import ExchangeInfo
-from model.indicator import Indicator
-from model.order import Order, OrderBook, OrderList
-from model.position import Position, PositionBook, PositionList
-from utils import fetch, get_or_raise
+from open_binancian_futures.models import Balance
+from open_binancian_futures.constants import settings
+from open_binancian_futures.types import OrderType, PositionSide
+from open_binancian_futures.models import ExchangeInfo
+from open_binancian_futures.models import Indicator
+from open_binancian_futures.models import Order, OrderBook, OrderList
+from open_binancian_futures.models import Position, PositionBook, PositionList
+from open_binancian_futures.utils import fetch, get_or_raise
 
 LOGGER = logging.getLogger(__name__)
+
+# --- Binance Config & Client ---
 
 KLINES_COLUMNS = [
     "Open_time",
@@ -54,130 +62,68 @@ KLINES_COLUMNS = [
 
 
 class BinanceClientManager:
-    """
-    Manages Binance Futures API client lifecycle.
-
-    Handles configuration selection (testnet vs mainnet), API key validation,
-    and client initialization.
-    """
-
     def __init__(self):
         self._client: DerivativesTradingUsdsFutures | None = None
 
     def _get_config(self) -> tuple[str, str, str, str, str]:
-        """
-        Get configuration based on testnet/mainnet setting.
-
-        Returns:
-            Tuple of (rest_url, ws_stream_url, ws_api_url, api_key, api_secret)
-
-        Raises:
-            ValueError: If required API credentials are missing
-        """
-        if AppConfig.IS_TESTNET:
-            if Required.API_KEY_TEST is None or Required.API_SECRET_TEST is None:
+        if settings.is_testnet:
+            if settings.api_key_test is None or settings.api_secret_test is None:
                 raise ValueError("Testnet API credentials not configured")
-
-            return (
-                TESTNET_REST,
-                TESTNET_WS_STREAMS,
-                TESTNET_WS_API,
-                Required.API_KEY_TEST,
-                Required.API_SECRET_TEST,
-            )
+            return (TESTNET_REST, TESTNET_WS_STREAMS, TESTNET_WS_API, settings.api_key_test, settings.api_secret_test)
         else:
-            if Required.API_KEY is None or Required.API_SECRET is None:
+            if settings.api_key is None or settings.api_secret is None:
                 raise ValueError("Mainnet API credentials not configured")
-
-            return (
-                MAINNET_REST,
-                MAINNET_WS_STREAMS,
-                MAINNET_WS_API,
-                Required.API_KEY,
-                Required.API_SECRET,
-            )
+            return (MAINNET_REST, MAINNET_WS_STREAMS, MAINNET_WS_API, settings.api_key, settings.api_secret)
 
     @property
     def client(self) -> DerivativesTradingUsdsFutures:
-        """
-        Get or create the Binance Futures client (lazy initialization).
-
-        Returns:
-            Configured DerivativesTradingUsdsFutures client
-        """
         if self._client is None:
             rest_url, ws_stream_url, ws_api_url, api_key, api_secret = self._get_config()
-
-            config_rest = ConfigurationRestAPI(
-                api_key=api_key,
-                api_secret=api_secret,
-                base_path=rest_url,
-                timeout=2000
-            )
-            config_ws_api = ConfigurationWebSocketAPI(
-                api_key=api_key,
-                api_secret=api_secret,
-                stream_url=ws_api_url
-            )
+            config_rest = ConfigurationRestAPI(api_key=api_key, api_secret=api_secret, base_path=rest_url, timeout=2000)
+            config_ws_api = ConfigurationWebSocketAPI(api_key=api_key, api_secret=api_secret, stream_url=ws_api_url)
             config_ws = ConfigurationWebSocketStreams(stream_url=ws_stream_url)
-
             self._client = DerivativesTradingUsdsFutures(
                 config_rest_api=config_rest,
                 config_ws_api=config_ws_api,
                 config_ws_streams=config_ws,
             )
-
-            network = "Testnet" if AppConfig.IS_TESTNET else "Mainnet"
+            network = "Testnet" if settings.is_testnet else "Mainnet"
             LOGGER.info(f"Binance Futures client initialized ({network})")
-
         return self._client
 
     def cleanup(self) -> None:
-        """Cleanup client resources (placeholder for future connection closing)."""
         if self._client is not None:
-            # Future: Close WebSocket connections, cleanup resources
             LOGGER.info("Binance client cleanup completed")
 
 
-# Global client manager instance
 _client_manager = BinanceClientManager()
 
-# Backward compatibility: expose client directly
-client = _client_manager.client
+def __getattr__(name):
+    if name == "client":
+        return _client_manager.client
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 def init_exchange_info() -> ExchangeInfo:
     data: ExchangeInformationResponse = fetch(client.rest_api.exchange_information)
     symbols = get_or_raise(data.symbols)
-    target_symbols = [
-        item
-        for item in symbols
-        if item.symbol is not None and item.symbol in AppConfig.SYMBOLS
-    ]
+    target_symbols = [item for item in symbols if item.symbol is not None and item.symbol in settings.symbols_list]
     return ExchangeInfo(target_symbols)
 
 
 def init_balance() -> Balance:
-    """Fetch and return the available USDT balance."""
     LOGGER.info("Fetching available balance...")
-    data: list[FuturesAccountBalanceV3Response] = fetch(
-        client.rest_api.futures_account_balance_v3
-    )
-
-    # Use next() instead of filter() for finding single item
+    data: list[FuturesAccountBalanceV3Response] = fetch(client.rest_api.futures_account_balance_v3)
     usdt_balance = next((item for item in data if item.asset == "USDT"), None)
-
     if usdt_balance:
         available = get_or_raise(usdt_balance.available_balance)
         initial_balance = float(available)
         LOGGER.info(f'Available USDT balance: "{initial_balance:.2f}"')
         return Balance(initial_balance)
-
     return Balance(0.0)
 
 
 def _create_order_from_regular_response(item: AllOrdersResponse, symbol: str) -> Order:
-    """Create Order from regular order API response."""
     return Order(
         symbol=symbol,
         id=get_or_raise(item.order_id),
@@ -190,7 +136,6 @@ def _create_order_from_regular_response(item: AllOrdersResponse, symbol: str) ->
 
 
 def _create_order_from_algo_response(item: CurrentAllAlgoOpenOrdersResponse, symbol: str) -> Order:
-    """Create Order from algo order API response."""
     return Order(
         symbol=symbol,
         id=get_or_raise(item.algo_id),
@@ -203,105 +148,89 @@ def _create_order_from_algo_response(item: CurrentAllAlgoOpenOrdersResponse, sym
 
 
 def _fetch_regular_orders(symbol: str) -> list[Order]:
-    """Fetch regular open orders for a symbol."""
-    items = cast(
-        list[AllOrdersResponse],
-        fetch(client.rest_api.current_all_open_orders, symbol=symbol),
-    )
+    items = cast(list[AllOrdersResponse], fetch(client.rest_api.current_all_open_orders, symbol=symbol))
     return [_create_order_from_regular_response(item, symbol) for item in items]
 
 
 def _fetch_algo_orders(symbol: str) -> list[Order]:
-    """Fetch algo open orders for a symbol."""
-    items = cast(
-        list[CurrentAllAlgoOpenOrdersResponse],
-        fetch(client.rest_api.current_all_algo_open_orders, symbol=symbol),
-    )
+    items = cast(list[CurrentAllAlgoOpenOrdersResponse], fetch(client.rest_api.current_all_algo_open_orders, symbol=symbol))
     return [_create_order_from_algo_response(item, symbol) for item in items]
 
 
 def init_orders() -> OrderBook:
-    """Initialize OrderBook with both regular and algo orders."""
-    orders = {
-        symbol: OrderList(_fetch_regular_orders(symbol) + _fetch_algo_orders(symbol))
-        for symbol in AppConfig.SYMBOLS
-    }
+    orders = {symbol: OrderList(_fetch_regular_orders(symbol) + _fetch_algo_orders(symbol)) for symbol in settings.symbols_list}
     LOGGER.info(f"Loaded open orders: {orders}")
     return OrderBook(orders)
 
 
 def _create_position_from_response(item: PositionInformationV3Response, symbol: str) -> Position | None:
-    """
-    Create Position from API response, returning None if position is empty.
-
-    A position is considered empty if price or amount is 0.0.
-    """
     price = float(get_or_raise(item.entry_price))
     amount = float(get_or_raise(item.position_amt))
     bep = float(get_or_raise(item.break_even_price))
-
-    # Filter out empty positions
     if price == 0.0 or amount == 0.0:
         return None
-
     return Position(
         symbol=symbol,
         price=price,
         amount=amount,
         side=(PositionSide.BUY if amount > 0 else PositionSide.SELL),
-        leverage=AppConfig.LEVERAGE,
+        leverage=settings.leverage,
         break_even_price=bep,
     )
 
 
 def init_positions() -> PositionBook:
-    """Initialize PositionBook by fetching current positions from API."""
     positions = {}
-
-    for symbol in AppConfig.SYMBOLS:
-        items = cast(
-            list[PositionInformationV3Response],
-            fetch(client.rest_api.position_information_v3, symbol=symbol),
-        )
-        # Create positions, filtering out None values (empty positions)
-        position_list = [
-            pos for item in items
-            if (pos := _create_position_from_response(item, symbol)) is not None
-        ]
+    for symbol in settings.symbols_list:
+        items = cast(list[PositionInformationV3Response], fetch(client.rest_api.position_information_v3, symbol=symbol))
+        position_list = [pos for item in items if (pos := _create_position_from_response(item, symbol)) is not None]
         positions[symbol] = PositionList(position_list)
-
     LOGGER.info(f"Loaded positions: {positions}")
     return PositionBook(positions)
 
 
 def init_indicators(limit: int | None = None) -> Indicator:
     indicators = {}
-
-    for symbol in AppConfig.SYMBOLS:
-        LOGGER.info(f"Fetching {symbol} klines by {AppConfig.INTERVAL}...")
-
-        klines_data: KlineCandlestickDataResponse = fetch(
-            client.rest_api.kline_candlestick_data,
-            symbol=symbol,
-            interval=AppConfig.INTERVAL,
-            limit=limit,
-        )[:-1]
-
+    for symbol in settings.symbols_list:
+        LOGGER.info(f"Fetching {symbol} klines by {settings.interval}...")
+        klines_data: KlineCandlestickDataResponse = fetch(client.rest_api.kline_candlestick_data, symbol=symbol, interval=settings.interval, limit=limit)[:-1]
         df = pd.DataFrame(data=klines_data, columns=KLINES_COLUMNS)
-        df["Open_time"] = (
-            pd.to_datetime(df["Open_time"], unit="ms")
-            .dt.tz_localize("UTC")
-            .dt.tz_convert(AppConfig.TIMEZONE)
-        )
+        df["Open_time"] = pd.to_datetime(df["Open_time"], unit="ms").dt.tz_localize("UTC").dt.tz_convert(settings.timezone)
         df.set_index("Open_time", inplace=True, drop=False)
-
         df["Symbol"] = symbol
         df["Open"] = df["Open"].astype(float)
         df["High"] = df["High"].astype(float)
         df["Low"] = df["Low"].astype(float)
         df["Close"] = df["Close"].astype(float)
         df["Volume"] = df["Volume"].astype(float)
-
         indicators[symbol] = df
-
     return Indicator(indicators)
+
+
+# --- AI Clients ---
+
+async def ask_anthropic(messages: Iterable[MessageParam], model: str, max_tokens: int, **kwargs) -> Optional[Message]:
+    try:
+        api_key = os.getenv("ANTHROPIC_API_KEY")
+        if not api_key:
+            LOGGER.error("ANTHROPIC_API_KEY not configured")
+            return None
+        client = AsyncAnthropic(api_key=api_key)
+        return await client.messages.create(max_tokens=max_tokens, model=model, messages=messages, **kwargs)
+    except Exception as e:
+        LOGGER.error(f"Error in Anthropic API: {e}")
+        return None
+
+
+async def ask_openai(input: str, model: str, **kwargs) -> Optional[str]:
+    try:
+        api_key = os.getenv("OPENAI_API_KEY")
+        if not api_key:
+            LOGGER.error("OPENAI_API_KEY not configured")
+            return None
+        client = AsyncOpenAI(api_key=api_key)
+        response = await client.responses.create(model=model, input=input, **kwargs)
+        return response.output_text
+    except Exception as e:
+        LOGGER.error(f"Error in OpenAI API: {e}")
+        return None

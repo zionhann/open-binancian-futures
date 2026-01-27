@@ -17,22 +17,16 @@ from binance_sdk_derivatives_trading_usds_futures.websocket_streams.models impor
 )
 from pandas import DataFrame
 
-from model.balance import Balance
-from model.constant import (
-    AppConfig,
-    Bracket,
-    OrderType,
-    PositionSide,
-    TimeInForce,
-    TrailingStop,
-)
-from model.exchange_info import ExchangeInfo
-from model.indicator import Indicator
-from model.order import OrderBook, OrderEvent
-from model.position import Position, PositionBook
-from openapi import binance_futures as futures
-from utils import decimal_places, fetch, get_or_raise
-from webhook import Webhook
+from open_binancian_futures.models import Balance
+from open_binancian_futures.constants import settings
+from open_binancian_futures.types import OrderType, PositionSide, TimeInForce
+from open_binancian_futures.models import ExchangeInfo
+from open_binancian_futures.models import Indicator
+from open_binancian_futures.models import OrderBook, OrderEvent
+from open_binancian_futures.models import Position, PositionBook
+from open_binancian_futures import exchange as futures
+from open_binancian_futures.utils import decimal_places, fetch, get_or_raise
+from open_binancian_futures.webhook import Webhook
 
 BASIC_COLUMNS = [
     "Open_time",
@@ -95,21 +89,36 @@ class Strategy(ABC):
 
     @staticmethod
     def _import_strategy(strategy_name: str) -> type["Strategy"] | None:
-        """Import strategy by file name and return the Strategy subclass."""
-        try:
-            mod = importlib.import_module(f"{__name__}.{strategy_name}")
-            subclasses = [
-                cls
-                for cls in mod.__dict__.values()
-                if isinstance(cls, type)
-                and issubclass(cls, Strategy)
-                and cls is not Strategy
-            ]
-            return subclasses[0] if subclasses else None
-        except ImportError as e:
-            Strategy.LOGGER.error(f"Failed to import strategy '{strategy_name}':")
-            Strategy.LOGGER.error(f"Application terminated by {e}: {traceback.format_exc()}")
-            return None
+        """
+        Import strategy by file name and return the Strategy subclass.
+        Tries to import from package first, then falls back to direct import.
+        """
+        modules_to_try = [
+            f"open_binancian_futures.preset.{strategy_name}",  # Try presets
+            strategy_name,                                    # Try external/user module
+        ]
+
+        for module_path in modules_to_try:
+            try:
+                mod = importlib.import_module(module_path)
+                subclasses = [
+                    cls
+                    for cls in mod.__dict__.values()
+                    if isinstance(cls, type)
+                    and issubclass(cls, Strategy)
+                    and cls is not Strategy
+                ]
+                if subclasses:
+                    return subclasses[0]
+            except ImportError:
+                continue
+            except Exception as e:
+                # Log other errors (syntax, etc) but keep trying/fail gracefully
+                Strategy.LOGGER.error(f"Error loading strategy from {module_path}: {e}")
+                Strategy.LOGGER.debug(traceback.format_exc())
+
+        Strategy.LOGGER.error(f"Failed to find valid Strategy subclass in: {modules_to_try}")
+        return None
 
     def __init__(
         self,
@@ -131,11 +140,11 @@ class Strategy(ABC):
         self.indicators = indicators or futures.init_indicators()
         self.add_indicators(self.indicators)
         self.lock = lock
-        self._realized_profit = {s: 0.0 for s in AppConfig.SYMBOLS}
+        self._realized_profit = {s: 0.0 for s in settings.symbols_list}
 
     def add_indicators(self, indicator: Indicator) -> None:
         """Load custom indicators for all symbols."""
-        for symbol in AppConfig.SYMBOLS:
+        for symbol in settings.symbols_list:
             # Use bracket notation for cleaner, more Pythonic access
             indicator[symbol] = self.load(indicator[symbol][BASIC_COLUMNS])
 
@@ -159,8 +168,8 @@ class Strategy(ABC):
         and the direction depends on whether we're closing a long or short position.
         """
         # Normalize ratios by leverage
-        sl_ratio = (sl_ratio or Bracket.STOP_LOSS_RATIO) / AppConfig.LEVERAGE
-        tp_ratio = (tp_ratio or Bracket.TAKE_PROFIT_RATIO) / AppConfig.LEVERAGE
+        sl_ratio = (sl_ratio or settings.stop_loss_ratio) / settings.leverage
+        tp_ratio = (tp_ratio or settings.effective_take_profit_ratio) / settings.leverage
 
         # Determine if this is a stop-loss or take-profit order
         stop_order_types = {OrderType.STOP_MARKET, OrderType.STOP_LIMIT}
@@ -249,9 +258,9 @@ class Strategy(ABC):
             else None
         )
         _callback_ratio = (
-            (callback_ratio or TrailingStop.CALLBACK_RATIO) / AppConfig.LEVERAGE * 100
+            (callback_ratio or settings.effective_callback_ratio) / settings.leverage * 100
         )
-        max_cb_ratio = min(100 // AppConfig.LEVERAGE, 10)
+        max_cb_ratio = min(100 // settings.leverage, 10)
         safe_cb_ratio = round(min(max(0.1, _callback_ratio), max_cb_ratio), 2)
 
         fetch(
@@ -274,7 +283,7 @@ class Strategy(ABC):
         open_time = (
             pd.to_datetime(get_or_raise(data.t), unit="ms")
             .tz_localize("UTC")
-            .tz_convert(AppConfig.TIMEZONE)
+            .tz_convert(settings.timezone)
         )
         symbol = get_or_raise(data.s)
         new_data = {
@@ -314,7 +323,7 @@ class Strategy(ABC):
                     price=price,
                     amount=amount,
                     side=(PositionSide.BUY if amount > 0 else PositionSide.SELL),
-                    leverage=AppConfig.LEVERAGE,
+                    leverage=settings.leverage,
                     break_even_price=bep,
                 )
             ]

@@ -11,7 +11,7 @@
 *   **Backtesting:** Evaluate your strategies on historical data before risking real capital. (Experimental)
 *   **Webhook Integration:** Receive real-time trade notifications via Slack or Discord.
 
-## 🛠️ Getting Started
+## 📦 Installation
 
 ### Prerequisites
 
@@ -19,25 +19,31 @@
 *   **Binance API Keys** (with "Enable Futures" permission)
 *   **TA-Lib Library**: Refer to [Installation Guide](https://ta-lib.org/install/)
 
-### Installation
+### From Source
 
-1.  **Clone the repository:**
-    ```bash
-    git clone https://github.com/zionhann/open-binancian-futures.git
-    cd open-binancian-futures
-    ```
+```bash
+git clone https://github.com/zionhann/open-binancian-futures.git
+cd open-binancian-futures
+pip install -e .  # Development mode
+```
 
-2.  **Install dependencies:**
-    ```bash
-    pip install -r requirements.txt
-    ```
+### Optional Dependencies
 
-3.  **Create your strategy:**
-    Customize `src/main/strategy/example.py` or create a new file in `src/main/strategy/` extending the `Strategy` class.
-    > **⚠️ Warning:** Do NOT use the example strategy as is — it is a simplified template and may lead to significant losses in real trading conditions.
+```bash
+pip install open-binancian-futures[ai]        # AI-powered trading (OpenAI/Anthropic)
+pip install open-binancian-futures[webhook]   # Slack notifications
+pip install open-binancian-futures[dev]       # Development tools
+pip install open-binancian-futures[all]       # Everything
+```
 
-4.  **Configuration:**
-    Configure environment variables in `.env.example` and rename it to `.env`:
+## 🛠️ Getting Started
+
+1.  **Create your strategy:**
+    Create a new file (e.g., `my_strategy.py`) in your current directory extending the `Strategy` class. Or use one of the presets like `roi`.
+    > **⚠️ Warning:** Do NOT use example strategies as is — they are templates and may lead to significant losses in real trading conditions.
+
+2.  **Configuration:**
+    Configure environment variables in a `.env` file (see [`.env.example`](open_binancian_futures/.env.example)):
 
     | Variable | Type | Required | Default | Description |
     | :--- | :---: | :---: | :--- | :--- |
@@ -47,7 +53,7 @@
     | `API_KEY_TEST` | string | Yes* | - | Binance API key for testnet |
     | `API_SECRET_TEST` | string | Yes* | - | Binance API secret for testnet |
     | **Strategy** |
-    | `STRATEGY` | string | Yes | - | Strategy file name in `src/main/strategy/*` (case-sensitive) |
+    | `STRATEGY` | string | No | - | Default strategy name if not passed via CLI |
     | `SYMBOLS` | string | No | `BTCUSDT` | Target symbols (USDT-based only), e.g., `BTCUSDT,ETHUSDT` |
     | `INTERVAL` | string | No | `1d` | Candle interval: `1m`, `3m`, `5m`, `15m`, `30m`, `1h`, `4h`, `1d` |
     | `LEVERAGE` | number | No | `1` | Leverage multiplier |
@@ -75,10 +81,23 @@
 
 ### ▶️ Usage
 
-Run the application:
+Run your strategy using the CLI entry point:
 
 ```bash
-python src/main/app.py
+open-binancian-futures <strategy_name>
+```
+
+Example:
+```bash
+# Runs roi strategy from presets or current directory
+open-binancian-futures roi
+```
+
+#### Overrides
+You can also override environment variables directly from the CLI:
+
+```bash
+open-binancian-futures roi --backtest --testnet --symbols BTCUSDT,ETHUSDT
 ```
 
 ## 📄 License

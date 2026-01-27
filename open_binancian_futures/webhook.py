@@ -1,13 +1,53 @@
 import logging
+from abc import ABC, abstractmethod
 from typing import override
 
 import requests
 from requests.exceptions import RequestException, Timeout
-
-from webhook import Webhook
+from slack_sdk.webhook import WebhookClient
 
 LOGGER = logging.getLogger(__name__)
+
+HOOKS_SLACK_PREFIX = "https://hooks.slack.com/services/"
+HOOKS_DISCORD_PREFIX = "https://discord.com/api/webhooks/"
 DEFAULT_TIMEOUT = 10  # seconds
+
+
+class Webhook(ABC):
+    @staticmethod
+    def of(url: str | None) -> "Webhook":
+        if not url:
+            return DefaultWebhook()
+
+        elif url.startswith(HOOKS_SLACK_PREFIX):
+            return SlackWebhook(url)
+
+        elif url.startswith(HOOKS_DISCORD_PREFIX):
+            return DiscordWebhook(url)
+
+        raise ValueError(f"Unsupported webhook type: {url}")
+
+    @abstractmethod
+    def send_message(self, message: str, **kwargs): ...
+
+
+class DefaultWebhook(Webhook):
+    def __init__(self) -> None:
+        LOGGER.info("Default webhook initialized.")
+
+    @override
+    def send_message(self, message: str, **kwargs):
+        pass
+
+
+class SlackWebhook(Webhook):
+    def __init__(self, url: str):
+        self.client = WebhookClient(url)
+        LOGGER.info("Slack webhook initialized.")
+
+    @override
+    def send_message(self, message: str, **kwargs):
+        self.client.send(text=message, **kwargs)
 
 
 class DiscordWebhook(Webhook):
