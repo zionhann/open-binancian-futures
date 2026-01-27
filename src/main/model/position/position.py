@@ -1,29 +1,33 @@
-import logging
+from dataclasses import dataclass, field
 
 from model.constant import PositionSide, AppConfig
 
-LOGGER = logging.getLogger(__name__)
 
-
+@dataclass
 class Position:
-    def __init__(
-            self,
-            symbol: str,
-            price: float,
-            amount: float,
-            side: PositionSide,
-            leverage: int | None = None,
-            bep: float | None = None,
-    ) -> None:
-        self.symbol = symbol
-        self.price = price
-        self.break_even_price = bep or price
-        self.amount = abs(amount)
-        self.side = side
-        self.leverage = leverage or AppConfig.LEVERAGE
+    """Represents a trading position."""
+
+    symbol: str
+    price: float
+    amount: float
+    side: PositionSide
+    leverage: int
+    break_even_price: float | None = field(default=None, repr=True)
+
+    def __post_init__(self) -> None:
+        # Ensure amount is always positive
+        self.amount = abs(self.amount)
+
+        # Default break_even_price to entry price
+        if self.break_even_price is None:
+            self.break_even_price = self.price
 
     def __repr__(self) -> str:
-        return f"\n\t{__class__.__name__}(symbol={self.symbol}, side={self.side}, price={self.price}, bep={self.break_even_price}, amount={self.amount}, leverage={self.leverage})"
+        return (
+            f"\n\t{self.__class__.__name__}("
+            f"symbol={self.symbol}, side={self.side}, price={self.price}, "
+            f"bep={self.break_even_price}, amount={self.amount}, leverage={self.leverage})"
+        )
 
     def is_long(self) -> bool:
         return self.side == PositionSide.BUY
@@ -35,5 +39,14 @@ class Position:
         return self.amount * self.price / self.leverage
 
     def simple_pnl(self, target_price: float) -> float:
-        price_diff = target_price - self.price if self.is_long() else self.price - target_price
+        price_diff = (
+            target_price - self.price if self.is_long() else self.price - target_price
+        )
         return price_diff * self.amount
+
+    def roi(self, current_price: float) -> float:
+        """Calculate return on investment for this position."""
+        price_change = (
+            current_price - self.price if self.is_long() else self.price - current_price
+        )
+        return (price_change / self.price) * self.leverage

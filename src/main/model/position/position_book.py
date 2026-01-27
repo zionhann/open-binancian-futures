@@ -1,17 +1,21 @@
 from model.constant import AppConfig
-from utils import get_or_raise
+from model.container import SymbolContainer
 from .position_list import PositionList
 
 
-class PositionBook:
-    def __init__(self, positions=None) -> None:
-        self._positions = positions or {s: PositionList() for s in AppConfig.SYMBOLS}
+class PositionBook(SymbolContainer[PositionList]):
+    """Container for managing positions per symbol with bracket notation access.
 
-    def __repr__(self) -> str:
-        return str(self._positions)
+    Example:
+        >>> positions = PositionBook()
+        >>> positions["BTCUSDT"].is_long()
+        >>> len(positions)
+    """
 
-    def get(self, symbol: str) -> PositionList:
-        return get_or_raise(
-            self._positions.get(symbol),
-            lambda: KeyError(f"Position not found for symbol: {symbol}"),
-        )
+    def __init__(self, positions: dict[str, PositionList] | None = None) -> None:
+        if positions is not None:
+            # Initialize from existing dict
+            super().__init__(PositionList, [])
+            self._items = positions
+        else:
+            super().__init__(PositionList, AppConfig.SYMBOLS)

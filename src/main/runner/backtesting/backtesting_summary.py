@@ -45,15 +45,21 @@ class BacktestingSummary:
         roi = cumulative_pnl / BacktestConfig.BALANCE * 100
 
         total_average_win = (
-            self._total_profit / self._total_win_count if self._total_win_count else 0.0
+            self._total_profit / self._total_win_count
+            if self._total_win_count > 0
+            else 0.0
         )
-        total_average_loss = self._total_loss / (
-            self._total_trade_count - self._total_win_count
+        total_average_loss = (
+            self._total_loss / (self._total_trade_count - self._total_win_count)
+            if self._total_trade_count > 0
+            else 0.0
         )
 
         expectancy = (total_win_rate * total_average_win) - (
             (1 - total_win_rate) * total_average_loss
         )
+        rr = total_average_win / abs(total_average_loss) if total_average_loss else 0.0
+        pf = self._total_profit / abs(self._total_loss) if self._total_loss else 0.0
 
         LOGGER.info(
             textwrap.dedent(
@@ -64,8 +70,8 @@ class BacktestingSummary:
                 Cumulative PNL: {cumulative_pnl:.2f} USDT ({roi:.2f}%)
                 
                 Expectancy: {expectancy:.2f} USDT
-                Risk-Reward Ratio: {total_average_win/abs(total_average_loss):.2f}
-                Profit Factor: {self._total_profit/abs(self._total_loss):.2f}
+                Risk-Reward Ratio: {rr:.2f}
+                Profit Factor: {pf:.2f}
                 """
             )
         )

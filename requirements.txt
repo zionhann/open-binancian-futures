@@ -1,8 +1,10 @@
 binance-sdk-derivatives-trading-usds-futures
-numpy
+binance-common<3.4.0
+numpy<2.4
 pandas
 pandas_ta
 python-dotenv
+pydantic-settings>=2.0.0
 setuptools
 slack_sdk
 TA-Lib
