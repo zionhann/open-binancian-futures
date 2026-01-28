@@ -4,6 +4,7 @@ __pycache__
 .env
 .DS_Store
 log
+**/strategy/strategy_*.py
 .idea
 *.skill
 
@@ -15,3 +16,6 @@ dist/
 MANIFEST
 .gemini/
 gha-creds-*.json
+
+# Preset directory - work in progress, excluded from commits
+open_binancian_futures/preset/
