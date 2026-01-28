@@ -22,10 +22,7 @@ def fetch(request: Callable, **kwargs):
         raise
 
 
-def gtd(timestamp: float, nlines: Optional[int]) -> Optional[int]:
-    if nlines is None:
-        return None
-
+def gtd(timestamp: float, nlines: int) -> int:
     unit = settings.interval[-1]
     base = INTERVAL_TO_SECONDS[unit] * int(settings.interval[:-1])
     exp = max(base * nlines, MIN_EXP)

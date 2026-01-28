@@ -37,6 +37,7 @@ class Balance:
 
     def __init__(self, balance: float):
         import math
+
         self._balance = math.floor(balance * 100) / 100
 
     def __str__(self):

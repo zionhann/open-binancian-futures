@@ -26,7 +26,7 @@ class GlobalSettings(BaseSettings):
     leverage: int = Field(default=1, ge=1)
     size: float = Field(default=0.05, gt=0.0, le=1.0)
     is_testnet: bool = False
-    gtd_nlines: Optional[int] = None
+    gtd_nlines: int = Field(default=1, ge=1)
     webhook_url: Optional[str] = None
     timezone: str = "UTC"
 
