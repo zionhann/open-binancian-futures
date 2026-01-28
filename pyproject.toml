@@ -41,17 +41,15 @@ dependencies = [
     "TA-Lib",
     "toon-format @ git+https://github.com/toon-format/toon-python.git",
     "typer",
-]
-
-[project.optional-dependencies]
-ai = [
+    # AI dependencies (formerly optional)
     "openai",
     "anthropic",
     "tiktoken",
-]
-webhook = [
+    # Webhook dependencies (formerly optional)
     "slack-sdk",
 ]
+
+[project.optional-dependencies]
 dev = [
     "pytest>=7.0",
     "pytest-asyncio",
@@ -60,9 +58,6 @@ dev = [
     "isort",
     "mypy",
     "ruff",
-]
-all = [
-    "open-binancian-futures[ai,webhook,dev]",
 ]
 
 [project.urls]
