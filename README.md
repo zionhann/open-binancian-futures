@@ -7,37 +7,83 @@
 
 ## 🚀 Key Features
 
-*   **Live Trading:** Automatically track multiple symbols and execute trades based on your custom strategy.
-*   **Backtesting:** Evaluate your strategies on historical data before risking real capital. (Experimental)
-*   **Webhook Integration:** Receive real-time trade notifications via Slack or Discord.
+- **Live Trading:** Automatically track multiple symbols and execute trades based on your custom strategy.
+- **Backtesting:** Evaluate your strategies on historical data before risking real capital. (Experimental)
+- **Webhook Integration:** Receive real-time trade notifications via Slack or Discord.
 
-## 🛠️ Getting Started
+## 📦 Installation
+
+### Quick Install
+
+```bash
+pip install open-binancian-futures
+```
+
+### From Source (Development)
+
+For contributors or those wanting to modify the code:
+
+```bash
+git clone https://github.com/zionhann/open-binancian-futures.git
+cd open-binancian-futures
+pip install -e .
+```
 
 ### Prerequisites
 
-*   **Python 3.8+**
-*   **Binance API Keys** (with "Enable Futures" permission)
-*   **TA-Lib Library**: Refer to [Installation Guide](https://ta-lib.org/install/)
+Ensure you have:
 
-### Installation
+- **Python 3.8+**
+- **Binance API Keys** with "Enable Futures" permission ([Get API Keys](https://www.binance.com/en/support/faq/360002502072))
 
-1.  **Clone the repository:**
+## 🛠️ Getting Started
+
+### Quick Start
+
+1.  **Install the package:**
+
     ```bash
-    git clone https://github.com/zionhann/open-binancian-futures.git
-    cd open-binancian-futures
+    pip install open-binancian-futures
     ```
 
-2.  **Install dependencies:**
+2.  **Set up configuration:**
+    Create a `.env` file in your working directory (see [Configuration](#configuration)):
+
     ```bash
-    pip install -r requirements.txt
+    # Copy example config
+    curl -o .env https://raw.githubusercontent.com/zionhann/open-binancian-futures/main/.env.example
+    # Edit with your API keys and settings
     ```
 
 3.  **Create your strategy:**
-    Customize `src/main/strategy/example.py` or create a new file in `src/main/strategy/` extending the `Strategy` class.
-    > **⚠️ Warning:** Do NOT use the example strategy as is — it is a simplified template and may lead to significant losses in real trading conditions.
+    Create `my_strategy.py` in your working directory extending the `Strategy` class:
 
-4.  **Configuration:**
-    Configure environment variables in `.env.example` and rename it to `.env`:
+    ```python
+    from open_binancian_futures.strategy import Strategy
+    from pandas import DataFrame
+
+    class MyStrategy(Strategy):
+        def load(self, df: DataFrame) -> DataFrame:
+            # Add your technical indicators
+            return df
+
+        async def run(self, symbol: str) -> None:
+            # Your trading logic
+            pass
+
+        async def run_backtest(self, symbol: str, index: int) -> None:
+            # Your backtesting logic
+            pass
+    ```
+
+4.  **Run your bot:**
+    ```bash
+    open-binancian-futures my_strategy
+    ```
+
+### Configuration
+
+Configure environment variables in a `.env` file (see [`.env.example`](.env.example)):
 
     | Variable | Type | Required | Default | Description |
     | :--- | :---: | :---: | :--- | :--- |
@@ -47,38 +93,43 @@
     | `API_KEY_TEST` | string | Yes* | - | Binance API key for testnet |
     | `API_SECRET_TEST` | string | Yes* | - | Binance API secret for testnet |
     | **Strategy** |
-    | `STRATEGY` | string | Yes | - | Strategy file name in `src/main/strategy/*` (case-sensitive) |
+    | `STRATEGY` | string | Yes | - | Strategy name |
     | `SYMBOLS` | string | No | `BTCUSDT` | Target symbols (USDT-based only), e.g., `BTCUSDT,ETHUSDT` |
     | `INTERVAL` | string | No | `1d` | Candle interval: `1m`, `3m`, `5m`, `15m`, `30m`, `1h`, `4h`, `1d` |
     | `LEVERAGE` | number | No | `1` | Leverage multiplier |
     | `SIZE` | number | No | `0.05` | Max trade portion per order (e.g., `0.3` = 30%) |
-    | `AVERAGING` | string | No | `1` | Averaging ratios (e.g., `0.25,0.25,0.50`). Set `1` to disable |
-    | `GTD_NLINES` | number | No | `3` | Candles to hold open orders (use `GTC` to disable) |
+    | `GTD_NLINES` | number | No | - | Candles to hold open orders (defaults to GTC if not set) |
     | `TIMEZONE` | string | No | `UTC` | Timezone (e.g., `Asia/Seoul`) |
     | **Mode** |
     | `IS_TESTNET` | boolean | No | `false` | Use Binance Testnet (`true`/`false`) |
     | `IS_BACKTEST` | boolean | No | `false` | Run in backtest mode (`true`/`false`) |
-    | **Risk Management** |
-    | `TPSL_TAKE_PROFIT_RATIO` | number | No | `2x Stop Loss` | Take profit ratio (e.g., `0.1` = 10%) |
-    | `TPSL_STOP_LOSS_RATIO` | number | No | `0.05` | Stop loss ratio (e.g., `0.05` = 5%) |
-    | **Trailing Stop** |
-    | `TS_ACTIVATION_RATIO` | number | No | - | Ratio to activate trailing stop |
-    | `TS_CALLBACK_RATIO` | number | No | - | Ratio to close trailing stop from peak |
     | **Notifications** |
     | `WEBHOOK_URL` | string | No | - | Slack/Discord Webhook URL |
     | **Backtesting** |
-    | `BACKTEST_BALANCE` | number | No | `100` | Initial backtest balance |
-    | `BACKTEST_KLINES_LIMIT` | number | No | `1000` | Historical candles to fetch (max 1000) |
-    | `BACKTEST_INDICATOR_INIT_SIZE`| number | No | `20% of Limit`| Candles for indicator initialization |
+    | `BALANCE` | number | No | `100` | Initial backtest balance |
+    | `KLINES_LIMIT` | number | No | `1000` | Historical candles to fetch (max 1000) |
+    | `INDICATOR_INIT_SIZE`| number | No | `200` | Candles for indicator initialization |
 
     > \* *Either Mainnet or Testnet credentials are required depending on `IS_TESTNET`.*
 
+#### Configuration Notes
+
+- **Automatic Loading**: Environment variables are loaded automatically from `.env` using pydantic-settings
+- **CLI Overrides**: Command-line flags override `.env` values (see [Usage](#-usage))
+- **Optional vs Required**: Only API keys and STRATEGY are truly required; all others have sensible defaults
+
 ### ▶️ Usage
 
-Run the application:
+Run your strategy using the CLI entry point:
 
 ```bash
-python src/main/app.py
+open-binancian-futures <strategy_name>
+```
+
+You can also override environment variables directly from the CLI:
+
+```bash
+open-binancian-futures foo --backtest --symbols BTCUSDT,ETHUSDT
 ```
 
 ## 📄 License
