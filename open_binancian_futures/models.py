@@ -36,7 +36,8 @@ class Balance:
     """Account balance tracker with precision rounding."""
 
     def __init__(self, balance: float):
-        self._balance = round(balance, 2)
+        import math
+        self._balance = math.floor(balance * 100) / 100
 
     def __str__(self):
         return f"{self._balance:.2f}"

@@ -390,12 +390,15 @@ class Backtesting(Runner):
     @override
     def run(self) -> None:
         LOGGER.info("Starting backtesting...")
-        for i in range(settings.indicator_init_size, settings.sample_size):
+        asyncio.run(self._run_backtest_loop())
+
+    async def _run_backtest_loop(self) -> None:
+        for i in range(settings.indicator_init_size, settings.klines_limit):
             for symbol in settings.symbols_list:
                 klines = self.indicators[symbol][: i + 1]
                 current = klines.iloc[-1]
                 time, high, low = current["Open_time"], current["High"], current["Low"]
-                asyncio.run(self.strategy.run_backtest(symbol, i))
+                await self.strategy.run_backtest(symbol, i)
                 self._expire_orders(symbol, time)
                 self._eval_orders(symbol, high, low, time)
         LOGGER.info("Backtesting finished. Closing remaining positions...")

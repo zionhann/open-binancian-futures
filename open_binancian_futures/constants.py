@@ -42,7 +42,7 @@ class GlobalSettings(BaseSettings):
 
     @property
     def sample_size(self) -> int:
-        return settings.klines_limit - settings.indicator_init_size
+        return self.klines_limit - self.indicator_init_size
 
 
 settings = GlobalSettings()

@@ -30,7 +30,7 @@ classifiers = [
 requires-python = ">=3.8"
 
 dependencies = [
-    "binance-sdk-derivatives-trading-usds-futures",
+    "binance-sdk-derivatives-trading-usds-futures>=6.2.0",
     "binance-common",
     "numpy<2.4",
     "pandas",
