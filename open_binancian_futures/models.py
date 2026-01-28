@@ -2,7 +2,7 @@ import logging
 import uuid
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Iterable, Optional, TypeVar
+from typing import Iterable, Optional, TypeVar
 
 from pandas import DataFrame, Series, Timestamp
 
@@ -15,15 +15,15 @@ from binance_sdk_derivatives_trading_usds_futures.websocket_streams.models impor
     AlgoUpdateO,
 )
 
-from open_binancian_futures.types import (
+from .types import (
     AlgoStatus,
     FilterType,
     OrderStatus,
     OrderType,
     PositionSide,
 )
-from open_binancian_futures.constants import settings
-from open_binancian_futures.utils import decimal_places
+from .constants import settings
+from .utils import decimal_places
 
 LOGGER = logging.getLogger(__name__)
 T = TypeVar("T")

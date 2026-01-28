@@ -56,32 +56,43 @@ class StrategyNotFoundError(StrategyLoadError):
     pass
 
 
-def _validate_strategy_class(cls: type) -> bool:
+def _validate_strategy_class(cls: type) -> tuple[bool, str | None]:
     """
     Validate that a Strategy subclass can be instantiated.
 
     Checks:
     1. Class is not abstract
     2. All required methods (load, run, run_backtest) are implemented
+    3. Async methods (run, run_backtest) are actually coroutine functions
 
     Args:
         cls: Strategy subclass to validate
 
     Returns:
-        True if valid, False otherwise
+        Tuple of (is_valid, error_message). error_message is None if valid.
     """
     # Check if class is abstract
     if inspect.isabstract(cls):
-        return False
+        return False, f"Class '{cls.__name__}' is abstract"
 
     # Check required methods are implemented
     required_methods = ["load", "run", "run_backtest"]
     for method_name in required_methods:
         method = getattr(cls, method_name, None)
         if method is None or getattr(method, "__isabstractmethod__", False):
-            return False
+            return False, f"Method '{method_name}' is not implemented in '{cls.__name__}'"
 
-    return True
+    # Check that async methods are actually coroutine functions
+    async_methods = ["run", "run_backtest"]
+    for method_name in async_methods:
+        method = getattr(cls, method_name, None)
+        if method is not None and not inspect.iscoroutinefunction(method):
+            return (
+                False,
+                f"Method '{method_name}' in '{cls.__name__}' must be declared with 'async def'",
+            )
+
+    return True, None
 
 
 @dataclass
@@ -217,12 +228,20 @@ class Strategy(ABC):
             raise StrategyLoadError(f"No Strategy subclass found in '{strategy_name}'")
 
         # Find first valid (non-abstract) strategy
-        valid_strategies = [cls for cls in subclasses if _validate_strategy_class(cls)]
+        validation_errors = []
+        valid_strategies = []
+        for cls in subclasses:
+            is_valid, error_msg = _validate_strategy_class(cls)
+            if is_valid:
+                valid_strategies.append(cls)
+            elif error_msg:
+                validation_errors.append(error_msg)
 
         if not valid_strategies:
+            error_details = "\n  - ".join(validation_errors) if validation_errors else "Unknown validation errors"
             raise StrategyLoadError(
                 f"Found {len(subclasses)} Strategy subclass(es) in '{strategy_name}', "
-                f"but none are concrete implementations"
+                f"but none are valid:\n  - {error_details}"
             )
 
         if len(valid_strategies) > 1:

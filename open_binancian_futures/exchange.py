@@ -32,14 +32,14 @@ from binance_sdk_derivatives_trading_usds_futures.rest_api.models import (
     CurrentAllAlgoOpenOrdersResponse,
 )
 
-from open_binancian_futures.models import Balance
-from open_binancian_futures.constants import settings
-from open_binancian_futures.types import OrderType, PositionSide
-from open_binancian_futures.models import ExchangeInfo
-from open_binancian_futures.models import Indicator
-from open_binancian_futures.models import Order, OrderBook, OrderList
-from open_binancian_futures.models import Position, PositionBook, PositionList
-from open_binancian_futures.utils import fetch, get_or_raise
+from .models import Balance
+from .constants import settings
+from .types import OrderType, PositionSide
+from .models import ExchangeInfo
+from .models import Indicator
+from .models import Order, OrderBook, OrderList
+from .models import Position, PositionBook, PositionList
+from .utils import fetch, get_or_raise
 
 LOGGER = logging.getLogger(__name__)
 

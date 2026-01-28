@@ -4,7 +4,7 @@ from typing import Callable, Optional, TypeVar
 
 from binance_common.models import ApiResponse
 
-from open_binancian_futures.constants import INTERVAL_TO_SECONDS, settings
+from .constants import INTERVAL_TO_SECONDS, settings
 
 UNIT_MS = 1000
 MIN_EXP = 660

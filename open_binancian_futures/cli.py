@@ -1,8 +1,8 @@
 import typer
 from typing import Optional
-from open_binancian_futures.constants import settings
-from open_binancian_futures.runners import Backtesting, LiveTrading
-import open_binancian_futures.logging_config as logging_config
+from .constants import settings
+from .runners import Backtesting, LiveTrading
+from . import logging_config
 import traceback
 
 app = typer.Typer(help="Open Binancian Futures CLI")
