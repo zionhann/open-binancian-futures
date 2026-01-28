@@ -3,7 +3,7 @@ import os
 from datetime import datetime
 from logging.handlers import TimedRotatingFileHandler
 
-from open_binancian_futures.constants import settings
+from .constants import settings
 
 BASE_DIR = "log"
 SUB_DIR = "test" if settings.is_testnet else "main"

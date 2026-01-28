@@ -21,21 +21,21 @@ from binance_sdk_derivatives_trading_usds_futures.websocket_streams.models impor
     AlgoUpdate,
     AlgoUpdateO,
 )
-from open_binancian_futures.models import Balance
-from open_binancian_futures.constants import settings
-from open_binancian_futures.types import (
+from .models import Balance
+from .constants import settings
+from .types import (
     AlgoStatus,
     EventType,
     OrderStatus,
     OrderType,
     PositionSide,
 )
-from open_binancian_futures.models import Order, OrderBook, OrderEvent, OrderList
-from open_binancian_futures.models import Position, PositionBook
-from open_binancian_futures import exchange as futures
-from open_binancian_futures.strategy import Strategy, StrategyContext
-from open_binancian_futures.utils import fetch, get_or_raise
-from open_binancian_futures.webhook import Webhook
+from .models import Order, OrderBook, OrderEvent, OrderList
+from .models import Position, PositionBook
+from . import exchange as futures
+from .strategy import Strategy, StrategyContext
+from .utils import fetch, get_or_raise
+from .webhook import Webhook
 
 LOGGER = logging.getLogger(__name__)
 MESSAGE = "message"
@@ -393,7 +393,10 @@ class Backtesting(Runner):
         asyncio.run(self._run_backtest_loop())
 
     async def _run_backtest_loop(self) -> None:
-        for i in range(settings.indicator_init_size, settings.klines_limit):
+        # Use actual data length instead of klines_limit to avoid IndexError
+        # (init_indicators removes last incomplete candle with [:-1])
+        actual_length = min(len(self.indicators[s]) for s in settings.symbols_list)
+        for i in range(settings.indicator_init_size, actual_length):
             for symbol in settings.symbols_list:
                 klines = self.indicators[symbol][: i + 1]
                 current = klines.iloc[-1]

@@ -1,4 +1,4 @@
-from open_binancian_futures.cli import app
+from .cli import app
 
 
 def main() -> None:
