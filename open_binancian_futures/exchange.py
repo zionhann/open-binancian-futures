@@ -89,7 +89,7 @@ def _create_order_from_algo(
         order_id=get_or_raise(item.algo_id),
         type=OrderType(get_or_raise(item.order_type)),
         side=PositionSide(get_or_raise(item.side)),
-        price=float(get_or_raise(price)),
+        gtd=item.good_till_date,
         quantity=float(get_or_raise(item.quantity)),
         gtd=get_or_raise(item.good_till_date),
     )
