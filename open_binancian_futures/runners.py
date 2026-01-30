@@ -3,9 +3,8 @@ import json
 import logging
 import textwrap
 from abc import ABC, abstractmethod
-from typing import Any, Optional, Self, override
+from typing import Optional, Self, override
 
-import pandas as pd
 from pandas import Timestamp
 
 from binance_sdk_derivatives_trading_usds_futures.rest_api.models import (
@@ -33,6 +32,7 @@ from .types import (
 from .models import Order, OrderBook, OrderEvent, OrderList
 from .models import Position, PositionBook
 from . import exchange as futures
+from .client import client
 from .strategy import Strategy, StrategyContext
 from .utils import fetch, get_or_raise
 from .webhook import Webhook
@@ -62,7 +62,7 @@ class Runner(ABC):
 
 class LiveTrading(Runner):
     def __init__(self) -> None:
-        self.client = futures.client
+        self.client = client()
         self.webhook = Webhook.of(settings.webhook_url)
         context = StrategyContext(client=self.client, webhook=self.webhook)
         self.strategy = Strategy.of(name=settings.strategy, context=context)
@@ -145,6 +145,7 @@ class LiveTrading(Runner):
             for balance_data in data.B:
                 self.strategy.on_balance_update(balance_data)
 
+    @override
     def run(self) -> None:
         LOGGER.info("Starting to run...")
         for s in settings.symbols_list:
@@ -194,6 +195,7 @@ class LiveTrading(Runner):
             fetch(self.client.rest_api.keepalive_user_data_stream)
             LOGGER.info("Successfully sent keepalive for user data stream.")
 
+    @override
     def close(self) -> None:
         LOGGER.info("Initiating shutdown process...")
         asyncio.run(self._close_async())
@@ -372,7 +374,7 @@ class BacktestingSummary:
 
 class Backtesting(Runner):
     def __init__(self) -> None:
-        self.client = futures.client
+        self.client = client()
         self.balance = Balance(settings.balance)
         self.orders = OrderBook()
         self.positions = PositionBook()
@@ -418,7 +420,7 @@ class Backtesting(Runner):
                 textwrap.dedent(
                     f"""
                         {order.type.value} ORDER EXPIRED @ {time}
-                        ID: {order.id}
+                        ID: {order.order_id}
                         Symbol: {order.symbol}
                         Side: {order.side.value}
                         Price: {order.price}
@@ -464,7 +466,7 @@ class Backtesting(Runner):
             side=order.side,
             leverage=settings.leverage,
         )
-        self.orders[order.symbol].remove_by_id(order.id)
+        self.orders[order.symbol].remove_by_id(order.order_id)
         self.positions[order.symbol].update_positions([position])
         self.balance.add_pnl(-position.initial_margin())
         LOGGER.info(
@@ -472,7 +474,7 @@ class Backtesting(Runner):
                 f"""
                 Date: {time.strftime("%Y-%m-%d %H:%M:%S")}
                 {order.side.value} {position.symbol} @ {position.price}
-                ID: {order.id}
+                ID: {order.order_id}
                 Type: {order.type.value}
                 Size: {order.quantity} {position.symbol[:-4]}
                 """
@@ -489,7 +491,7 @@ class Backtesting(Runner):
                 f"""
                 Date: {time.strftime("%Y-%m-%d %H:%M:%S")}
                 {order.side.value} {order.symbol} @ {order.price}
-                ID: {order.id}
+                ID: {order.order_id}
                 Type: {order.type.value}
                 Realized PNL: {pnl:.2f} USDT ({pnl / margin * 100:.2f}%)
                 Balance: {self.balance}
