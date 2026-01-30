@@ -75,7 +75,7 @@ def _create_order_from_regular(item: AllOrdersResponse, symbol: str) -> Order:
         side=PositionSide(get_or_raise(item.side)),
         price=float(get_or_raise(price)),
         quantity=float(get_or_raise(item.orig_qty)),
-        gtd=get_or_raise(item.good_till_date),
+        gtd=item.good_till_date,
     )
 
 
