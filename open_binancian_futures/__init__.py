@@ -5,7 +5,7 @@ A robust framework for creating, backtesting, and deploying trading bots
 for Binance USDⓈ-M Futures.
 """
 
-__version__ = "1.0.0b1"
+__version__ = "1.0.0b2"
 __author__ = "HAN Sion"
 __email__ = "its.zionhan@gmail.com"
 __license__ = "MIT"
@@ -20,7 +20,6 @@ from .types import (
     EventType,
     AlgoStatus,
     FilterType,
-    BaseURL,
 )
 from .runners import Runner, LiveTrading, Backtesting
 from .strategy import (
@@ -38,13 +37,12 @@ from .models import (
     PositionList,
     PositionBook,
     OrderEvent,
-    OrderEventSource,
     ExchangeInfo,
     Filter,
     Indicator,
-    vwap,
 )
 from .webhook import Webhook
+from .utils import vwap
 
 __all__ = [
     # Package metadata
@@ -68,7 +66,6 @@ __all__ = [
     "Filter",
     # Event handling
     "OrderEvent",
-    "OrderEventSource",
     # Technical analysis
     "Indicator",
     "vwap",
@@ -81,7 +78,6 @@ __all__ = [
     "EventType",
     "AlgoStatus",
     "FilterType",
-    "BaseURL",
     # Runners
     "Runner",
     "LiveTrading",

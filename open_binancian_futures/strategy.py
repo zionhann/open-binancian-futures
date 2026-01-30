@@ -56,45 +56,6 @@ class StrategyNotFoundError(StrategyLoadError):
     pass
 
 
-def _validate_strategy_class(cls: type) -> tuple[bool, str | None]:
-    """
-    Validate that a Strategy subclass can be instantiated.
-
-    Checks:
-    1. Class is not abstract
-    2. All required methods (load, run, run_backtest) are implemented
-    3. Async methods (run, run_backtest) are actually coroutine functions
-
-    Args:
-        cls: Strategy subclass to validate
-
-    Returns:
-        Tuple of (is_valid, error_message). error_message is None if valid.
-    """
-    # Check if class is abstract
-    if inspect.isabstract(cls):
-        return False, f"Class '{cls.__name__}' is abstract"
-
-    # Check required methods are implemented
-    required_methods = ["load", "run", "run_backtest"]
-    for method_name in required_methods:
-        method = getattr(cls, method_name, None)
-        if method is None or getattr(method, "__isabstractmethod__", False):
-            return False, f"Method '{method_name}' is not implemented in '{cls.__name__}'"
-
-    # Check that async methods are actually coroutine functions
-    async_methods = ["run", "run_backtest"]
-    for method_name in async_methods:
-        method = getattr(cls, method_name, None)
-        if method is not None and not inspect.iscoroutinefunction(method):
-            return (
-                False,
-                f"Method '{method_name}' in '{cls.__name__}' must be declared with 'async def'",
-            )
-
-    return True, None
-
-
 @dataclass
 class StrategyContext:
     """Context object containing all dependencies for a strategy."""
@@ -159,98 +120,70 @@ class Strategy(ABC):
     @staticmethod
     def _import_strategy(strategy_name: str) -> type["Strategy"]:
         """
-        Import strategy by file path or module name and return the Strategy subclass.
-
-        Supports two loading modes:
-        1. File-based (*.py): Loads strategy from file path
-        2. Module-based: Uses standard Python import
+        Import strategy from a file path and return the Strategy subclass.
 
         Args:
-            strategy_name: File path (*.py) or module import path
+            strategy_name: File path (with or without .py extension)
 
         Returns:
             Strategy subclass ready for instantiation
 
         Raises:
-            StrategyNotFoundError: Strategy file or module not found
+            StrategyNotFoundError: Strategy file not found
             StrategyLoadError: Strategy cannot be loaded or has no valid subclass
         """
-        # Import the module
+        # Ensure .py extension
+        if not strategy_name.endswith(".py"):
+            strategy_name += ".py"
+
+        abs_path = os.path.abspath(strategy_name)
+        if not os.path.exists(abs_path):
+            raise StrategyNotFoundError(f"Strategy file not found: {abs_path}")
+
+        module_name = os.path.basename(abs_path)[:-3]
+        dir_name = os.path.dirname(abs_path)
+
+        # Load module from file
         try:
-            if strategy_name.endswith(".py"):
-                # File-based loading
-                abs_path = os.path.abspath(strategy_name)
-                if not os.path.exists(abs_path):
-                    raise StrategyNotFoundError(f"Strategy file not found: {abs_path}")
+            sys.path.insert(0, dir_name)
+            spec = importlib.util.spec_from_file_location(module_name, abs_path)
+            if not spec or not spec.loader:
+                raise StrategyLoadError(f"Cannot load strategy from {abs_path}")
 
-                module_name = os.path.basename(abs_path)[:-3]
-                dir_name = os.path.dirname(abs_path)
-
-                # Add directory to path temporarily
-                sys.path.insert(0, dir_name)
-                try:
-                    spec = importlib.util.spec_from_file_location(module_name, abs_path)
-                    if not spec or not spec.loader:
-                        raise StrategyLoadError(f"Cannot load strategy from {abs_path}")
-
-                    mod = importlib.util.module_from_spec(spec)
-                    spec.loader.exec_module(mod)
-                finally:
-                    try:
-                        sys.path.remove(dir_name)
-                    except ValueError:
-                        pass
-            else:
-                # Module-based loading
-                mod = importlib.import_module(strategy_name)
-
-        except (ImportError, FileNotFoundError) as e:
-            raise StrategyNotFoundError(
-                f"Cannot import strategy '{strategy_name}': {e}"
-            ) from e
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
         except StrategyLoadError:
             raise
         except Exception as e:
             raise StrategyLoadError(
                 f"Error loading strategy '{strategy_name}': {e}"
             ) from e
+        finally:
+            try:
+                sys.path.remove(dir_name)
+            except ValueError:
+                pass
 
-        # Find valid Strategy subclass
+        # Find non-abstract Strategy subclass
         subclasses = [
             cls
             for cls in mod.__dict__.values()
             if isinstance(cls, type)
             and issubclass(cls, Strategy)
             and cls is not Strategy
+            and not inspect.isabstract(cls)
         ]
 
         if not subclasses:
-            raise StrategyLoadError(f"No Strategy subclass found in '{strategy_name}'")
+            raise StrategyLoadError(f"No valid Strategy subclass found in '{strategy_name}'")
 
-        # Find first valid (non-abstract) strategy
-        validation_errors = []
-        valid_strategies = []
-        for cls in subclasses:
-            is_valid, error_msg = _validate_strategy_class(cls)
-            if is_valid:
-                valid_strategies.append(cls)
-            elif error_msg:
-                validation_errors.append(error_msg)
-
-        if not valid_strategies:
-            error_details = "\n  - ".join(validation_errors) if validation_errors else "Unknown validation errors"
-            raise StrategyLoadError(
-                f"Found {len(subclasses)} Strategy subclass(es) in '{strategy_name}', "
-                f"but none are valid:\n  - {error_details}"
-            )
-
-        if len(valid_strategies) > 1:
+        if len(subclasses) > 1:
             Strategy.LOGGER.warning(
                 f"Multiple Strategy subclasses found in {strategy_name}. "
-                f"Using '{valid_strategies[0].__name__}'"
+                f"Using '{subclasses[0].__name__}'"
             )
 
-        return valid_strategies[0]
+        return subclasses[0]
 
     def __init__(
         self,

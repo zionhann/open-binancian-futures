@@ -1,28 +1,7 @@
 import logging
-import os
-from typing import Any, cast, Iterable, Optional
+from typing import cast
 
 import pandas as pd
-from anthropic import AsyncAnthropic
-from anthropic.types import MessageParam, Message
-from openai import AsyncOpenAI
-
-from binance_common.configuration import (
-    ConfigurationWebSocketStreams,
-    ConfigurationWebSocketAPI,
-)
-from binance_common.constants import (
-    DERIVATIVES_TRADING_USDS_FUTURES_REST_API_TESTNET_URL as TESTNET_REST,
-    DERIVATIVES_TRADING_USDS_FUTURES_WS_STREAMS_TESTNET_URL as TESTNET_WS_STREAMS,
-    DERIVATIVES_TRADING_USDS_FUTURES_WS_API_TESTNET_URL as TESTNET_WS_API,
-)
-from binance_sdk_derivatives_trading_usds_futures import DerivativesTradingUsdsFutures
-from binance_sdk_derivatives_trading_usds_futures.derivatives_trading_usds_futures import (
-    ConfigurationRestAPI,
-    DERIVATIVES_TRADING_USDS_FUTURES_REST_API_PROD_URL as MAINNET_REST,
-    DERIVATIVES_TRADING_USDS_FUTURES_WS_STREAMS_PROD_URL as MAINNET_WS_STREAMS,
-    DERIVATIVES_TRADING_USDS_FUTURES_WS_API_PROD_URL as MAINNET_WS_API,
-)
 from binance_sdk_derivatives_trading_usds_futures.rest_api.models import (
     ExchangeInformationResponse,
     FuturesAccountBalanceV3Response,
@@ -40,6 +19,7 @@ from .models import Indicator
 from .models import Order, OrderBook, OrderList
 from .models import Position, PositionBook, PositionList
 from .utils import fetch, get_or_raise
+from .client import client
 
 LOGGER = logging.getLogger(__name__)
 
@@ -61,75 +41,8 @@ KLINES_COLUMNS = [
 ]
 
 
-class BinanceClientManager:
-    def __init__(self):
-        self._client: DerivativesTradingUsdsFutures | None = None
-
-    def _get_config(self) -> tuple[str, str, str, str, str]:
-        if settings.is_testnet:
-            if settings.api_key_test is None or settings.api_secret_test is None:
-                raise ValueError("Testnet API credentials not configured")
-            return (
-                TESTNET_REST,
-                TESTNET_WS_STREAMS,
-                TESTNET_WS_API,
-                settings.api_key_test,
-                settings.api_secret_test,
-            )
-        else:
-            if settings.api_key is None or settings.api_secret is None:
-                raise ValueError("Mainnet API credentials not configured")
-            return (
-                MAINNET_REST,
-                MAINNET_WS_STREAMS,
-                MAINNET_WS_API,
-                settings.api_key,
-                settings.api_secret,
-            )
-
-    @property
-    def client(self) -> DerivativesTradingUsdsFutures:
-        if self._client is None:
-            rest_url, ws_stream_url, ws_api_url, api_key, api_secret = (
-                self._get_config()
-            )
-            config_rest = ConfigurationRestAPI(
-                api_key=api_key, api_secret=api_secret, base_path=rest_url, timeout=2000
-            )
-            config_ws_api = ConfigurationWebSocketAPI(
-                api_key=api_key, api_secret=api_secret, stream_url=ws_api_url
-            )
-            config_ws = ConfigurationWebSocketStreams(stream_url=ws_stream_url)
-            self._client = DerivativesTradingUsdsFutures(
-                config_rest_api=config_rest,
-                config_ws_api=config_ws_api,
-                config_ws_streams=config_ws,
-            )
-            network = "Testnet" if settings.is_testnet else "Mainnet"
-            LOGGER.info(f"Binance Futures client initialized ({network})")
-        return self._client
-
-    def cleanup(self) -> None:
-        if self._client is not None:
-            LOGGER.info("Binance client cleanup completed")
-
-
-_client_manager = BinanceClientManager()
-
-
-class _ClientProxy:
-    """Minimal proxy for lazy client initialization."""
-
-    def __getattr__(self, name: str) -> Any:
-        return getattr(_client_manager.client, name)
-
-
-# Proxy allows imports without requiring API keys
-client: DerivativesTradingUsdsFutures = _ClientProxy()  # type: ignore
-
-
 def init_exchange_info() -> ExchangeInfo:
-    data: ExchangeInformationResponse = fetch(client.rest_api.exchange_information)
+    data: ExchangeInformationResponse = fetch(client().rest_api.exchange_information)
     symbols = get_or_raise(data.symbols)
     target_symbols = [
         item
@@ -142,7 +55,7 @@ def init_exchange_info() -> ExchangeInfo:
 def init_balance() -> Balance:
     LOGGER.info("Fetching available balance...")
     data: list[FuturesAccountBalanceV3Response] = fetch(
-        client.rest_api.futures_account_balance_v3
+        client().rest_api.futures_account_balance_v3
     )
     usdt_balance = next((item for item in data if item.asset == "USDT"), None)
     if usdt_balance:
@@ -152,50 +65,50 @@ def init_balance() -> Balance:
     return Balance(0.0)
 
 
-def _create_order(item: Any, symbol: str) -> Order:
-    """Create Order from either regular or algo response."""
-    # Handle both response types with flexible attribute access
-    order_id = getattr(item, "order_id", None) or getattr(item, "algo_id", None)
-    order_type = getattr(item, "orig_type", None) or getattr(item, "order_type", None)
-    side = getattr(item, "side", None)
-
-    # Price can be in different fields
-    price = (
-        getattr(item, "price", None)
-        or getattr(item, "stop_price", None)
-        or getattr(item, "trigger_price", None)
-    )
-
-    # Quantity fields vary
-    quantity = getattr(item, "orig_qty", None) or getattr(item, "quantity", None)
-
-    gtd = getattr(item, "good_till_date", None)
-
+def _create_order_from_regular(item: AllOrdersResponse, symbol: str) -> Order:
+    """Create Order from regular order response."""
+    price = item.price or item.stop_price
     return Order(
         symbol=symbol,
-        id=get_or_raise(order_id),
-        type=OrderType(get_or_raise(order_type)),
-        side=PositionSide(get_or_raise(side)),
+        order_id=get_or_raise(item.order_id),
+        type=OrderType(get_or_raise(item.orig_type)),
+        side=PositionSide(get_or_raise(item.side)),
         price=float(get_or_raise(price)),
-        quantity=float(get_or_raise(quantity)),
-        gtd=get_or_raise(gtd),
+        quantity=float(get_or_raise(item.orig_qty)),
+        gtd=get_or_raise(item.good_till_date),
+    )
+
+
+def _create_order_from_algo(
+    item: CurrentAllAlgoOpenOrdersResponse, symbol: str
+) -> Order:
+    """Create Order from algo order response."""
+    price = item.price or item.trigger_price
+    return Order(
+        symbol=symbol,
+        order_id=get_or_raise(item.algo_id),
+        type=OrderType(get_or_raise(item.order_type)),
+        side=PositionSide(get_or_raise(item.side)),
+        price=float(get_or_raise(price)),
+        quantity=float(get_or_raise(item.quantity)),
+        gtd=get_or_raise(item.good_till_date),
     )
 
 
 def _fetch_regular_orders(symbol: str) -> list[Order]:
     items = cast(
         list[AllOrdersResponse],
-        fetch(client.rest_api.current_all_open_orders, symbol=symbol),
+        fetch(client().rest_api.current_all_open_orders, symbol=symbol),
     )
-    return [_create_order(item, symbol) for item in items]
+    return [_create_order_from_regular(item, symbol) for item in items]
 
 
 def _fetch_algo_orders(symbol: str) -> list[Order]:
     items = cast(
         list[CurrentAllAlgoOpenOrdersResponse],
-        fetch(client.rest_api.current_all_algo_open_orders, symbol=symbol),
+        fetch(client().rest_api.current_all_algo_open_orders, symbol=symbol),
     )
-    return [_create_order(item, symbol) for item in items]
+    return [_create_order_from_algo(item, symbol) for item in items]
 
 
 def init_orders() -> OrderBook:
@@ -232,7 +145,7 @@ def init_positions() -> PositionBook:
     for symbol in settings.symbols_list:
         items = cast(
             list[PositionInformationV3Response],
-            fetch(client.rest_api.position_information_v3, symbol=symbol),
+            fetch(client().rest_api.position_information_v3, symbol=symbol),
         )
         position_list = [
             pos
@@ -249,7 +162,7 @@ def init_indicators(limit: int | None = None) -> Indicator:
     for symbol in settings.symbols_list:
         LOGGER.info(f"Fetching {symbol} klines by {settings.interval}...")
         klines_data: KlineCandlestickDataResponse = fetch(
-            client.rest_api.kline_candlestick_data,
+            client().rest_api.kline_candlestick_data,
             symbol=symbol,
             interval=settings.interval,
             limit=limit,
@@ -269,37 +182,3 @@ def init_indicators(limit: int | None = None) -> Indicator:
         df["Volume"] = df["Volume"].astype(float)
         indicators[symbol] = df
     return Indicator(indicators)
-
-
-# --- AI Clients ---
-
-
-async def ask_anthropic(
-    messages: Iterable[MessageParam], model: str, max_tokens: int, **kwargs
-) -> Optional[Message]:
-    try:
-        api_key = os.getenv("ANTHROPIC_API_KEY")
-        if not api_key:
-            LOGGER.error("ANTHROPIC_API_KEY not configured")
-            return None
-        client = AsyncAnthropic(api_key=api_key)
-        return await client.messages.create(
-            max_tokens=max_tokens, model=model, messages=messages, **kwargs
-        )
-    except Exception as e:
-        LOGGER.error(f"Error in Anthropic API: {e}")
-        return None
-
-
-async def ask_openai(input: str, model: str, **kwargs) -> Optional[str]:
-    try:
-        api_key = os.getenv("OPENAI_API_KEY")
-        if not api_key:
-            LOGGER.error("OPENAI_API_KEY not configured")
-            return None
-        client = AsyncOpenAI(api_key=api_key)
-        response = await client.responses.create(model=model, input=input, **kwargs)
-        return response.output_text
-    except Exception as e:
-        LOGGER.error(f"Error in OpenAI API: {e}")
-        return None

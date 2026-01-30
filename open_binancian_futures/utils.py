@@ -3,6 +3,7 @@ from decimal import Decimal
 from typing import Callable, Optional, TypeVar
 
 from binance_common.models import ApiResponse
+from pandas import Series
 
 from .constants import INTERVAL_TO_SECONDS, settings
 
@@ -39,9 +40,21 @@ T = TypeVar("T")
 
 
 def get_or_raise(
-    value: T | None,
+    value: Optional[T],
     raisable: Callable[[], Exception] = lambda: ValueError("Value is None"),
 ) -> T:
     if value is None:
         raise raisable()
     return value
+
+
+def vwap(
+    high: Series, low: Series, close: Series, volume: Series, length: int
+) -> Series:
+    tp = (high + low + close) / 3
+    tpv = tp * volume
+    wpv = tpv.rolling(window=length, min_periods=1).sum()
+    cumvol = volume.rolling(window=length, min_periods=1).sum()
+    res = wpv / cumvol
+    res.name = f"VWAP_{length}"
+    return res

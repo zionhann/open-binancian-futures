@@ -54,10 +54,3 @@ class FilterType(Enum):
     PRICE_FILTER = "PRICE_FILTER"
     LOT_SIZE = "LOT_SIZE"
     MIN_NOTIONAL = "MIN_NOTIONAL"
-
-
-class BaseURL(Enum):
-    MAINNET_REST = "https://fapi.binance.com"
-    MAINNET_WS = "wss://fstream.binance.com"
-    TESTNET_REST = "https://testnet.binancefuture.com"
-    TESTNET_WS = "wss://stream.binancefuture.com"

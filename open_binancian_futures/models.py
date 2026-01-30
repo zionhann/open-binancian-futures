@@ -1,10 +1,9 @@
 import logging
 import uuid
 from dataclasses import dataclass, field
-from enum import Enum
 from typing import Iterable, Optional, TypeVar
 
-from pandas import DataFrame, Series, Timestamp
+from pandas import DataFrame, Timestamp
 
 from binance_sdk_derivatives_trading_usds_futures.rest_api.models import (
     ExchangeInformationResponseSymbolsInner,
@@ -18,6 +17,7 @@ from binance_sdk_derivatives_trading_usds_futures.websocket_streams.models impor
 from .types import (
     AlgoStatus,
     FilterType,
+    EventType,
     OrderStatus,
     OrderType,
     PositionSide,
@@ -61,7 +61,7 @@ class Balance:
 @dataclass
 class Order:
     symbol: str
-    id: int
+    order_id: int
     type: OrderType
     side: PositionSide
     price: float
@@ -131,7 +131,7 @@ class OrderList:
         self.orders.extend(args)
 
     def remove_by_id(self, id: int) -> None:
-        self.orders[:] = [order for order in self.orders if order.id != id]
+        self.orders[:] = [order for order in self.orders if order.order_id != id]
 
     def clear(self) -> None:
         LOGGER.debug(f"{len(self.orders)} orders cleared")
@@ -158,7 +158,7 @@ class OrderList:
         self.add(
             Order(
                 symbol=symbol,
-                id=order_id,
+                order_id=order_id,
                 type=type,
                 side=side,
                 price=entry_price,
@@ -198,14 +198,9 @@ class OrderBook(dict[str, OrderList]):
         return super().__getitem__(key)
 
 
-class OrderEventSource(Enum):
-    ORDER_TRADE_UPDATE = "ORDER_TRADE_UPDATE"
-    ALGO_UPDATE = "ALGO_UPDATE"
-
-
 @dataclass
 class OrderEvent:
-    source: OrderEventSource
+    source: EventType
     symbol: str
     order_id: int
     status: OrderStatus | AlgoStatus
@@ -223,7 +218,7 @@ class OrderEvent:
     @staticmethod
     def from_order_trade_update(data: OrderTradeUpdateO) -> "OrderEvent":
         return OrderEvent(
-            source=OrderEventSource.ORDER_TRADE_UPDATE,
+            source=EventType.ORDER_TRADE_UPDATE,
             symbol=data.s or "",
             order_id=int(data.i or 0),
             status=OrderStatus(data.X or ""),
@@ -242,7 +237,7 @@ class OrderEvent:
     @staticmethod
     def from_algo_update(data: AlgoUpdateO) -> "OrderEvent":
         return OrderEvent(
-            source=OrderEventSource.ALGO_UPDATE,
+            source=EventType.ALGO_UPDATE,
             symbol=data.s or "",
             order_id=int(data.aid or 0),
             status=AlgoStatus(data.X),
@@ -267,12 +262,12 @@ class OrderEvent:
             )
         return Order(
             symbol=self.symbol,
-            id=self.order_id,
+            order_id=self.order_id,
             type=self.order_type,
             side=self.side,
             price=self.price or self.stop_price or 0.0,
             quantity=self.quantity or 0.0,
-            gtd=self.gtd or 0,
+            gtd=self.gtd or None,
         )
 
     def can_convert_to_order(self) -> bool:
@@ -280,7 +275,7 @@ class OrderEvent:
 
     @property
     def is_from_algo(self) -> bool:
-        return self.source == OrderEventSource.ALGO_UPDATE
+        return self.source == EventType.ALGO_UPDATE
 
     @property
     def display_order_type(self) -> str:
@@ -437,14 +432,26 @@ class ExchangeInfo:
             if item.symbol and item.filters
         }
 
+    def _get_filter(self, symbol: str) -> Filter:
+        """Get filter for symbol with descriptive error on missing symbol."""
+        try:
+            return self.filters[symbol]
+        except KeyError:
+            raise KeyError(
+                f"Symbol '{symbol}' not found in exchange info. "
+                f"Available symbols: {list(self.filters.keys())}"
+            )
+
+    def _round_to_precision(self, value: float, reference: float) -> float:
+        """Round value to match the decimal precision of the reference value."""
+        decimals = decimal_places(reference)
+        if decimals == decimal_places(value):
+            return value
+        return round(value, decimals)
+
     def to_entry_price(self, symbol: str, initial_price: float) -> float:
-        tick_size = self.filters[symbol].tick_size
-        decimals = decimal_places(tick_size)
-        return (
-            initial_price
-            if decimals == decimal_places(initial_price)
-            else round(initial_price, decimals)
-        )
+        tick_size = self._get_filter(symbol).tick_size
+        return self._round_to_precision(initial_price, tick_size)
 
     def to_entry_quantity(
         self,
@@ -452,25 +459,16 @@ class ExchangeInfo:
         entry_price: float,
         balance: Balance,
     ) -> float:
-        step_size = self.filters[symbol].step_size
-        decimals = decimal_places(step_size)
-
+        f = self._get_filter(symbol)
+        decimals = decimal_places(f.step_size)
         initial_quantity = balance.calculate_quantity(entry_price)
-        entry_quantity = round(int(initial_quantity / step_size) * step_size, decimals)
-
+        entry_quantity = round(
+            int(initial_quantity / f.step_size) * f.step_size, decimals
+        )
         return (
             entry_quantity
             if self._is_notional_enough(symbol, entry_quantity, entry_price)
             else 0.0
-        )
-
-    def trim_quantity_precision(self, symbol: str, quantity: float) -> float:
-        step_size = self.filters[symbol].step_size
-        decimals = decimal_places(step_size)
-        return (
-            quantity
-            if decimals == decimal_places(quantity)
-            else round(quantity, decimals)
         )
 
     def _is_notional_enough(
@@ -478,7 +476,7 @@ class ExchangeInfo:
     ) -> bool:
         return (
             self._calculate_notional(entry_quantity, entry_price)
-            >= self.filters[symbol].min_notional
+            >= self._get_filter(symbol).min_notional
         )
 
     def _calculate_notional(self, entry_quantity: float, entry_price: float) -> float:
@@ -493,15 +491,3 @@ class Indicator(dict[str, DataFrame]):
 
     def update(self, symbol: str, df: DataFrame) -> None:
         self[symbol] = df
-
-
-def vwap(
-    high: Series, low: Series, close: Series, volume: Series, length: int
-) -> Series:
-    tp = (high + low + close) / 3
-    tpv = tp * volume
-    wpv = tpv.rolling(window=length, min_periods=1).sum()
-    cumvol = volume.rolling(window=length, min_periods=1).sum()
-    res = wpv / cumvol
-    res.name = f"VWAP_{length}"
-    return res
