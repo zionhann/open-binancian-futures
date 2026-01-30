@@ -58,7 +58,7 @@ pip install open-binancian-futures
 
 Extend the `Strategy` class and implement `load()`, `run()`, and `run_backtest()` functions:
 
-- `load(Dataframe)`: Loads technical indicators you want to use
+- `load(DataFrame)`: Loads technical indicators you want to use
 - `run(str)`: Executes your trading logic
 - `run_backtest(str, int)`: Backtesting logic (optional)
 
