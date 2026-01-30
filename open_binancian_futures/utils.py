@@ -55,6 +55,6 @@ def vwap(
     tpv = tp * volume
     wpv = tpv.rolling(window=length, min_periods=1).sum()
     cumvol = volume.rolling(window=length, min_periods=1).sum()
-    res = wpv / cumvol
+    res = wpv / cumvol.replace(0, float('nan'))
     res.name = f"VWAP_{length}"
     return res
