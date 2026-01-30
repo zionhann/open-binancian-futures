@@ -1,143 +1,142 @@
 # Open Binancian Futures
 
-![Python](https://img.shields.io/badge/Python-3.8%2B-blue)
+![Python](https://img.shields.io/badge/Python-3.12%2B-blue)
 ![License](https://img.shields.io/badge/License-MIT-green)
 
-**Open Binancian Futures** is a robust framework designed to help you effortlessly create, backtest, and deploy your own trading bots for Binance USDⓈ-M Futures.
+A Python framework for creating, backtesting, and deploying automated trading bots on Binance USDⓈ-M Futures.
 
-## 🚀 Key Features
+## Features
 
-- **Live Trading:** Automatically track multiple symbols and execute trades based on your custom strategy.
-- **Backtesting:** Evaluate your strategies on historical data before risking real capital. (Experimental)
-- **Webhook Integration:** Receive real-time trade notifications via Slack or Discord.
+- **Live Trading** – Monitor multiple symbols and execute trades automatically
+- **Backtesting** – Test strategies on historical data (experimental)
+- **Webhooks** – Real-time notifications via Slack/Discord
 
-## 📦 Installation
+## Prerequisites
 
-### Quick Install
+- Python 3.12+
+- Binance API keys with `Enable Futures` permission ([Get keys](https://www.binance.com/en/support/faq/360002502072))
+
+## Getting Started
+
+### 1. Install the package
 
 ```bash
 pip install open-binancian-futures
 ```
 
-### From Source (Development)
+### 2. Create a `.env` file (see [.env.example](./.env.example))
 
-For contributors or those wanting to modify the code:
+| Variable     | Required | Default   | Description                                         |
+| ------------ | :------: | --------- | --------------------------------------------------- |
+| `API_KEY`    |  Yes\*   | -         | Binance API key (mainnet)                           |
+| `API_SECRET` |  Yes\*   | -         | Binance API secret (mainnet)                        |
+| `SYMBOLS`    |    No    | `BTCUSDT` | comma-separated list of symbols to trade            |
+| `INTERVAL`   |    No    | `1d`      | Candle interval (`1m`, `5m`, `1h`, ...)             |
+| `LEVERAGE`   |    No    | `1`       | Leverage multiplier (1 ~ 125)                       |
+| `SIZE`       |    No    | `0.05`    | Trade size per order (e.g., `0.05` = 5% of balance) |
 
-```bash
-git clone https://github.com/zionhann/open-binancian-futures.git
-cd open-binancian-futures
-pip install -e .
+**\* For testnet, use `API_KEY_TEST` and `API_SECRET_TEST` instead**
+
+<details>
+<summary><b>View All Configuration Options</b></summary>
+
+| Variable              |  Type  | Default                       | Description                                  |
+| --------------------- | :----: | ----------------------------- | -------------------------------------------- |
+| `IS_TESTNET`          |  bool  | `false`                       | Use testnet (`true`/`false`)                 |
+| `GTD_NLINES`          | number | -                             | Candles to hold open orders (GTC if not set) |
+| `TIMEZONE`            | `UTC`  | Timezone (e.g., `Asia/Seoul`) |
+| `WEBHOOK_URL`         | string | -                             | Slack/Discord webhook for notifications      |
+| **Backtesting**       |        |                               |                                              |
+| `IS_BACKTEST`         |  bool  | `false`                       | Enable backtest mode                         |
+| `BALANCE`             | number | `100`                         | Initial backtest balance                     |
+| `KLINES_LIMIT`        | number | `1000`                        | Historical candles to fetch (max 1000)       |
+| `INDICATOR_INIT_SIZE` | number | `200`                         | Candles for indicator warm-up                |
+
+</details>
+
+### 3. Create your strategy
+
+Extend the `Strategy` class and implement `load()`, `run()`, and `run_backtest()` functions:
+
+- `load(Dataframe)`: Loads technical indicators you want to use
+- `run(str)`: Executes your trading logic
+- `run_backtest(str, int)`: Backtesting logic (optional)
+
+<details>
+<summary><b>Example Strategy</b></summary>
+
+```python
+import asyncio
+import pandas_ta as ta
+
+from binance_sdk_derivatives_trading_usds_futures.rest_api.models import (
+    NewOrderSideEnum,
+    NewOrderTimeInForceEnum,
+)
+from open_binancian_futures.types import OrderType
+from open_binancian_futures.strategy import Strategy
+from open_binancian_futures.utils import fetch
+from pandas import DataFrame
+from typing import cast, override
+
+class MyStrategy(Strategy):
+
+    @override
+    def load(self, df: DataFrame) -> DataFrame:
+        """Add technical indicators to the dataframe"""
+        # You can use `pandas_ta` to add technical indicators
+        df["RSI_14"] = ta.rsi(df["Close"], length=14)
+        return df
+
+    @override
+    async def run(self, symbol: str) -> None:
+        """Execute your trading logic"""
+        latest = self.indicators[symbol].iloc[-1] # Access to the latest candle
+        entry_price = latest["Close"]
+
+        if latest["RSI_14"] < 30:
+            async with cast(asyncio.Lock, self.lock):
+                if entry_quantity := self.exchange_info.to_entry_quantity(
+                    symbol=symbol,
+                    entry_price=entry_price,
+                    balance=self.balance,
+                ):
+                    fetch(
+                        self.client.rest_api.new_order,
+                        symbol=symbol,
+                        side=NewOrderSideEnum.BUY,
+                        type=OrderType.LIMIT.value,
+                        price=float(entry_price),
+                        quantity=float(entry_quantity),
+                        time_in_force=NewOrderTimeInForceEnum.GTC,
+                    )
+
+    @override
+    async def run_backtest(self, symbol: str, index: int) -> None:
+        """Backtesting logic (optional)"""
+        ...
 ```
 
-### Prerequisites
+</details>
 
-Ensure you have:
-
-- **Python 3.8+**
-- **Binance API Keys** with "Enable Futures" permission ([Get API Keys](https://www.binance.com/en/support/faq/360002502072))
-
-## 🛠️ Getting Started
-
-### Quick Start
-
-1.  **Install the package:**
-
-    ```bash
-    pip install open-binancian-futures
-    ```
-
-2.  **Set up configuration:**
-    Create a `.env` file in your working directory (see [Configuration](#configuration)):
-
-    ```bash
-    # Copy example config
-    curl -o .env https://raw.githubusercontent.com/zionhann/open-binancian-futures/main/.env.example
-    # Edit with your API keys and settings
-    ```
-
-3.  **Create your strategy:**
-    Create `my_strategy.py` in your working directory extending the `Strategy` class:
-
-    ```python
-    from open_binancian_futures.strategy import Strategy
-    from pandas import DataFrame
-
-    class MyStrategy(Strategy):
-        def load(self, df: DataFrame) -> DataFrame:
-            # Add your technical indicators
-            return df
-
-        async def run(self, symbol: str) -> None:
-            # Your trading logic
-            pass
-
-        async def run_backtest(self, symbol: str, index: int) -> None:
-            # Your backtesting logic
-            pass
-    ```
-
-4.  **Run your bot:**
-    ```bash
-    open-binancian-futures my_strategy
-    ```
-
-### Configuration
-
-Configure environment variables in a `.env` file (see [`.env.example`](.env.example)):
-
-    | Variable | Type | Required | Default | Description |
-    | :--- | :---: | :---: | :--- | :--- |
-    | **API Keys** |
-    | `API_KEY` | string | Yes* | - | Binance API key for mainnet |
-    | `API_SECRET` | string | Yes* | - | Binance API secret for mainnet |
-    | `API_KEY_TEST` | string | Yes* | - | Binance API key for testnet |
-    | `API_SECRET_TEST` | string | Yes* | - | Binance API secret for testnet |
-    | **Strategy** |
-    | `STRATEGY` | string | Yes | - | Strategy name |
-    | `SYMBOLS` | string | No | `BTCUSDT` | Target symbols (USDT-based only), e.g., `BTCUSDT,ETHUSDT` |
-    | `INTERVAL` | string | No | `1d` | Candle interval: `1m`, `3m`, `5m`, `15m`, `30m`, `1h`, `4h`, `1d` |
-    | `LEVERAGE` | number | No | `1` | Leverage multiplier |
-    | `SIZE` | number | No | `0.05` | Max trade portion per order (e.g., `0.3` = 30%) |
-    | `GTD_NLINES` | number | No | - | Candles to hold open orders (defaults to GTC if not set) |
-    | `TIMEZONE` | string | No | `UTC` | Timezone (e.g., `Asia/Seoul`) |
-    | **Mode** |
-    | `IS_TESTNET` | boolean | No | `false` | Use Binance Testnet (`true`/`false`) |
-    | `IS_BACKTEST` | boolean | No | `false` | Run in backtest mode (`true`/`false`) |
-    | **Notifications** |
-    | `WEBHOOK_URL` | string | No | - | Slack/Discord Webhook URL |
-    | **Backtesting** |
-    | `BALANCE` | number | No | `100` | Initial backtest balance |
-    | `KLINES_LIMIT` | number | No | `1000` | Historical candles to fetch (max 1000) |
-    | `INDICATOR_INIT_SIZE`| number | No | `200` | Candles for indicator initialization |
-
-    > \* *Either Mainnet or Testnet credentials are required depending on `IS_TESTNET`.*
-
-#### Configuration Notes
-
-- **Automatic Loading**: Environment variables are loaded automatically from `.env` using pydantic-settings
-- **CLI Overrides**: Command-line flags override `.env` values (see [Usage](#-usage))
-- **Optional vs Required**: Only API keys and STRATEGY are truly required; all others have sensible defaults
-
-### ▶️ Usage
-
-Run your strategy using the CLI entry point:
+### 4. Running
 
 ```bash
-open-binancian-futures <strategy_name>
+open-binancian-futures my_strategy.py
 ```
 
-You can also override environment variables directly from the CLI:
+You can override environment variables from the command line:
 
 ```bash
-open-binancian-futures foo --backtest --symbols BTCUSDT,ETHUSDT
+open-binancian-futures --backtest --symbols BTCUSDT,ETHUSDT my_strategy.py
 ```
 
-## 📄 License
+## License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+MIT License - see [LICENSE](LICENSE) for details.
 
-## ⚠️ Disclaimer
+## Disclaimer
 
-**USE THIS SOFTWARE AT YOUR OWN RISK.**
+**USE AT YOUR OWN RISK.**
 
 The author and contributors are not responsible for any financial losses or damages arising from the use of this software. Cryptocurrency trading involves significant risk. Always test thoroughly and trade responsibly.
