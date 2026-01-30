@@ -40,17 +40,17 @@ pip install open-binancian-futures
 <details>
 <summary><b>View All Configuration Options</b></summary>
 
-| Variable              |  Type  | Default                       | Description                                  |
-| --------------------- | :----: | ----------------------------- | -------------------------------------------- |
-| `IS_TESTNET`          |  bool  | `false`                       | Use testnet (`true`/`false`)                 |
-| `GTD_NLINES`          | number | -                             | Candles to hold open orders (GTC if not set) |
-| `TIMEZONE`            | `UTC`  | Timezone (e.g., `Asia/Seoul`) |
-| `WEBHOOK_URL`         | string | -                             | Slack/Discord webhook for notifications      |
-| **Backtesting**       |        |                               |                                              |
-| `IS_BACKTEST`         |  bool  | `false`                       | Enable backtest mode                         |
-| `BALANCE`             | number | `100`                         | Initial backtest balance                     |
-| `KLINES_LIMIT`        | number | `1000`                        | Historical candles to fetch (max 1000)       |
-| `INDICATOR_INIT_SIZE` | number | `200`                         | Candles for indicator warm-up                |
+| Variable              |  Type  | Default | Description                                  |
+| --------------------- | :----: | ------- | -------------------------------------------- |
+| `IS_TESTNET`          |  bool  | `false` | Use testnet (`true`/`false`)                 |
+| `GTD_NLINES`          | number | -       | Candles to hold open orders (GTC if not set) |
+| `TIMEZONE`            | string | `UTC`   | Timezone (e.g., `Asia/Seoul`)                |
+| `WEBHOOK_URL`         | string | -       | Slack/Discord webhook for notifications      |
+| **Backtesting**       |        |         |                                              |
+| `IS_BACKTEST`         |  bool  | `false` | Enable backtest mode                         |
+| `BALANCE`             | number | `100`   | Initial backtest balance                     |
+| `KLINES_LIMIT`        | number | `1000`  | Historical candles to fetch (max 1000)       |
+| `INDICATOR_INIT_SIZE` | number | `200`   | Candles for indicator warm-up                |
 
 </details>
 
