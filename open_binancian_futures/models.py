@@ -1,4 +1,6 @@
+import asyncio
 import logging
+import math
 import uuid
 from dataclasses import dataclass, field
 from typing import Iterable, Optional, TypeVar
@@ -33,26 +35,55 @@ T = TypeVar("T")
 
 
 class Balance:
-    """Account balance tracker with precision rounding."""
+    """
+    Account balance tracker with thread-safe access for concurrent order placement.
+
+    Uses optimistic deduction to prevent race conditions when multiple symbols
+    place orders simultaneously. The websocket balance update will correct any drift.
+    """
 
     def __init__(self, balance: float):
-        import math
-
         self._balance = math.floor(balance * 100) / 100
+        self._lock = asyncio.Lock()
 
     def __str__(self):
         return f"{self._balance:.2f}"
 
     @property
-    def balance(self) -> float:
+    def available(self) -> float:
+        """Current available balance (may include optimistic deductions)."""
         return self._balance
+
+    @property
+    def lock(self) -> asyncio.Lock:
+        """Lock for coordinating concurrent order placement."""
+        return self._lock
 
     def calculate_quantity(self, entry_price: float) -> float:
         initial_margin = self._balance * settings.size
         return initial_margin * settings.leverage / entry_price
 
-    def add_pnl(self, pnl: float) -> None:
-        self._balance += pnl
+    def deduct(self, amount: float) -> None:
+        """
+        Optimistically deduct margin after order placement.
+
+        Called immediately after placing an order to prevent subsequent orders
+        from seeing stale balance. Websocket update will correct any drift.
+        """
+        self._balance = max(0, self._balance - amount)
+        LOGGER.debug(f"Deducted {amount:.2f}, new balance: {self._balance:.2f}")
+
+    async def update(self, new_balance: float) -> None:
+        """
+        Update balance from websocket event (replaces with authoritative value).
+
+        Called by on_balance_update to sync local state with exchange.
+        """
+        async with self._lock:
+            self._balance = math.floor(new_balance * 100) / 100
+
+    def increase_balance(self, amount: float) -> None:
+        self._balance += amount
 
 
 # --- Order ---
