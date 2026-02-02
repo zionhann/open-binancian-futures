@@ -384,7 +384,7 @@ class Strategy(ABC):
                 f"Failed to place {symbol} order at {entry_price}: {e}. Rolling back balance."
             )
             async with self.balance.lock:
-                self.balance.add_pnl(margin)  # Rollback using existing method
+                self.balance.increase_balance(margin)  # Rollback using existing method
             return False
 
     async def on_new_candlestick(self, data: KlineCandlestickStreamsResponseK) -> None:

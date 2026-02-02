@@ -473,7 +473,7 @@ class Backtesting(Runner):
         )
         self.orders[order.symbol].remove_by_id(order.order_id)
         self.positions[order.symbol].update_positions([position])
-        self.balance.add_pnl(-position.initial_margin())
+        self.balance.increase_balance(-position.initial_margin())
         LOGGER.info(
             textwrap.dedent(
                 f"""
@@ -490,7 +490,7 @@ class Backtesting(Runner):
         self, position: Position, order: Order, time: Timestamp
     ) -> float:
         pnl, margin = position.simple_pnl(order.price), position.initial_margin()
-        self.balance.add_pnl(pnl + margin)
+        self.balance.increase_balance(pnl + margin)
         LOGGER.info(
             textwrap.dedent(
                 f"""
@@ -510,7 +510,7 @@ class Backtesting(Runner):
     def _flush_position(self, symbol: str) -> None:
         for position in self.positions[symbol]:
             margin = position.initial_margin()
-            self.balance.add_pnl(margin)
+            self.balance.increase_balance(margin)
             LOGGER.info(
                 textwrap.dedent(
                     f"""

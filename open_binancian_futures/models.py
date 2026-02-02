@@ -82,8 +82,8 @@ class Balance:
         async with self._lock:
             self._balance = math.floor(new_balance * 100) / 100
 
-    def add_pnl(self, pnl: float) -> None:
-        self._balance += pnl
+    def increase_balance(self, amount: float) -> None:
+        self._balance += amount
 
 
 # --- Order ---
