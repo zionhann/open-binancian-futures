@@ -87,12 +87,17 @@ class LiveTrading(Runner):
                         OrderTradeUpdate.from_dict(stream)
                     )
                     self._handle_order_trade_update(get_or_raise(order_trade_update.o))
+
                 elif event == EventType.ALGO_UPDATE.value:
                     algo_update = get_or_raise(AlgoUpdate.from_dict(stream))
                     self._handle_algo_update(get_or_raise(algo_update.o))
+
                 elif event == EventType.ACCOUNT_UPDATE.value:
                     account_update = get_or_raise(AccountUpdate.from_dict(stream))
-                    self._handle_account_update(get_or_raise(account_update.a))
+                    asyncio.create_task(
+                        self._handle_account_update(get_or_raise(account_update.a))
+                    )
+
                 elif event == EventType.LISTEN_KEY_EXPIRED.value:
                     LOGGER.info("Listen key has expired. Opening a new one...")
                     expired_key = get_or_raise(
@@ -101,6 +106,7 @@ class LiveTrading(Runner):
                     asyncio.create_task(
                         self._subscribe_to_user_stream(expired_listen_key=expired_key)
                     )
+
         except Exception as e:
             LOGGER.error(f"An error occurred in the user data handler: {e}")
             self.webhook.send_message(
@@ -137,13 +143,13 @@ class LiveTrading(Runner):
         elif event.status == AlgoStatus.EXPIRED:
             self.strategy.on_expired_order(event)
 
-    def _handle_account_update(self, data: AccountUpdateA):
+    async def _handle_account_update(self, data: AccountUpdateA):
         if data.P:
             for position_data in data.P:
                 self.strategy.on_position_update(position_data)
         if data.B:
             for balance_data in data.B:
-                self.strategy.on_balance_update(balance_data)
+                await self.strategy.on_balance_update(balance_data)
 
     @override
     def run(self) -> None:

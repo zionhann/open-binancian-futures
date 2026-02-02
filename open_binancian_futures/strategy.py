@@ -1,3 +1,4 @@
+import asyncio
 import importlib
 import importlib.util
 import inspect
@@ -330,8 +331,9 @@ class Strategy(ABC):
         """
         Place entry order with automatic balance management.
 
-        Acquires lock, calculates quantity from current balance, places order,
-        then optimistically deducts margin to prevent race conditions.
+        Acquires lock briefly to calculate quantity and optimistically deduct margin,
+        then releases lock before making network call to avoid blocking event loop.
+        Implements rollback on failure.
 
         Args:
             symbol: Trading pair (e.g., "BTCUSDT")
@@ -342,8 +344,9 @@ class Strategy(ABC):
             good_till_date: Expiration timestamp in ms (for GTD orders)
 
         Returns:
-            True if order was placed successfully, False if insufficient balance
+            True if order placed successfully, False if insufficient balance or order failed
         """
+        # Step 1: Acquire lock, calculate quantity, optimistically deduct balance
         async with self.balance.lock:
             quantity = self.exchange_info.to_entry_quantity(
                 symbol=symbol,
@@ -356,7 +359,14 @@ class Strategy(ABC):
                 )
                 return False
 
-            fetch(
+            # Optimistic deduction BEFORE releasing lock
+            margin = entry_price * quantity / settings.leverage
+            self.balance.deduct(margin)
+
+        # Step 2: Lock released - make network call in thread pool
+        try:
+            await asyncio.to_thread(
+                fetch,
                 self.client.rest_api.new_order,
                 symbol=symbol,
                 side=side,
@@ -366,11 +376,16 @@ class Strategy(ABC):
                 time_in_force=time_in_force,
                 good_till_date=good_till_date,
             )
-
-            # Optimistic deduction: prevent next symbol from seeing stale balance
-            margin = entry_price * quantity / settings.leverage
-            self.balance.deduct(margin)
             return True
+
+        # Step 3: On failure, rollback the optimistic deduction
+        except Exception as e:
+            self.LOGGER.error(
+                f"Failed to place {symbol} order at {entry_price}: {e}. Rolling back balance."
+            )
+            async with self.balance.lock:
+                self.balance.add_pnl(margin)  # Rollback using existing method
+            return False
 
     async def on_new_candlestick(self, data: KlineCandlestickStreamsResponseK) -> None:
         if not get_or_raise(data.x):
@@ -426,9 +441,9 @@ class Strategy(ABC):
         )
         self.LOGGER.info(f"Updated positions: {self.positions[symbol]}")
 
-    def on_balance_update(self, data: AccountUpdateABInner) -> None:
+    async def on_balance_update(self, data: AccountUpdateABInner) -> None:
         if data.a == "USDT":
-            self.balance.update(float(get_or_raise(data.cw)))
+            await self.balance.update(float(get_or_raise(data.cw)))
             self.LOGGER.info(f"Updated available USDT: {self.balance}")
 
     def accumulate_realized_profit(self, symbol: str, profit: float) -> None:
