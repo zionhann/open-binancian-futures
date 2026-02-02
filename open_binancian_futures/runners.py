@@ -153,7 +153,6 @@ class LiveTrading(Runner):
         asyncio.run(self._run_async())
 
     async def _run_async(self) -> None:
-        self.strategy.lock = asyncio.Lock()
         await self.client.websocket_streams.create_connection()
         await asyncio.gather(
             *[self._subscribe_to_kline_stream(symbol=s) for s in settings.symbols_list],

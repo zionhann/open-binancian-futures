@@ -1,4 +1,3 @@
-import asyncio
 import importlib
 import importlib.util
 import inspect
@@ -13,6 +12,10 @@ import traceback
 import pandas as pd
 from binance_sdk_derivatives_trading_usds_futures.derivatives_trading_usds_futures import (
     DerivativesTradingUsdsFutures,
+)
+from binance_sdk_derivatives_trading_usds_futures.rest_api.models import (
+    NewOrderSideEnum,
+    NewOrderTimeInForceEnum,
 )
 from binance_sdk_derivatives_trading_usds_futures.websocket_streams.models import (
     KlineCandlestickStreamsResponseK,
@@ -67,7 +70,6 @@ class StrategyContext:
     positions: PositionBook | None = None
     webhook: Webhook | None = None
     indicators: Indicator | None = None
-    lock: asyncio.Lock | None = None
 
 
 class Strategy(ABC):
@@ -102,7 +104,6 @@ class Strategy(ABC):
                 positions=context.positions,
                 webhook=context.webhook,
                 indicators=context.indicators,
-                lock=context.lock,
             )
         except StrategyLoadError:
             Strategy.LOGGER.error(f"Failed to load strategy '{name}'")
@@ -175,7 +176,9 @@ class Strategy(ABC):
         ]
 
         if not subclasses:
-            raise StrategyLoadError(f"No valid Strategy subclass found in '{strategy_name}'")
+            raise StrategyLoadError(
+                f"No valid Strategy subclass found in '{strategy_name}'"
+            )
 
         if len(subclasses) > 1:
             Strategy.LOGGER.warning(
@@ -194,7 +197,6 @@ class Strategy(ABC):
         positions: PositionBook | None,
         webhook: Webhook | None,
         indicators: Indicator | None,
-        lock: asyncio.Lock | None = None,
     ) -> None:
         self.client = client
         self.exchange_info = exchange_info or futures.init_exchange_info()
@@ -204,7 +206,6 @@ class Strategy(ABC):
         self.webhook = webhook or Webhook.of(url=None)
         self.indicators = indicators or futures.init_indicators()
         self.add_indicators(self.indicators)
-        self.lock = lock
         self._realized_profit = {s: 0.0 for s in settings.symbols_list}
 
     def add_indicators(self, indicator: Indicator) -> None:
@@ -317,6 +318,60 @@ class Strategy(ABC):
             callback_rate=safe_cb_ratio,
         )
 
+    async def open_order(
+        self,
+        symbol: str,
+        side: NewOrderSideEnum,
+        order_type: OrderType,
+        entry_price: float,
+        time_in_force: NewOrderTimeInForceEnum = NewOrderTimeInForceEnum.GTC,
+        good_till_date: int | None = None,
+    ) -> bool:
+        """
+        Place entry order with automatic balance management.
+
+        Acquires lock, calculates quantity from current balance, places order,
+        then optimistically deducts margin to prevent race conditions.
+
+        Args:
+            symbol: Trading pair (e.g., "BTCUSDT")
+            side: BUY or SELL
+            order_type: Order type (LIMIT, MARKET, etc.)
+            price: Entry price
+            time_in_force: Order duration (default GTC)
+            good_till_date: Expiration timestamp in ms (for GTD orders)
+
+        Returns:
+            True if order was placed successfully, False if insufficient balance
+        """
+        async with self.balance.lock:
+            quantity = self.exchange_info.to_entry_quantity(
+                symbol=symbol,
+                entry_price=entry_price,
+                balance=self.balance,
+            )
+            if not quantity:
+                self.LOGGER.warning(
+                    f"Insufficient balance to open {symbol} order at {entry_price}"
+                )
+                return False
+
+            fetch(
+                self.client.rest_api.new_order,
+                symbol=symbol,
+                side=side,
+                type=order_type.value,
+                price=entry_price,
+                quantity=quantity,
+                time_in_force=time_in_force,
+                good_till_date=good_till_date,
+            )
+
+            # Optimistic deduction: prevent next symbol from seeing stale balance
+            margin = entry_price * quantity / settings.leverage
+            self.balance.deduct(margin)
+            return True
+
     async def on_new_candlestick(self, data: KlineCandlestickStreamsResponseK) -> None:
         if not get_or_raise(data.x):
             return
@@ -373,7 +428,7 @@ class Strategy(ABC):
 
     def on_balance_update(self, data: AccountUpdateABInner) -> None:
         if data.a == "USDT":
-            self.balance = Balance(float(get_or_raise(data.cw)))
+            self.balance.update(float(get_or_raise(data.cw)))
             self.LOGGER.info(f"Updated available USDT: {self.balance}")
 
     def accumulate_realized_profit(self, symbol: str, profit: float) -> None:
