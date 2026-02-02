@@ -337,7 +337,7 @@ class Strategy(ABC):
             symbol: Trading pair (e.g., "BTCUSDT")
             side: BUY or SELL
             order_type: Order type (LIMIT, MARKET, etc.)
-            price: Entry price
+            entry_price: Entry price
             time_in_force: Order duration (default GTC)
             good_till_date: Expiration timestamp in ms (for GTD orders)
 

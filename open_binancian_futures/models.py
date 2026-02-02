@@ -73,13 +73,14 @@ class Balance:
         self._balance = max(0, self._balance - amount)
         LOGGER.debug(f"Deducted {amount:.2f}, new balance: {self._balance:.2f}")
 
-    def update(self, new_balance: float) -> None:
+    async def update(self, new_balance: float) -> None:
         """
         Update balance from websocket event (replaces with authoritative value).
 
         Called by on_balance_update to sync local state with exchange.
         """
-        self._balance = math.floor(new_balance * 100) / 100
+        async with self._lock:
+            self._balance = math.floor(new_balance * 100) / 100
 
     def add_pnl(self, pnl: float) -> None:
         self._balance += pnl
