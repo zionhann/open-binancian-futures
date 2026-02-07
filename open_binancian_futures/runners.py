@@ -40,6 +40,7 @@ from .webhook import Webhook
 LOGGER = logging.getLogger(__name__)
 MESSAGE = "message"
 KEEPALIVE_USER_STREAM_INTERVAL = 60 * 50
+KLINE_SUBSCRIBE_RATE_PER_SECOND = 8
 
 
 class Runner(ABC):
@@ -72,6 +73,7 @@ class LiveTrading(Runner):
             if stream.e == EventType.KLINE.value:
                 data = get_or_raise(stream.k)
                 asyncio.create_task(self.strategy.on_new_candlestick(data))
+
         except Exception as e:
             LOGGER.error(f"An error occurred in the market stream handler: {e}")
             self.webhook.send_message(
@@ -116,30 +118,39 @@ class LiveTrading(Runner):
     def _handle_order_trade_update(self, data: OrderTradeUpdateO):
         event = OrderEvent.from_order_trade_update(data)
         curr_order_type = OrderType(get_or_raise(data.o))
+
         if event.symbol in settings.symbols_list:
             if event.status == OrderStatus.NEW and event.order_type == curr_order_type:
                 self.strategy.on_new_order(event)
+
             elif event.status in [OrderStatus.PARTIALLY_FILLED, OrderStatus.FILLED]:
                 self.strategy.accumulate_realized_profit(
                     event.symbol, event.realized_profit or 0.0
                 )
                 if event.status == OrderStatus.FILLED:
                     self.strategy.on_filled_order(event)
+
             elif event.status == OrderStatus.CANCELED:
                 self.strategy.on_cancelled_order(event)
+
             elif event.status == OrderStatus.EXPIRED:
                 self.strategy.on_expired_order(event)
 
     def _handle_algo_update(self, data: AlgoUpdateO):
         event = OrderEvent.from_algo_update(data)
+
         if event.symbol not in settings.symbols_list:
             return
+
         if event.status == AlgoStatus.NEW:
             self.strategy.on_new_order(event)
+
         if event.status == AlgoStatus.TRIGGERED:
             self.strategy.on_triggered_algo(event)
+
         elif event.status == AlgoStatus.CANCELED:
             self.strategy.on_cancelled_order(event)
+
         elif event.status == AlgoStatus.EXPIRED:
             self.strategy.on_expired_order(event)
 
@@ -160,14 +171,13 @@ class LiveTrading(Runner):
 
     async def _run_async(self) -> None:
         await self.client.websocket_streams.create_connection()
-        await asyncio.gather(
-            *[
-                self._subscribe_to_kline_stream(symbol=s, interval=i)
-                for s in settings.symbols_list
-                for i in settings.intervals_list
-            ],
-            self._subscribe_to_user_stream(),
-        )
+        await self._subscribe_to_user_stream()
+
+        for s in settings.symbols_list:
+            for i in settings.intervals_list:
+                await self._subscribe_to_kline_stream(symbol=s, interval=i)
+                await asyncio.sleep(1 / KLINE_SUBSCRIBE_RATE_PER_SECOND)
+
         asyncio.create_task(self._keepalive_user_stream())
         await asyncio.Event().wait()
 
@@ -212,10 +222,8 @@ class LiveTrading(Runner):
         LOGGER.info("Shutdown process completed successfully.")
 
     async def _close_async(self) -> None:
-        await asyncio.gather(
-            self.client.websocket_streams.close_connection(),
-            self.client.websocket_api.close_connection(),
-        )
+        await self.client.websocket_streams.close_connection()
+        await self.client.websocket_api.close_connection()
 
 
 class BacktestingResult:
