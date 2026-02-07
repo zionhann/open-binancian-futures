@@ -126,7 +126,11 @@ class Order:
                 else self.price >= low
             )
         if self.is_type(OrderType.STOP_MARKET):
-            return low <= self.price <= high
+            return (
+                self.price >= low
+                if self.side == PositionSide.SELL
+                else self.price <= high
+            )
         return False
 
 
