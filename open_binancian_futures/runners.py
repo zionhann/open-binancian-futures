@@ -356,11 +356,7 @@ class BacktestingSummary:
             else 0.0
         )
         loss_count = self._total_trade_count - self._total_win_count
-        total_average_loss = (
-            self._total_loss / loss_count
-            if loss_count > 0
-            else 0.0
-        )
+        total_average_loss = self._total_loss / loss_count if loss_count > 0 else 0.0
         expectancy = (total_win_rate * total_average_win) - (
             (1 - total_win_rate) * total_average_loss
         )
@@ -405,9 +401,11 @@ class Backtesting(Runner):
         asyncio.run(self._run_backtest_loop())
 
     async def _run_backtest_loop(self) -> None:
+        if not settings.intervals_list:
+            raise ValueError(
+                "No intervals configured. Set INTERVALS to at least one interval."
+            )
         primary_interval = settings.intervals_list[0]
-        # Use actual data length instead of klines_limit to avoid IndexError
-        # (init_indicators removes last incomplete candle with [:-1])
         actual_length = min(
             len(self.indicators[s][primary_interval]) for s in settings.symbols_list
         )
@@ -416,12 +414,16 @@ class Backtesting(Runner):
                 klines = self.indicators[symbol][primary_interval][: i + 1]
                 current = klines.iloc[-1]
                 time, high, low = current["Open_time"], current["High"], current["Low"]
-                await self.strategy.run_backtest(symbol, i)
+
                 self._expire_orders(symbol, time)
+                await self.strategy.run_backtest(symbol, i)
                 self._eval_orders(symbol, high, low, time)
+
         LOGGER.info("Backtesting finished. Closing remaining positions...")
+
         for symbol in settings.symbols_list:
             self._flush_position(symbol)
+
         BacktestingSummary(list(self.test_results.values())).print()
 
     def _expire_orders(self, symbol: str, time: Timestamp) -> None:
