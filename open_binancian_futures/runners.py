@@ -40,6 +40,7 @@ from .webhook import Webhook
 LOGGER = logging.getLogger(__name__)
 MESSAGE = "message"
 KEEPALIVE_USER_STREAM_INTERVAL = 60 * 50
+KLINE_SUBSCRIBE_RATE_PER_SECOND = 8
 
 
 class Runner(ABC):
@@ -175,7 +176,7 @@ class LiveTrading(Runner):
         for s in settings.symbols_list:
             for i in settings.intervals_list:
                 await self._subscribe_to_kline_stream(symbol=s, interval=i)
-                await asyncio.sleep(0.125)
+                await asyncio.sleep(1 / KLINE_SUBSCRIBE_RATE_PER_SECOND)
 
         asyncio.create_task(self._keepalive_user_stream())
         await asyncio.Event().wait()
