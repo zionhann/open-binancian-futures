@@ -28,6 +28,8 @@ def gtd(timestamp: float, nlines: int, interval: str | None = None) -> int:
     if not _interval:
         raise ValueError("Cannot determine interval for GTD calculation.")
     unit = _interval[-1]
+    if unit not in INTERVAL_TO_SECONDS:
+        raise ValueError(f"Unsupported interval unit '{unit}' in '{_interval}'. Supported: {list(INTERVAL_TO_SECONDS.keys())}")
     base = INTERVAL_TO_SECONDS[unit] * int(_interval[:-1])
     exp = max(base * nlines, MIN_EXP)
     gtd = int(timestamp + exp)
