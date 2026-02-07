@@ -21,6 +21,9 @@ def run(
     symbols: Optional[str] = typer.Option(
         None, "--symbols", help="Comma-separated list of symbols. (Overrides .env)"
     ),
+    intervals: Optional[str] = typer.Option(
+        None, "--intervals", help="Comma-separated list of intervals. (Overrides .env)"
+    ),
 ):
     """Run the trading bot or backtest."""
     # Apply CLI overrides to settings
@@ -32,6 +35,8 @@ def run(
         settings.is_backtest = backtest
     if symbols:
         settings.symbols = symbols
+    if intervals:
+        settings.intervals = intervals
 
     logger.info("Boot process initiated. Preparing to start the application...")
 

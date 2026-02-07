@@ -126,11 +126,7 @@ class Order:
                 else self.price >= low
             )
         if self.is_type(OrderType.STOP_MARKET):
-            return (
-                self.price >= low
-                if self.side == PositionSide.SELL
-                else self.price <= high
-            )
+            return low <= self.price <= high
         return False
 
 
@@ -517,8 +513,10 @@ class ExchangeInfo:
 # --- Indicator ---
 
 
-class Indicator(dict[str, DataFrame]):
-    """Simple dict mapping symbol to DataFrame with indicators."""
+class Indicator(dict[str, dict[str, DataFrame]]):
+    """Nested dict mapping symbol → interval → DataFrame with indicators."""
 
-    def update(self, symbol: str, df: DataFrame) -> None:
-        self[symbol] = df
+    def __getitem__(self, symbol: str) -> dict[str, DataFrame]:
+        if symbol not in self:
+            self[symbol] = {}
+        return super().__getitem__(symbol)

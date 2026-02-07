@@ -23,9 +23,10 @@ def fetch(request: Callable, **kwargs):
         raise
 
 
-def gtd(timestamp: float, nlines: int) -> int:
-    unit = settings.interval[-1]
-    base = INTERVAL_TO_SECONDS[unit] * int(settings.interval[:-1])
+def gtd(timestamp: float, nlines: int, interval: str | None = None) -> int:
+    _interval = interval or settings.intervals_list[0]
+    unit = _interval[-1]
+    base = INTERVAL_TO_SECONDS[unit] * int(_interval[:-1])
     exp = max(base * nlines, MIN_EXP)
     gtd = int(timestamp + exp)
     return gtd * UNIT_MS
