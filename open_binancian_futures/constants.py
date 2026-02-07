@@ -42,7 +42,7 @@ class GlobalSettings(BaseSettings):
 
     @property
     def intervals_list(self) -> list[str]:
-        return [i.strip() for i in self.intervals.split(",")]
+        return [i.strip() for i in self.intervals.split(",") if i.strip()]
 
     @property
     def sample_size(self) -> int:
