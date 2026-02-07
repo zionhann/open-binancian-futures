@@ -31,7 +31,7 @@ pip install open-binancian-futures
 | `API_KEY`    |  Yes\*   | -         | Binance API key (mainnet)                           |
 | `API_SECRET` |  Yes\*   | -         | Binance API secret (mainnet)                        |
 | `SYMBOLS`    |    No    | `BTCUSDT` | comma-separated list of symbols to trade            |
-| `INTERVAL`   |    No    | `1d`      | Candle interval (`1m`, `5m`, `1h`, ...)             |
+| `INTERVALS`  |    No    | `1d`      | Comma-separated candle intervals (`1m`, `5m`, `1h`, ...). First entry is the primary interval |
 | `LEVERAGE`   |    No    | `1`       | Leverage multiplier (1 ~ 125)                       |
 | `SIZE`       |    No    | `0.05`    | Trade size per order (e.g., `0.05` = 5% of balance) |
 
@@ -75,6 +75,7 @@ from binance_sdk_derivatives_trading_usds_futures.rest_api.models import (
 )
 from open_binancian_futures.types import OrderType
 from open_binancian_futures.strategy import Strategy
+from open_binancian_futures.constants import settings
 from open_binancian_futures.utils import fetch
 from pandas import DataFrame
 from typing import cast, override
@@ -91,7 +92,8 @@ class MyStrategy(Strategy):
     @override
     async def run(self, symbol: str) -> None:
         """Execute your trading logic"""
-        latest = self.indicators[symbol].iloc[-1] # Access to the latest candle
+        primary_interval = settings.intervals_list[0]
+        latest = self.indicators[symbol][primary_interval].iloc[-1] # Access to the latest candle
         entry_price = latest["Close"]
 
         if latest["RSI_14"] < 30:
@@ -128,7 +130,7 @@ open-binancian-futures my_strategy.py
 You can override environment variables from the command line:
 
 ```bash
-open-binancian-futures --backtest --symbols BTCUSDT,ETHUSDT my_strategy.py
+open-binancian-futures --backtest --symbols BTCUSDT,ETHUSDT --intervals 1h,4h my_strategy.py
 ```
 
 ## License
