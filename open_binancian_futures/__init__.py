@@ -5,7 +5,7 @@ A robust framework for creating, backtesting, and deploying trading bots
 for Binance USDⓈ-M Futures.
 """
 
-__version__ = "26.2.0"
+__version__ = "26.2.1"
 __author__ = "HAN Sion"
 __email__ = "its.zionhan@gmail.com"
 __license__ = "MIT"
