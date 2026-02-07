@@ -22,7 +22,7 @@ class GlobalSettings(BaseSettings):
     # App
     strategy: Optional[str] = None
     symbols: str = "BTCUSDT"
-    interval: str = "1d"
+    intervals: str = "1d"
     leverage: int = Field(default=1, ge=1)
     size: float = Field(default=0.05, gt=0.0, le=1.0)
     is_testnet: bool = False
@@ -39,6 +39,10 @@ class GlobalSettings(BaseSettings):
     @property
     def symbols_list(self) -> list[str]:
         return [s.strip() for s in self.symbols.split(",")]
+
+    @property
+    def intervals_list(self) -> list[str]:
+        return [i.strip() for i in self.intervals.split(",") if i.strip()]
 
     @property
     def sample_size(self) -> int:

@@ -158,27 +158,28 @@ def init_positions() -> PositionBook:
 
 
 def init_indicators(limit: int | None = None) -> Indicator:
-    indicators = {}
+    indicators = Indicator()
     for symbol in settings.symbols_list:
-        LOGGER.info(f"Fetching {symbol} klines by {settings.interval}...")
-        klines_data: KlineCandlestickDataResponse = fetch(
-            client().rest_api.kline_candlestick_data,
-            symbol=symbol,
-            interval=settings.interval,
-            limit=limit,
-        )[:-1]
-        df = pd.DataFrame(data=klines_data, columns=KLINES_COLUMNS)
-        df["Open_time"] = (
-            pd.to_datetime(df["Open_time"], unit="ms")
-            .dt.tz_localize("UTC")
-            .dt.tz_convert(settings.timezone)
-        )
-        df.set_index("Open_time", inplace=True, drop=False)
-        df["Symbol"] = symbol
-        df["Open"] = df["Open"].astype(float)
-        df["High"] = df["High"].astype(float)
-        df["Low"] = df["Low"].astype(float)
-        df["Close"] = df["Close"].astype(float)
-        df["Volume"] = df["Volume"].astype(float)
-        indicators[symbol] = df
-    return Indicator(indicators)
+        for interval in settings.intervals_list:
+            LOGGER.info(f"Fetching {symbol} klines by {interval}...")
+            klines_data: KlineCandlestickDataResponse = fetch(
+                client().rest_api.kline_candlestick_data,
+                symbol=symbol,
+                interval=interval,
+                limit=limit,
+            )[:-1]
+            df = pd.DataFrame(data=klines_data, columns=KLINES_COLUMNS)
+            df["Open_time"] = (
+                pd.to_datetime(df["Open_time"], unit="ms")
+                .dt.tz_localize("UTC")
+                .dt.tz_convert(settings.timezone)
+            )
+            df.set_index("Open_time", inplace=True, drop=False)
+            df["Symbol"] = symbol
+            df["Open"] = df["Open"].astype(float)
+            df["High"] = df["High"].astype(float)
+            df["Low"] = df["Low"].astype(float)
+            df["Close"] = df["Close"].astype(float)
+            df["Volume"] = df["Volume"].astype(float)
+            indicators[symbol][interval] = df
+    return indicators

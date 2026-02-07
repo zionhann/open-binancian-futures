@@ -210,14 +210,16 @@ class Strategy(ABC):
         self._realized_profit = {s: 0.0 for s in settings.symbols_list}
 
     def add_indicators(self, indicator: Indicator) -> None:
-        """Load custom indicators for all symbols."""
+        """Load custom indicators for all symbols and intervals."""
         for symbol in settings.symbols_list:
-            # Use bracket notation for cleaner, more Pythonic access
-            indicator[symbol] = self.load(indicator[symbol][BASIC_COLUMNS])
-
-            self.LOGGER.info(
-                f"Loaded indicators for {symbol}:\n{indicator[symbol].tail().to_string(index=False)}"
-            )
+            for interval in settings.intervals_list:
+                indicator[symbol][interval] = self.load(
+                    indicator[symbol][interval][BASIC_COLUMNS]
+                )
+                self.LOGGER.info(
+                    f"Loaded indicators for {symbol} [{interval}]:\n"
+                    f"{indicator[symbol][interval].tail().to_string(index=False)}"
+                )
 
     def calculate_stop_price(
         self,
@@ -397,6 +399,7 @@ class Strategy(ABC):
             .tz_convert(settings.timezone)
         )
         symbol = get_or_raise(data.s)
+        interval = get_or_raise(data.i)
         new_data = {
             "Open_time": open_time,
             "Symbol": symbol,
@@ -407,11 +410,12 @@ class Strategy(ABC):
             "Volume": float(get_or_raise(data.v)),
         }
         new_df = pd.DataFrame([new_data], index=[open_time])
-        df = pd.concat([self.indicators[symbol], new_df])
-        self.indicators[symbol] = self.load(df)
+        df = pd.concat([self.indicators[symbol][interval], new_df])
+        self.indicators[symbol][interval] = self.load(df)
 
         self.LOGGER.info(
-            f"Updated indicators for {symbol}:\n{self.indicators[symbol].tail().to_string(index=False)}"
+            f"Updated indicators for {symbol} [{interval}]:\n"
+            f"{self.indicators[symbol][interval].tail().to_string(index=False)}"
         )
         await self.run(symbol)
 

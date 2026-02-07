@@ -23,9 +23,14 @@ def fetch(request: Callable, **kwargs):
         raise
 
 
-def gtd(timestamp: float, nlines: int) -> int:
-    unit = settings.interval[-1]
-    base = INTERVAL_TO_SECONDS[unit] * int(settings.interval[:-1])
+def gtd(timestamp: float, nlines: int, interval: str | None = None) -> int:
+    _interval = interval or (settings.intervals_list[0] if settings.intervals_list else None)
+    if not _interval:
+        raise ValueError("Cannot determine interval for GTD calculation.")
+    unit = _interval[-1]
+    if unit not in INTERVAL_TO_SECONDS:
+        raise ValueError(f"Unsupported interval unit '{unit}' in '{_interval}'. Supported: {list(INTERVAL_TO_SECONDS.keys())}")
+    base = INTERVAL_TO_SECONDS[unit] * int(_interval[:-1])
     exp = max(base * nlines, MIN_EXP)
     gtd = int(timestamp + exp)
     return gtd * UNIT_MS
