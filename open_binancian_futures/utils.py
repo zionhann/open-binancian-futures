@@ -24,7 +24,9 @@ def fetch(request: Callable, **kwargs):
 
 
 def gtd(timestamp: float, nlines: int, interval: str | None = None) -> int:
-    _interval = interval or settings.intervals_list[0]
+    _interval = interval or (settings.intervals_list[0] if settings.intervals_list else None)
+    if not _interval:
+        raise ValueError("Cannot determine interval for GTD calculation.")
     unit = _interval[-1]
     base = INTERVAL_TO_SECONDS[unit] * int(_interval[:-1])
     exp = max(base * nlines, MIN_EXP)
