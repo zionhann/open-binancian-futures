@@ -177,7 +177,8 @@ class LiveTrading(Runner):
                 await self._subscribe_to_kline_stream(symbol=s, interval=i)
                 await asyncio.sleep(0.125)
 
-        await self._keepalive_user_stream()
+        asyncio.create_task(self._keepalive_user_stream())
+        await asyncio.Event().wait()
 
     def _set_leverage(self, symbol: str):
         fetch(
