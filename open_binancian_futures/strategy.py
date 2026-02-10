@@ -417,7 +417,7 @@ class Strategy(ABC):
             f"Updated indicators for {symbol} [{interval}]:\n"
             f"{self.indicators[symbol][interval].tail().to_string(index=False)}"
         )
-        await self.run(symbol)
+        await self.run(symbol, interval)
 
     def on_position_update(self, data: AccountUpdateAPInner) -> None:
         symbol, price, amount, bep = (
@@ -535,7 +535,7 @@ class Strategy(ABC):
     def load(self, df: DataFrame) -> DataFrame: ...
 
     @abstractmethod
-    async def run(self, symbol: str) -> None: ...
+    async def run(self, symbol: str, interval: str) -> None: ...
 
     @abstractmethod
     async def run_backtest(self, symbol: str, index: int) -> None: ...
