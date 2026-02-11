@@ -59,8 +59,8 @@ pip install open-binancian-futures
 Extend the `Strategy` class and implement `load()`, `run()`, and `run_backtest()` functions:
 
 - `load(DataFrame)`: Loads technical indicators you want to use
-- `run(str)`: Executes your trading logic
-- `run_backtest(str, int)`: Backtesting logic (optional)
+- `run(str, str)`: Executes your trading logic
+- `run_backtest(str, str, int)`: Backtesting logic (optional)
 
 <details>
 <summary><b>Example Strategy</b></summary>
@@ -90,10 +90,9 @@ class MyStrategy(Strategy):
         return df
 
     @override
-    async def run(self, symbol: str) -> None:
+    async def run(self, symbol: str, interval: str) -> None:
         """Execute your trading logic"""
-        primary_interval = settings.intervals_list[0]
-        latest = self.indicators[symbol][primary_interval].iloc[-1] # Access to the latest candle
+        latest = self.indicators[symbol][interval].iloc[-1] # Access to the latest candle
         entry_price = latest["Close"]
 
         if latest["RSI_14"] < 30:
@@ -114,7 +113,7 @@ class MyStrategy(Strategy):
                     )
 
     @override
-    async def run_backtest(self, symbol: str, index: int) -> None:
+    async def run_backtest(self, symbol: str, interval: str, index: int) -> None:
         """Backtesting logic (optional)"""
         ...
 ```

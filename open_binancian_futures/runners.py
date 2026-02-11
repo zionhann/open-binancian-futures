@@ -424,7 +424,7 @@ class Backtesting(Runner):
                 time, high, low = current["Open_time"], current["High"], current["Low"]
 
                 self._expire_orders(symbol, time)
-                await self.strategy.run_backtest(symbol, i)
+                await self.strategy.run_backtest(symbol, primary_interval, i)
                 self._eval_orders(symbol, high, low, time)
 
         LOGGER.info("Backtesting finished. Closing remaining positions...")
