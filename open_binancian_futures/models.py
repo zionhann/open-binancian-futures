@@ -89,6 +89,19 @@ class Balance:
 # --- Order ---
 
 
+@dataclass(frozen=True)
+class OrderIntent:
+    """Framework-level order request independent of Binance SDK enums."""
+
+    symbol: str
+    side: PositionSide
+    order_type: OrderType
+    price: float | None = None
+    quantity: float | None = None
+    reduce_only: bool = False
+    gtd: Optional[int] = None
+
+
 @dataclass
 class Order:
     symbol: str

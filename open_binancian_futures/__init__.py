@@ -30,6 +30,7 @@ from .strategy import (
 )
 from .models import (
     Order,
+    OrderIntent,
     Position,
     Balance,
     OrderList,
@@ -40,6 +41,17 @@ from .models import (
     ExchangeInfo,
     Filter,
     Indicator,
+)
+from .backtesting import (
+    BacktestConfig,
+    BacktestResult,
+    BacktestRunResult,
+    BacktestSummary,
+    Candle,
+    EquityPoint,
+    MarketExecutionPolicy,
+    Trade,
+    ZeroCostModel,
 )
 from .webhook import Webhook
 from .utils import vwap
@@ -54,6 +66,7 @@ __all__ = [
     "settings",
     # Core models
     "Order",
+    "OrderIntent",
     "Position",
     "Balance",
     # Collection types
@@ -87,6 +100,16 @@ __all__ = [
     "StrategyContext",
     "StrategyLoadError",
     "StrategyNotFoundError",
+    # Deterministic backtesting
+    "BacktestConfig",
+    "BacktestResult",
+    "BacktestRunResult",
+    "BacktestSummary",
+    "Candle",
+    "EquityPoint",
+    "MarketExecutionPolicy",
+    "Trade",
+    "ZeroCostModel",
     # Infrastructure
     "Webhook",
 ]
