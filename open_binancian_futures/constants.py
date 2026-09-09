@@ -35,6 +35,9 @@ class GlobalSettings(BaseSettings):
     balance: float = Field(default=100.0, gt=0.0)
     klines_limit: int = Field(default=1000, ge=1, le=1000)
     indicator_init_size: int = Field(default=200, ge=1)
+    backtest_start_date: Optional[str] = None
+    backtest_end_date: Optional[str] = None
+    backtest_data_dir: Optional[str] = None
 
     @property
     def symbols_list(self) -> list[str]:

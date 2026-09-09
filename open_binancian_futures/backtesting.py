@@ -8,7 +8,12 @@ credentials.
 from __future__ import annotations
 
 import logging
-from collections.abc import Mapping, Sequence
+import io
+import urllib.error
+import urllib.request
+import zipfile
+from collections.abc import Callable, Mapping, Sequence
+from datetime import date, datetime
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
@@ -430,6 +435,268 @@ class ParquetDataSource(CsvDataSource):
         return DataFrameDataSource.load(self, selected, intervals)
 
 
+VISION_KLINE_COLUMNS = [
+    "Open_time",
+    "Open",
+    "High",
+    "Low",
+    "Close",
+    "Volume",
+    "Close_time",
+    "Quote_volume",
+    "Trades",
+    "Taker_buy_volume",
+    "Taker_buy_quote_volume",
+    "Ignore",
+]
+
+
+VisionDownloader = Callable[[str], bytes]
+
+
+class BinanceVisionDataSource:
+    """Load USDⓈ-M historical klines from Binance Vision archives.
+
+    ``start_date`` is inclusive.  A date-only ``end_date`` is inclusive for
+    the whole UTC calendar day; timestamp end values use the normal exclusive
+    upper bound.  Monthly archives are preferred and daily archives are used
+    only when the monthly archive is unavailable.
+
+    The downloader is injectable for deterministic tests and private mirrors.
+    Downloaded ZIP files are cached below ``data_dir`` and are reused without a
+    network request on subsequent loads.
+    """
+
+    DEFAULT_BASE_URL = "https://data.binance.vision/data/futures"
+
+    def __init__(
+        self,
+        start_date: str | date | datetime | pd.Timestamp,
+        end_date: str | date | datetime | pd.Timestamp,
+        *,
+        data_dir: str | Path | None = None,
+        market: str = "um",
+        symbols: Sequence[str] | None = None,
+        intervals: Sequence[str] | None = None,
+        base_url: str = DEFAULT_BASE_URL,
+        timeout: float = 30.0,
+        downloader: VisionDownloader | None = None,
+    ) -> None:
+        self.start_time = self._as_utc(start_date, "start_date")
+        self.end_time = self._as_utc(end_date, "end_date")
+        if self._is_date_only(end_date):
+            self.end_time += pd.Timedelta(days=1)
+        if self.end_time <= self.start_time:
+            raise ValueError("end_date must be after start_date")
+
+        normalized_market = market.strip().lower()
+        if normalized_market not in {"um", "cm"}:
+            raise ValueError("market must be 'um' or 'cm'")
+        if timeout <= 0:
+            raise ValueError("timeout must be positive")
+
+        self.data_dir = Path(data_dir) if data_dir is not None else (
+            Path.home() / ".cache" / "open-binancian-futures" / "binance-vision"
+        )
+        self.market = normalized_market
+        self.symbols = tuple(symbols or ())
+        self.intervals = tuple(intervals or ())
+        self.interval = self.intervals[0] if self.intervals else None
+        self.base_url = base_url.rstrip("/")
+        self.timeout = timeout
+        self._downloader = downloader or self._download
+
+    @staticmethod
+    def _is_date_only(value: object) -> bool:
+        if isinstance(value, date) and not isinstance(value, datetime):
+            return True
+        if isinstance(value, str):
+            return len(value.strip()) == 10 and value.strip()[4] == "-"
+        return False
+
+    @staticmethod
+    def _as_utc(value: object, name: str) -> pd.Timestamp:
+        try:
+            timestamp = pd.Timestamp(value)
+        except (TypeError, ValueError) as error:
+            raise ValueError(f"{name} must be an ISO date or timestamp") from error
+        if timestamp.tzinfo is None:
+            return timestamp.tz_localize("UTC")
+        return timestamp.tz_convert("UTC")
+
+    @staticmethod
+    def _month_starts(
+        start_time: pd.Timestamp, end_time: pd.Timestamp
+    ) -> list[pd.Timestamp]:
+        first = start_time.normalize().replace(day=1)
+        last_day = (end_time - pd.Timedelta(nanoseconds=1)).normalize()
+        last = last_day.replace(day=1)
+        return list(pd.date_range(first, last, freq="MS", tz="UTC"))
+
+    @staticmethod
+    def _days_in_month(
+        month: pd.Timestamp,
+        start_time: pd.Timestamp,
+        end_time: pd.Timestamp,
+    ) -> list[pd.Timestamp]:
+        month_end = month + pd.offsets.MonthBegin(1)
+        start = max(month, start_time.normalize())
+        end = min(month_end, end_time)
+        if end <= start:
+            return []
+        last_day = (end - pd.Timedelta(nanoseconds=1)).normalize()
+        return list(pd.date_range(start.normalize(), last_day, freq="D", tz="UTC"))
+
+    def _archive_url(
+        self,
+        archive_type: str,
+        symbol: str,
+        interval: str,
+        timestamp: pd.Timestamp,
+    ) -> str:
+        filename = (
+            f"{symbol}-{interval}-{timestamp.year:04d}-{timestamp.month:02d}.zip"
+            if archive_type == "monthly"
+            else f"{symbol}-{interval}-{timestamp.year:04d}-{timestamp.month:02d}-{timestamp.day:02d}.zip"
+        )
+        return (
+            f"{self.base_url}/{self.market}/{archive_type}/klines/"
+            f"{symbol}/{interval}/{filename}"
+        )
+
+    def _archive_path(self, archive_type: str, symbol: str, interval: str, timestamp: pd.Timestamp) -> Path:
+        filename = self._archive_url(archive_type, symbol, interval, timestamp).rsplit("/", 1)[-1]
+        return (
+            self.data_dir
+            / self.market
+            / archive_type
+            / "klines"
+            / symbol
+            / interval
+            / filename
+        )
+
+    def _download(self, url: str) -> bytes:
+        try:
+            with urllib.request.urlopen(url, timeout=self.timeout) as response:
+                return response.read()
+        except urllib.error.HTTPError as error:
+            if error.code == 404:
+                raise FileNotFoundError(url) from error
+            raise
+
+    def _read_archive(
+        self,
+        archive_type: str,
+        symbol: str,
+        interval: str,
+        timestamp: pd.Timestamp,
+    ) -> pd.DataFrame:
+        url = self._archive_url(archive_type, symbol, interval, timestamp)
+        path = self._archive_path(archive_type, symbol, interval, timestamp)
+        if path.exists():
+            payload = path.read_bytes()
+        else:
+            payload = self._downloader(url)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(payload)
+
+        expected_member = url.rsplit("/", 1)[-1][:-4] + ".csv"
+        try:
+            with zipfile.ZipFile(io.BytesIO(payload)) as archive_file:
+                members = sorted(
+                    name for name in archive_file.namelist() if name.lower().endswith(".csv")
+                )
+                if not members:
+                    raise ValueError(f"Binance Vision archive contains no CSV: {url}")
+                member = next(
+                    (name for name in members if Path(name).name == expected_member),
+                    members[0],
+                )
+                raw = pd.read_csv(
+                    io.BytesIO(archive_file.read(member)),
+                    header=None,
+                )
+        except (OSError, zipfile.BadZipFile, pd.errors.ParserError) as error:
+            raise ValueError(f"Invalid Binance Vision archive: {url}") from error
+
+        if not raw.empty and str(raw.iloc[0, 0]).strip().lower() in {
+            "open_time",
+            "open time",
+        }:
+            raw = raw.iloc[1:].reset_index(drop=True)
+        if raw.shape[1] < len(VISION_KLINE_COLUMNS):
+            raise ValueError(
+                f"Binance Vision kline archive has {raw.shape[1]} columns; "
+                f"expected at least {len(VISION_KLINE_COLUMNS)}: {url}"
+            )
+        raw = raw.iloc[:, : len(VISION_KLINE_COLUMNS)]
+        raw.columns = VISION_KLINE_COLUMNS
+        for column in ("Open", "High", "Low", "Close", "Volume"):
+            raw[column] = pd.to_numeric(raw[column], errors="raise").astype(float)
+        for column in ("Open_time", "Close_time"):
+            raw[column] = pd.to_datetime(
+                pd.to_numeric(raw[column], errors="raise"),
+                unit="ms",
+                utc=True,
+            )
+        return normalize_ohlcv_frame(raw, symbol=symbol)
+
+    def _load_interval(self, symbol: str, interval: str) -> pd.DataFrame:
+        frames: list[pd.DataFrame] = []
+        missing_months: list[pd.Timestamp] = []
+        for month in self._month_starts(self.start_time, self.end_time):
+            try:
+                frames.append(self._read_archive("monthly", symbol, interval, month))
+            except FileNotFoundError:
+                missing_months.append(month)
+
+        for month in missing_months:
+            for day in self._days_in_month(month, self.start_time, self.end_time):
+                try:
+                    frames.append(self._read_archive("daily", symbol, interval, day))
+                except FileNotFoundError:
+                    continue
+
+        if not frames:
+            raise FileNotFoundError(
+                "Binance Vision historical data was not found for "
+                f"{symbol} [{interval}] between {self.start_time} and {self.end_time}"
+            )
+        combined = normalize_ohlcv_frame(
+            pd.concat(frames, ignore_index=True),
+            symbol=symbol,
+        )
+        selected = combined.loc[
+            (combined["Open_time"] >= self.start_time)
+            & (combined["Open_time"] < self.end_time)
+        ].copy()
+        if selected.empty:
+            raise ValueError(
+                "Binance Vision archives contain no completed candles in the "
+                f"requested period for {symbol} [{interval}]"
+            )
+        return selected
+
+    def load(self, symbols: Sequence[str], intervals: Sequence[str]) -> Indicator:
+        selected_symbols = list(symbols) or list(self.symbols)
+        selected_intervals = list(intervals) or list(self.intervals)
+        if not selected_symbols:
+            raise ValueError("At least one symbol is required for Binance Vision data")
+        if not selected_intervals:
+            raise ValueError("At least one interval is required for Binance Vision data")
+        if self.interval is None:
+            self.interval = selected_intervals[0]
+
+        result = Indicator()
+        for symbol in selected_symbols:
+            for interval in selected_intervals:
+                result[str(symbol)][str(interval)] = self._load_interval(
+                    str(symbol), str(interval)
+                )
+        return result
+
+
 class BinanceHistoricalDataSource:
     """Compatibility source that delegates to the existing Binance REST loader."""
 
@@ -820,6 +1087,7 @@ __all__ = [
     "MarketExecutionPolicy",
     "OrderIntent",
     "ParquetDataSource",
+    "BinanceVisionDataSource",
     "Trade",
     "ZeroCostModel",
     "build_timeline",

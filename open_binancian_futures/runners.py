@@ -29,6 +29,7 @@ from .backtesting import (
     BacktestRunResult,
     BacktestSummary,
     BinanceHistoricalDataSource,
+    BinanceVisionDataSource,
     Candle,
     CsvDataSource,
     DataFrameDataSource,
@@ -262,8 +263,9 @@ class Backtesting(Runner):
     """Run a deterministic backtest over completed historical candles.
 
     Supplying both ``strategy`` and ``data_source`` keeps construction fully
-    offline.  Omitting them preserves the existing Binance REST-backed CLI
-    behavior.
+    offline.  The default CLI/programmatic path loads a fixed period from
+    Binance Vision and uses the configured Binance client only for strategy
+    and exchange metadata compatibility.
     """
 
     def __init__(
@@ -273,12 +275,21 @@ class Backtesting(Runner):
         config: BacktestConfig | None = None,
     ) -> None:
         self.client = None
-        injected_source = data_source is not None
+        default_source = data_source is None
         if data_source is None:
-            source: HistoricalDataSource = BinanceHistoricalDataSource(
-                limit=settings.klines_limit
+            if not settings.backtest_start_date or not settings.backtest_end_date:
+                raise ValueError(
+                    "A fixed backtest period is required. Set "
+                    "BACKTEST_START_DATE and BACKTEST_END_DATE, or inject data_source."
+                )
+            source = BinanceVisionDataSource(
+                start_date=settings.backtest_start_date,
+                end_date=settings.backtest_end_date,
+                data_dir=settings.backtest_data_dir,
+                symbols=settings.symbols_list,
+                intervals=settings.intervals_list,
             )
-            source_interval = self._default_interval()
+            source_interval = self._source_interval(source)
             self.client = client()
             requested_symbols = settings.symbols_list
         else:
@@ -294,11 +305,11 @@ class Backtesting(Runner):
         )
         self.interval = self.config.interval or source_interval
 
-        requested_intervals = (
-            (settings.intervals_list or [self.interval])
-            if data_source is None
-            else [self.interval]
-        )
+        if default_source:
+            requested_intervals = settings.intervals_list or [self.interval]
+        else:
+            declared_intervals = getattr(source, "intervals", None)
+            requested_intervals = list(declared_intervals or [self.interval])
         loaded = source.load(requested_symbols, requested_intervals)
         self.indicators = self._normalize_loaded_indicators(
             loaded, requested_symbols=requested_symbols
@@ -325,7 +336,7 @@ class Backtesting(Runner):
 
         self.strategy: object
         if strategy is None:
-            if injected_source:
+            if not default_source:
                 raise ValueError(
                     "strategy is required when data_source is injected"
                 )

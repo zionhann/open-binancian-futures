@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import pandas as pd
+import pytest
 
 from open_binancian_futures import (
     BacktestConfig,
@@ -9,6 +10,8 @@ from open_binancian_futures import (
     DeterministicFillPolicy,
     MarketExecutionPolicy,
 )
+from open_binancian_futures.constants import settings
+from open_binancian_futures.models import Indicator
 from open_binancian_futures.strategy import Strategy
 from open_binancian_futures.types import OrderType, PositionSide
 
@@ -405,3 +408,68 @@ def test_last_close_realizes_open_position_and_equity_curve() -> None:
     assert len(result.equity_curve) == 3
     assert result.equity_curve[-1].equity == result.final_balance
     assert not runner.positions["ETHUSDT"]
+
+
+def test_default_backtest_uses_vision_period_and_all_configured_intervals(monkeypatch) -> None:
+    timestamps = list(pd.date_range("2024-01-01", periods=2, freq="h", tz="UTC"))
+    frame = ohlcv(timestamps, [100.0, 100.0], [101.0, 101.0], [99.0, 99.0], [100.0, 100.0])
+    calls: dict[str, object] = {}
+
+    class FakeVisionSource:
+        interval = "1h"
+
+        def __init__(self, **kwargs) -> None:
+            calls["source_kwargs"] = kwargs
+
+        def load(self, symbols, intervals):
+            calls["load"] = (list(symbols), list(intervals))
+            indicators = Indicator()
+            for symbol in symbols:
+                indicators[symbol]["1h"] = frame.assign(Symbol=symbol)
+                indicators[symbol]["4h"] = frame.assign(Symbol=symbol)
+            return indicators
+
+    class NoOpStrategy:
+        async def run_backtest(self, symbol: str, interval: str, index: int) -> None:
+            del symbol, interval, index
+
+    monkeypatch.setattr(
+        "open_binancian_futures.runners.BinanceVisionDataSource",
+        FakeVisionSource,
+        raising=False,
+    )
+    monkeypatch.setattr("open_binancian_futures.runners.client", lambda: object())
+    monkeypatch.setattr(
+        "open_binancian_futures.runners.Strategy.of",
+        lambda name, context: NoOpStrategy(),
+    )
+    monkeypatch.setattr(settings, "strategy", "strategy.py")
+    monkeypatch.setattr(settings, "symbols", "ETHUSDT")
+    monkeypatch.setattr(settings, "intervals", "1h,4h")
+    monkeypatch.setattr(settings, "backtest_start_date", "2024-01-01")
+    monkeypatch.setattr(settings, "backtest_end_date", "2024-01-02")
+    monkeypatch.setattr(settings, "backtest_data_dir", str("/tmp/vision-cache"))
+
+    runner = Backtesting()
+
+    assert calls["source_kwargs"] == {
+        "start_date": "2024-01-01",
+        "end_date": "2024-01-02",
+        "data_dir": "/tmp/vision-cache",
+        "symbols": ["ETHUSDT"],
+        "intervals": ["1h", "4h"],
+    }
+    assert calls["load"] == (["ETHUSDT"], ["1h", "4h"])
+    assert runner.interval == "1h"
+
+
+def test_default_backtest_requires_a_fixed_vision_period(monkeypatch) -> None:
+    monkeypatch.setattr(settings, "backtest_start_date", None)
+    monkeypatch.setattr(settings, "backtest_end_date", None)
+    monkeypatch.setattr(
+        "open_binancian_futures.runners.client",
+        lambda: (_ for _ in ()).throw(AssertionError("client must not be created")),
+    )
+
+    with pytest.raises(ValueError, match="BACKTEST_START_DATE"):
+        Backtesting()

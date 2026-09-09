@@ -24,6 +24,21 @@ def run(
     intervals: Optional[str] = typer.Option(
         None, "--intervals", help="Comma-separated list of intervals. (Overrides .env)"
     ),
+    start_date: Optional[str] = typer.Option(
+        None,
+        "--start-date",
+        help="Inclusive UTC backtest start date (required for --backtest).",
+    ),
+    end_date: Optional[str] = typer.Option(
+        None,
+        "--end-date",
+        help="Inclusive UTC backtest end date (required for --backtest).",
+    ),
+    data_dir: Optional[str] = typer.Option(
+        None,
+        "--data-dir",
+        help="Binance Vision ZIP cache directory.",
+    ),
 ):
     """Run the trading bot or backtest."""
     # Apply CLI overrides to settings
@@ -37,6 +52,12 @@ def run(
         settings.symbols = symbols
     if intervals:
         settings.intervals = intervals
+    if start_date is not None:
+        settings.backtest_start_date = start_date
+    if end_date is not None:
+        settings.backtest_end_date = end_date
+    if data_dir is not None:
+        settings.backtest_data_dir = data_dir
 
     logger.info("Boot process initiated. Preparing to start the application...")
 
