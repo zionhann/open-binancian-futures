@@ -40,7 +40,7 @@
 - `DeterministicFillPolicy.fill_price(order, candle)` returns a price or `None`; `select_exit(...) ` applies Stop Loss, Take Profit, then Market priority.
 - `BacktestResult.expectancy` is `win_rate * average_win + loss_rate * average_loss`, where `average_loss` is negative and zero-PNL trades are break-even.
 
-- [ ] **Step 1: Write the failing API tests**
+- [x] **Step 1: Write the failing API tests**
 
 ```python
 def test_public_contract_and_candle():
@@ -69,23 +69,23 @@ def test_zero_pnl_is_not_a_loss_and_expectancy_is_signed():
     assert result.expectancy == 2.0
 ```
 
-- [ ] **Step 2: Run the focused tests and verify the intended failure**
+- [x] **Step 2: Run the focused tests and verify the intended failure**
 
 Run: `python3.12 -m pytest -q tests/test_backtesting_contract.py tests/test_backtesting_models.py`
 
 Expected: collection or assertion failure because the new domain module and metrics do not exist.
 
-- [ ] **Step 3: Implement the minimum domain models and metrics**
+- [x] **Step 3: Implement the minimum domain models and metrics**
 
 Implement immutable candle/config/intent/value objects, zero-cost behavior, deterministic result properties, and pure summary aggregation. Keep compatibility aliases for `BacktestingResult` and `BacktestingSummary`.
 
-- [ ] **Step 4: Run the focused tests and verify green**
+- [x] **Step 4: Run the focused tests and verify green**
 
 Run: `python3.12 -m pytest -q tests/test_backtesting_contract.py tests/test_backtesting_models.py`
 
 Expected: all focused contract tests pass.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add open_binancian_futures/backtesting.py open_binancian_futures/models.py open_binancian_futures/__init__.py tests
@@ -107,7 +107,7 @@ git commit -m "feat: add deterministic backtesting domain contracts"
 - `normalize_ohlcv_frame` converts timestamps to UTC, validates OHLC, stably sorts, and rejects duplicates.
 - `build_timeline(frames, warmup_bars, mode="intersection")` returns a sorted `DatetimeIndex`; union remains explicit.
 
-- [ ] **Step 1: Write failing gap/source tests**
+- [x] **Step 1: Write failing gap/source tests**
 
 ```python
 def test_gap_fills_use_candle_open_and_stop_wins():
@@ -129,23 +129,23 @@ def test_source_sorts_symbols_and_aligns_timestamps():
     assert list(build_timeline({s: loaded[s]["1h"] for s in loaded}, 1)) == expected
 ```
 
-- [ ] **Step 2: Run and verify the intended failures**
+- [x] **Step 2: Run and verify the intended failures**
 
 Run: `python3.12 -m pytest -q tests/test_backtesting_fill_policy.py tests/test_backtesting_data_source.py`
 
 Expected: failures for missing source normalization, gap fills, and fixed priority.
 
-- [ ] **Step 3: Implement minimum sources and policy**
+- [x] **Step 3: Implement minimum sources and policy**
 
 Use candle open for gaps, configured price for intrabar triggers, and fixed Stop → TP → Market priority. Default Market policy is `CLOSE`; `NEXT_OPEN` explicitly defers newly-created Market orders. Route complete candle evaluation through the policy while retaining the old two-argument `Order.is_filled` form.
 
-- [ ] **Step 4: Run and verify green**
+- [x] **Step 4: Run and verify green**
 
 Run: `python3.12 -m pytest -q tests/test_backtesting_fill_policy.py tests/test_backtesting_data_source.py`
 
 Expected: all source/fill tests pass.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add open_binancian_futures/backtesting.py open_binancian_futures/exchange.py tests/test_backtesting_fill_policy.py tests/test_backtesting_data_source.py
@@ -165,7 +165,7 @@ git commit -m "feat: add deterministic candle fills and data sources"
 - `BacktestRunResult` exposes `by_symbol`, `summary`, `equity_curve`, and `final_balance`.
 - `BacktestSummary.from_results(results)` is pure; repeated `format()`/summary printing is idempotent.
 
-- [ ] **Step 1: Write failing accounting tests**
+- [x] **Step 1: Write failing accounting tests**
 
 ```python
 def test_pending_margin_reservation_round_trips():
@@ -185,23 +185,23 @@ def test_summary_does_not_accumulate_when_formatted_twice():
     assert summary.trade_count == 1
 ```
 
-- [ ] **Step 2: Run and verify the intended failures**
+- [x] **Step 2: Run and verify the intended failures**
 
 Run: `python3.12 -m pytest -q tests/test_backtesting_accounting.py`
 
 Expected: reservation methods and pure summary properties are absent.
 
-- [ ] **Step 3: Implement the reservation lifecycle and ledger**
+- [x] **Step 3: Implement the reservation lifecycle and ledger**
 
 Track reservation by order id, reconcile gap-fill margin to actual fill price, release on cancellation/expiry/exit, and expose break-even-aware metrics. Apply only zero cost and no funding.
 
-- [ ] **Step 4: Run and verify green**
+- [x] **Step 4: Run and verify green**
 
 Run: `python3.12 -m pytest -q tests/test_backtesting_accounting.py`
 
 Expected: accounting, ledger, and summary tests pass.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add open_binancian_futures/models.py open_binancian_futures/backtesting.py tests/test_backtesting_accounting.py
@@ -223,7 +223,7 @@ git commit -m "feat: add backtest reservations and trade ledgers"
 - New non-market orders are excluded from their creation candle; default close-executed Market orders may fill that candle.
 - Finalization closes positions at each symbol's last evaluated close and records PNL.
 
-- [ ] **Step 1: Write failing runner tests**
+- [x] **Step 1: Write failing runner tests**
 
 ```python
 def test_injected_dataframe_needs_no_credentials(monkeypatch):
@@ -249,27 +249,27 @@ def test_final_close_realizes_position_and_closes_equity_curve():
     assert result.equity_curve[-1].equity == result.final_balance
 ```
 
-- [ ] **Step 2: Run and verify old runner failures**
+- [x] **Step 2: Run and verify old runner failures**
 
 Run: `python3.12 -m pytest -q tests/test_backtesting_runner.py`
 
 Expected: failures for injection, timestamp processing, deferral, final PNL, or result return.
 
-- [ ] **Step 3: Implement injected construction and chronological loop**
+- [x] **Step 3: Implement injected construction and chronological loop**
 
 Load/normalize data before strategy construction in the injected path; bind balance/orders/positions/indicators and the gateway to supplied strategies. For each timestamp run the strategy on the completed candle, reserve newly observed legacy orders, evaluate eligible orders, mark-to-market, and append one equity point.
 
-- [ ] **Step 4: Implement order lifecycle and finalization**
+- [x] **Step 4: Implement order lifecycle and finalization**
 
 Open at policy fill price, reconcile reservation, invoke optional `on_backtest_entry_filled` after entry, select exits with fixed priority, record trade metadata, release pending margins, and close remaining positions at the final close.
 
-- [ ] **Step 5: Run and verify green**
+- [x] **Step 5: Run and verify green**
 
 Run: `python3.12 -m pytest -q tests/test_backtesting_runner.py`
 
 Expected: runner contract tests pass.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add open_binancian_futures/runners.py open_binancian_futures/strategy.py tests/test_backtesting_runner.py
@@ -290,7 +290,7 @@ git commit -m "feat: make backtesting chronological and deterministic"
 - Existing `Strategy.open_order(...)` remains callable with Binance SDK side enums and retains live behavior.
 - Existing subclasses implementing `load`, `run`, and `run_backtest(symbol, interval, index)` continue to initialize and execute.
 
-- [ ] **Step 1: Write failing compatibility tests**
+- [x] **Step 1: Write failing compatibility tests**
 
 ```python
 async def test_domain_intent_uses_the_backtest_gateway():
@@ -308,27 +308,27 @@ def test_existing_callback_signature_remains_public():
     ]
 ```
 
-- [ ] **Step 2: Run and verify the intended failure**
+- [x] **Step 2: Run and verify the intended failure**
 
 Run: `python3.12 -m pytest -q tests/test_strategy_backtest_compatibility.py`
 
 Expected: missing intent/gateway behavior.
 
-- [ ] **Step 3: Implement the adapter**
+- [x] **Step 3: Implement the adapter**
 
 Keep SDK imports at the live boundary. Convert domain side/time-in-force to SDK enums only for the REST call; use the backtest gateway when bound. Do not alter strategy signal conditions.
 
-- [ ] **Step 4: Run and verify green**
+- [x] **Step 4: Run and verify green**
 
 Run: `python3.12 -m pytest -q tests/test_strategy_backtest_compatibility.py`
 
 Expected: adapter and old callback tests pass.
 
-- [ ] **Step 5: Document the new API and migration**
+- [x] **Step 5: Document the new API and migration**
 
 Document `Backtesting(strategy=..., data_source=..., config=...)`, timing, `OrderIntent`, CSV/Parquet input, result access, and legacy fallback in `README.md`.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add open_binancian_futures/strategy.py open_binancian_futures/models.py tests/test_strategy_backtest_compatibility.py README.md
@@ -343,23 +343,23 @@ git commit -m "feat: expose strategy order intent adapter"
 - Modify: `README.md`
 - Optional: `pyproject.toml` only for a verified SDK 7.1.1 constraint.
 
-- [ ] **Step 1: Cover the complete contract matrix**
+- [x] **Step 1: Cover the complete contract matrix**
 
 Assert LIMIT/STOP gap fills, same-candle prevention, Stop priority, timestamp alignment, actual-bar hit rate, final-close PNL, pending reservation, zero-PNL classification, expectancy, idempotent summary, credential-free injection, and existing Strategy API with small synthetic frames.
 
-- [ ] **Step 2: Run all new contract tests**
+- [x] **Step 2: Run all new contract tests**
 
 Run: `python3.12 -m pytest -q tests/test_backtesting_contract.py tests/test_backtesting_models.py tests/test_backtesting_fill_policy.py tests/test_backtesting_data_source.py tests/test_backtesting_accounting.py tests/test_backtesting_runner.py tests/test_strategy_backtest_compatibility.py tests/test_backtesting_reference_regressions.py`
 
 Expected: exit code 0.
 
-- [ ] **Step 3: Run the complete package suite**
+- [x] **Step 3: Run the complete package suite**
 
 Run: `python3.12 -m pytest -q`
 
 Expected: exit code 0.
 
-- [ ] **Step 4: Run lint, type, import, and compile checks**
+- [x] **Step 4: Run lint, type, import, and compile checks**
 
 ```bash
 python3.12 -m ruff check open_binancian_futures tests
@@ -370,11 +370,11 @@ python3.12 -m compileall -q open_binancian_futures tests
 
 Expected: lint/import/compile pass; report exact pre-existing typing gaps separately if mypy cannot pass against SDK stubs.
 
-- [ ] **Step 5: Run deterministic and reference comparisons**
+- [x] **Step 5: Run deterministic and reference comparisons**
 
 Run the synthetic backtest twice and compare serialized ledgers/equity curves. Run the reference project's focused tests in the prepared Python 3.12 environment and compare fill prices and exit selection on identical candles.
 
-- [ ] **Step 6: Review the final diff**
+- [x] **Step 6: Review the final diff**
 
 ```bash
 git diff --check main...HEAD
@@ -385,7 +385,7 @@ git status --short --branch
 
 Confirm no signal-condition changes, no injected-test credentials/network access, no accidental live behavior change, and no generated artifacts.
 
-- [ ] **Step 7: Commit final tests/docs**
+- [x] **Step 7: Commit final tests/docs**
 
 ```bash
 git add tests README.md
