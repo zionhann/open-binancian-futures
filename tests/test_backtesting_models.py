@@ -31,4 +31,3 @@ def test_summary_is_pure_and_repeated_formatting_does_not_accumulate() -> None:
     assert first == second
     assert summary.trade_count == 1
     assert summary.pnl == 2.0
-

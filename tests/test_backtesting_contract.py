@@ -56,4 +56,3 @@ def test_public_result_contains_trade_and_equity_data() -> None:
     point = EquityPoint(pd.Timestamp("2026-01-02", tz="UTC"), 102.0)
     result.add_equity_point(point)
     assert result.equity_curve == (point,)
-

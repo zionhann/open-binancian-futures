@@ -403,5 +403,3 @@ git commit -m "test: lock deterministic backtesting behavior"
 - Idempotent summary and public result API: Tasks 1 and 3.
 - OrderIntent and Strategy compatibility: Task 5.
 - Reference comparison and validation: Task 6.
-
-
