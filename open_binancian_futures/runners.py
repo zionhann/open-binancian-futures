@@ -272,26 +272,27 @@ class Backtesting(Runner):
         data_source: HistoricalDataSource | pd.DataFrame | Mapping | str | Path | None = None,
         config: BacktestConfig | None = None,
     ) -> None:
-        self.config = config or BacktestConfig(
-            initial_balance=settings.balance,
-            leverage=settings.leverage,
-            warmup_bars=settings.indicator_init_size,
-            interval=(settings.intervals_list[0] if settings.intervals_list else "1d"),
-        )
-        self.interval = self.config.interval or (
-            settings.intervals_list[0] if settings.intervals_list else "1d"
-        )
         self.client = None
         injected_source = data_source is not None
         if data_source is None:
             source: HistoricalDataSource = BinanceHistoricalDataSource(
                 limit=settings.klines_limit
             )
+            source_interval = self._default_interval()
             self.client = client()
             requested_symbols = settings.symbols_list
         else:
             source = self._coerce_data_source(data_source)
+            source_interval = self._source_interval(source)
             requested_symbols = self._requested_source_symbols(source)
+
+        self.config = config or BacktestConfig(
+            initial_balance=settings.balance,
+            leverage=settings.leverage,
+            warmup_bars=settings.indicator_init_size,
+            interval=source_interval,
+        )
+        self.interval = self.config.interval or source_interval
 
         requested_intervals = (
             (settings.intervals_list or [self.interval])
@@ -352,6 +353,29 @@ class Backtesting(Runner):
         policy = self.config.fill_policy
         configured = getattr(policy, "market_execution", self.config.market_execution)
         return MarketExecutionPolicy(configured)
+
+    @staticmethod
+    def _default_interval() -> str:
+        return settings.intervals_list[0] if settings.intervals_list else "1d"
+
+    @classmethod
+    def _source_interval(cls, source: HistoricalDataSource) -> str:
+        if isinstance(source, DataFrameDataSource):
+            data = source.data
+            if isinstance(data, Mapping) and data and all(
+                isinstance(interval_frames, Mapping)
+                for interval_frames in data.values()
+            ):
+                first_intervals = next(iter(data.values()))
+                first_interval = next(iter(first_intervals), None)
+                if first_interval is not None:
+                    return str(first_interval)
+            if source.interval:
+                return source.interval
+        configured = getattr(source, "interval", None)
+        if configured:
+            return str(configured)
+        return cls._default_interval()
 
     @staticmethod
     def _coerce_data_source(data_source: object) -> HistoricalDataSource:

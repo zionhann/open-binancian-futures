@@ -149,6 +149,36 @@ def test_custom_source_can_return_a_raw_symbolized_dataframe() -> None:
     assert set(result.by_symbol) == {"ETHUSDT"}
 
 
+def test_injected_source_interval_is_used_when_config_interval_is_omitted() -> None:
+    timestamps = list(pd.date_range("2026-01-01", periods=2, freq="h", tz="UTC"))
+    frame = ohlcv(
+        timestamps,
+        [100.0, 100.0],
+        [101.0, 101.0],
+        [99.0, 99.0],
+        [100.0, 100.0],
+    )
+
+    class IntervalStrategy:
+        def __init__(self) -> None:
+            self.intervals: list[str] = []
+
+        async def run_backtest(
+            self, symbol: str, interval: str, index: int
+        ) -> None:
+            del symbol, index
+            self.intervals.append(interval)
+
+    strategy = IntervalStrategy()
+    Backtesting(
+        strategy=strategy,
+        data_source=DataFrameDataSource(frame, interval="1h"),
+        config=BacktestConfig(warmup_bars=0),
+    ).run()
+
+    assert strategy.intervals == ["1h", "1h"]
+
+
 def test_fill_policy_market_execution_is_respected_by_runner() -> None:
     timestamps = list(pd.date_range("2026-01-01", periods=2, freq="h", tz="UTC"))
     frame = ohlcv(

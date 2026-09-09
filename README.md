@@ -161,7 +161,9 @@ only use the side effects can continue to ignore the return value.
 `ParquetDataSource(...)` provide the file-backed equivalents. Injected data
 does not create a Binance client or make a network request. Calling
 `Backtesting()` without a source keeps the existing Binance REST data loader
-for CLI compatibility.
+for CLI compatibility. When `BacktestConfig.interval` is omitted, a direct
+DataFrame/CSV/Parquet source uses its declared interval; otherwise the
+configured interval takes precedence.
 
 The default engine evaluates completed candles in UTC chronological order.
 Existing orders are eligible on the current candle, while newly created
