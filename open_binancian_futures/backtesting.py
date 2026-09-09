@@ -1,20 +1,21 @@
 """Deterministic, dependency-injectable backtesting domain objects.
 
 The runner lives in :mod:`open_binancian_futures.runners`; this module contains
-the policies and result objects that make a run reproducible without Binance
-credentials.
+the policies and result objects that make injected-data runs reproducible
+without Binance credentials.
 """
 
 from __future__ import annotations
 
-import logging
 import io
+import logging
+import re
 import urllib.error
 import urllib.request
 import zipfile
 from collections.abc import Callable, Mapping, Sequence
-from datetime import date, datetime
 from dataclasses import dataclass, field
+from datetime import date, datetime
 from enum import Enum
 from pathlib import Path
 from typing import Any, Protocol
@@ -478,6 +479,7 @@ class BinanceVisionDataSource:
         market: str = "um",
         symbols: Sequence[str] | None = None,
         intervals: Sequence[str] | None = None,
+        warmup_bars: int = 0,
         base_url: str = DEFAULT_BASE_URL,
         timeout: float = 30.0,
         downloader: VisionDownloader | None = None,
@@ -494,6 +496,8 @@ class BinanceVisionDataSource:
             raise ValueError("market must be 'um' or 'cm'")
         if timeout <= 0:
             raise ValueError("timeout must be positive")
+        if warmup_bars < 0:
+            raise ValueError("warmup_bars must not be negative")
 
         self.data_dir = Path(data_dir) if data_dir is not None else (
             Path.home() / ".cache" / "open-binancian-futures" / "binance-vision"
@@ -502,6 +506,7 @@ class BinanceVisionDataSource:
         self.symbols = tuple(symbols or ())
         self.intervals = tuple(intervals or ())
         self.interval = self.intervals[0] if self.intervals else None
+        self.warmup_bars = warmup_bars
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
         self._downloader = downloader or self._download
@@ -532,6 +537,26 @@ class BinanceVisionDataSource:
         last_day = (end_time - pd.Timedelta(nanoseconds=1)).normalize()
         last = last_day.replace(day=1)
         return list(pd.date_range(first, last, freq="MS", tz="UTC"))
+
+    def _load_start_time(self, interval: str) -> pd.Timestamp:
+        if self.warmup_bars == 0:
+            return self.start_time
+        match = re.fullmatch(r"(\d+)([mhdwM])", interval)
+        if match is None:
+            raise ValueError(
+                f"Cannot calculate warm-up period for unsupported interval '{interval}'"
+            )
+        amount = self.warmup_bars * int(match.group(1))
+        unit = match.group(2)
+        if unit == "M":
+            return self.start_time - pd.DateOffset(months=amount)
+        if unit == "w":
+            return self.start_time - pd.Timedelta(weeks=amount)
+        if unit == "d":
+            return self.start_time - pd.Timedelta(days=amount)
+        if unit == "h":
+            return self.start_time - pd.Timedelta(hours=amount)
+        return self.start_time - pd.Timedelta(minutes=amount)
 
     @staticmethod
     def _days_in_month(
@@ -643,16 +668,17 @@ class BinanceVisionDataSource:
         return normalize_ohlcv_frame(raw, symbol=symbol)
 
     def _load_interval(self, symbol: str, interval: str) -> pd.DataFrame:
+        load_start = self._load_start_time(interval)
         frames: list[pd.DataFrame] = []
         missing_months: list[pd.Timestamp] = []
-        for month in self._month_starts(self.start_time, self.end_time):
+        for month in self._month_starts(load_start, self.end_time):
             try:
                 frames.append(self._read_archive("monthly", symbol, interval, month))
             except FileNotFoundError:
                 missing_months.append(month)
 
         for month in missing_months:
-            for day in self._days_in_month(month, self.start_time, self.end_time):
+            for day in self._days_in_month(month, load_start, self.end_time):
                 try:
                     frames.append(self._read_archive("daily", symbol, interval, day))
                 except FileNotFoundError:
@@ -668,7 +694,7 @@ class BinanceVisionDataSource:
             symbol=symbol,
         )
         selected = combined.loc[
-            (combined["Open_time"] >= self.start_time)
+            (combined["Open_time"] >= load_start)
             & (combined["Open_time"] < self.end_time)
         ].copy()
         if selected.empty:
@@ -1076,6 +1102,7 @@ __all__ = [
     "BacktestRunResult",
     "BacktestSummary",
     "BinanceHistoricalDataSource",
+    "BinanceVisionDataSource",
     "Candle",
     "CostModel",
     "CsvDataSource",
@@ -1087,7 +1114,6 @@ __all__ = [
     "MarketExecutionPolicy",
     "OrderIntent",
     "ParquetDataSource",
-    "BinanceVisionDataSource",
     "Trade",
     "ZeroCostModel",
     "build_timeline",

@@ -448,16 +448,17 @@ def test_default_backtest_uses_vision_period_and_all_configured_intervals(monkey
     monkeypatch.setattr(settings, "intervals", "1h,4h")
     monkeypatch.setattr(settings, "backtest_start_date", "2024-01-01")
     monkeypatch.setattr(settings, "backtest_end_date", "2024-01-02")
-    monkeypatch.setattr(settings, "backtest_data_dir", str("/tmp/vision-cache"))
+    monkeypatch.setattr(settings, "backtest_data_dir", "vision-cache")
 
     runner = Backtesting()
 
     assert calls["source_kwargs"] == {
         "start_date": "2024-01-01",
         "end_date": "2024-01-02",
-        "data_dir": "/tmp/vision-cache",
+        "data_dir": "vision-cache",
         "symbols": ["ETHUSDT"],
         "intervals": ["1h", "4h"],
+        "warmup_bars": 200,
     }
     assert calls["load"] == (["ETHUSDT"], ["1h", "4h"])
     assert runner.interval == "1h"

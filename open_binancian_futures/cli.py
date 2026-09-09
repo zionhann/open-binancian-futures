@@ -1,9 +1,10 @@
+import traceback
+
 import typer
-from typing import Optional
+
+from . import logging_config
 from .constants import settings
 from .runners import Backtesting, LiveTrading
-from . import logging_config
-import traceback
 
 app = typer.Typer(help="Open Binancian Futures CLI")
 logger = logging_config.init(__name__)
@@ -12,29 +13,29 @@ logger = logging_config.init(__name__)
 @app.command()
 def run(
     strategy: str = typer.Argument(..., help="Strategy to use."),
-    testnet: Optional[bool] = typer.Option(
+    testnet: bool | None = typer.Option(
         None, "--testnet/--mainnet", help="Use Binance Testnet. (Overrides .env)"
     ),
-    backtest: Optional[bool] = typer.Option(
+    backtest: bool | None = typer.Option(
         None, "--backtest/--live", help="Run in backtest mode. (Overrides .env)"
     ),
-    symbols: Optional[str] = typer.Option(
+    symbols: str | None = typer.Option(
         None, "--symbols", help="Comma-separated list of symbols. (Overrides .env)"
     ),
-    intervals: Optional[str] = typer.Option(
+    intervals: str | None = typer.Option(
         None, "--intervals", help="Comma-separated list of intervals. (Overrides .env)"
     ),
-    start_date: Optional[str] = typer.Option(
+    start_date: str | None = typer.Option(
         None,
         "--start-date",
         help="Inclusive UTC backtest start date (required for --backtest).",
     ),
-    end_date: Optional[str] = typer.Option(
+    end_date: str | None = typer.Option(
         None,
         "--end-date",
         help="Inclusive UTC backtest end date (required for --backtest).",
     ),
-    data_dir: Optional[str] = typer.Option(
+    data_dir: str | None = typer.Option(
         None,
         "--data-dir",
         help="Binance Vision ZIP cache directory.",
@@ -68,5 +69,5 @@ def run(
         # Use context manager to ensure proper cleanup
         with runner_class() as runner:
             runner.run()
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 - CLI is the process error boundary
         logger.error(f"Application terminated by {e}: {traceback.format_exc()}")

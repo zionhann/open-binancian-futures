@@ -8,7 +8,7 @@ A Python framework for creating, backtesting, and deploying automated trading bo
 ## Features
 
 - **Live Trading** – Monitor multiple symbols and execute trades automatically
-- **Backtesting** – Run deterministic, credential-free backtests on injected historical data
+- **Backtesting** – Run deterministic backtests on Binance Vision archives or injected historical data
 - **Webhooks** – Real-time notifications via Slack/Discord
 
 ## Prerequisites
@@ -49,8 +49,10 @@ pip install open-binancian-futures
 | **Backtesting**       |        |         |                                              |
 | `IS_BACKTEST`         |  bool  | `false` | Enable backtest mode                         |
 | `BALANCE`             | number | `100`   | Initial backtest balance                     |
-| `KLINES_LIMIT`        | number | `1000`  | Historical candles to fetch (max 1000)       |
 | `INDICATOR_INIT_SIZE` | number | `200`   | Candles for indicator warm-up                |
+| `BACKTEST_START_DATE` | string | -       | Inclusive UTC start date for Vision backtests |
+| `BACKTEST_END_DATE`   | string | -       | Inclusive UTC end date for Vision backtests   |
+| `BACKTEST_DATA_DIR`   | path   | cache   | Binance Vision ZIP archive cache directory    |
 
 </details>
 
@@ -120,7 +122,7 @@ class MyStrategy(Strategy):
 
 </details>
 
-### 4. Deterministic backtesting without credentials
+### 4. Deterministic backtesting
 
 The package backtester accepts a `DataFrame`, a CSV/Parquet path, or a custom
 `HistoricalDataSource`. The input must contain `Open_time`, `Open`, `High`,
@@ -159,11 +161,24 @@ only use the side effects can continue to ignore the return value.
 
 `CsvDataSource(path, symbol="ETHUSDT", interval="1h")` and
 `ParquetDataSource(...)` provide the file-backed equivalents. Injected data
-does not create a Binance client or make a network request. Calling
-`Backtesting()` without a source keeps the existing Binance REST data loader
-for CLI compatibility. When `BacktestConfig.interval` is omitted, a direct
-DataFrame/CSV/Parquet source uses its declared interval; otherwise the
-configured interval takes precedence.
+does not create a Binance client or make a network request. The default
+`Backtesting()` path requires `BACKTEST_START_DATE` and `BACKTEST_END_DATE`
+and loads candles from Binance Vision. The default path still initializes the
+configured Binance client for the existing strategy/exchange metadata API;
+Vision candle files themselves are public archives. When
+`BacktestConfig.interval` is omitted, a direct DataFrame/CSV/Parquet source
+uses its declared interval; otherwise the configured interval takes
+precedence.
+
+`BinanceVisionDataSource` resolves monthly USDⓈ-M kline ZIP files first and
+falls back to daily files when a monthly archive is unavailable. Archives are
+cached locally and are never silently replaced by REST candle data. The
+date-only `end_date`/`--end-date` includes the entire UTC calendar day. The
+`INDICATOR_INIT_SIZE` setting is loaded as warm-up context before the requested
+start date, so the requested dates describe the evaluated period rather than
+being consumed by indicator initialization. The
+old `BinanceHistoricalDataSource` remains available only as an explicit
+compatibility source for callers migrating from the previous engine.
 
 The default engine evaluates completed candles in UTC chronological order.
 Existing orders are eligible on the current candle, while newly created
@@ -207,8 +222,17 @@ open-binancian-futures my_strategy.py
 You can override environment variables from the command line:
 
 ```bash
-open-binancian-futures --backtest --symbols BTCUSDT,ETHUSDT --intervals 1h,4h my_strategy.py
+open-binancian-futures --backtest \
+  --symbols ETHUSDT --intervals 1h,4h \
+  --start-date 2024-01-01 --end-date 2024-03-31 \
+  --data-dir .cache/binance-vision \
+  my_strategy.py
 ```
+
+`--backtest` and `--live` remain the mode switches. In a Vision backtest,
+the first value in `--intervals` is the execution interval and the remaining
+values are loaded as indicator context. Live trading continues to use its
+existing REST/WebSocket path.
 
 ## License
 

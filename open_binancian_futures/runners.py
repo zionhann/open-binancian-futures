@@ -28,7 +28,6 @@ from .backtesting import (
     BacktestResult,
     BacktestRunResult,
     BacktestSummary,
-    BinanceHistoricalDataSource,
     BinanceVisionDataSource,
     Candle,
     CsvDataSource,
@@ -276,6 +275,7 @@ class Backtesting(Runner):
     ) -> None:
         self.client = None
         default_source = data_source is None
+        source: HistoricalDataSource
         if data_source is None:
             if not settings.backtest_start_date or not settings.backtest_end_date:
                 raise ValueError(
@@ -288,6 +288,11 @@ class Backtesting(Runner):
                 data_dir=settings.backtest_data_dir,
                 symbols=settings.symbols_list,
                 intervals=settings.intervals_list,
+                warmup_bars=(
+                    config.warmup_bars
+                    if config is not None
+                    else settings.indicator_init_size
+                ),
             )
             source_interval = self._source_interval(source)
             self.client = client()

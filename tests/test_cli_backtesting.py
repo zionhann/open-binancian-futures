@@ -1,19 +1,20 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import ClassVar, Self
 
 from open_binancian_futures import cli
 from open_binancian_futures.constants import settings
 
 
 class FakeRunner:
-    instances: list["FakeRunner"] = []
+    instances: ClassVar[list[FakeRunner]] = []
 
     def __init__(self) -> None:
         self.ran = False
         self.__class__.instances.append(self)
 
-    def __enter__(self) -> "FakeRunner":
+    def __enter__(self) -> Self:
         return self
 
     def __exit__(self, exc_type, exc_value, traceback) -> None:

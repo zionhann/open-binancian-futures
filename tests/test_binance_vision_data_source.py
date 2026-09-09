@@ -9,7 +9,6 @@ import pytest
 
 from open_binancian_futures import BinanceVisionDataSource
 
-
 VISION_COLUMNS = [
     "Open_time",
     "Open",
@@ -114,7 +113,7 @@ def test_monthly_archive_is_loaded_and_end_date_is_inclusive(tmp_path) -> None:
         pd.Timestamp("2024-01-03", tz="UTC"),
     ]
     assert frame.loc[frame.index[0], "Open"] == 101.0
-    assert pd.api.types.is_datetime64tz_dtype(frame["Close_time"])
+    assert isinstance(frame["Close_time"].dtype, pd.DatetimeTZDtype)
     assert store.calls == [url]
 
 
@@ -171,6 +170,41 @@ def test_cached_archive_is_reused_without_downloading_again(tmp_path) -> None:
     pd.testing.assert_frame_equal(first["ETHUSDT"]["1h"], second["ETHUSDT"]["1h"])
     assert first_store.calls == [url]
     assert second_store.calls == []
+
+
+def test_warmup_context_is_loaded_before_the_requested_period(tmp_path) -> None:
+    december_url = (
+        "https://data.binance.vision/data/futures/um/monthly/klines/"
+        "ETHUSDT/1d/ETHUSDT-1d-2023-12.zip"
+    )
+    january_url = (
+        "https://data.binance.vision/data/futures/um/monthly/klines/"
+        "ETHUSDT/1d/ETHUSDT-1d-2024-01.zip"
+    )
+    store = ArchiveStore(
+        {
+            december_url: archive(
+                "ETHUSDT-1d-2023-12.csv",
+                ["2023-12-30", "2023-12-31"],
+            ),
+            january_url: archive(
+                "ETHUSDT-1d-2024-01.csv",
+                ["2024-01-01", "2024-01-02"],
+            ),
+        }
+    )
+
+    loaded = BinanceVisionDataSource(
+        start_date="2024-01-01",
+        end_date="2024-01-02",
+        data_dir=tmp_path,
+        downloader=store,
+        warmup_bars=2,
+    ).load(["ETHUSDT"], ["1d"])
+
+    assert list(loaded["ETHUSDT"]["1d"].index) == list(
+        pd.date_range("2023-12-30", "2024-01-02", freq="D", tz="UTC")
+    )
 
 
 def test_invalid_period_is_rejected() -> None:
