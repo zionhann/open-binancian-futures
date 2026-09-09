@@ -168,7 +168,8 @@ configured Binance client for the existing strategy/exchange metadata API;
 Vision candle files themselves are public archives. When
 `BacktestConfig.interval` is omitted, a direct DataFrame/CSV/Parquet source
 uses its declared interval; otherwise the configured interval takes
-precedence.
+precedence. Every symbol must expose that selected interval; inconsistent
+symbol-specific interval keys are rejected instead of being relabeled.
 
 `BinanceVisionDataSource` resolves monthly USDⓈ-M kline ZIP files first and
 falls back to daily files when a monthly archive is unavailable. Archives are
@@ -188,12 +189,14 @@ Existing orders are eligible on the current candle, while newly created
 `LIMIT`, `STOP`, `TAKE_PROFIT`, and `TAKE_PROFIT_MARKET` orders wait until the
 next candle. A newly created `MARKET` order fills at the completed candle close
 by default; `MarketExecutionPolicy.NEXT_OPEN` explicitly defers it to the next
-candle open. Limit and stop gaps fill at the candle open, intrabar triggers
-fill at the configured price, and Stop Loss wins over Take Profit when both
-are reached. Costs, slippage, and funding are zero by default. Open positions
-are realized at each symbol's final evaluated close. Partial exit orders close
-only their requested quantity. A custom `CostModel` is applied to both entry
-and exit fills.
+candle open. Limit and `STOP_MARKET` gaps fill at the candle open; a
+`STOP_LIMIT` gap remains pending until its limit can execute. Intrabar
+triggers fill at the configured price, and Stop Loss wins over Take Profit when
+both are reached. Multiple crossed partial exits are processed in that same
+deterministic priority order. Costs, slippage, and funding are zero by
+default. Open positions are realized at each symbol's final evaluated close.
+Partial exit orders close only their requested quantity. A custom `CostModel`
+is applied to both entry and exit fills.
 
 The returned `BacktestRunResult` exposes `by_symbol`, `summary`,
 `equity_curve`, and `final_balance`. Metrics use each symbol's actual

@@ -481,16 +481,14 @@ class Backtesting(Runner):
                     frame, symbol=str(symbol)
                 )
             if self.interval not in indicators[str(symbol)] and indicators[str(symbol)]:
-                if self._interval_explicit:
-                    loaded_intervals = sorted(indicators[str(symbol)])
-                    raise ValueError(
-                        f"Configured interval {self.interval!r} is missing for "
-                        f"{symbol}; loaded intervals: {loaded_intervals}"
-                    )
-                first_interval = next(iter(indicators[str(symbol)]))
-                indicators[str(symbol)][self.interval] = indicators[str(symbol)][
-                    first_interval
-                ].copy()
+                loaded_intervals = sorted(indicators[str(symbol)])
+                interval_label = (
+                    "Configured" if self._interval_explicit else "Selected"
+                )
+                raise ValueError(
+                    f"{interval_label} interval {self.interval!r} is missing for "
+                    f"{symbol}; loaded intervals: {loaded_intervals}"
+                )
         return indicators
 
     def _bind_strategy(self) -> None:
@@ -680,15 +678,16 @@ class Backtesting(Runner):
         candle: Candle,
         eligible_order_keys: set[OrderKey],
     ) -> None:
+        policy = self.config.fill_policy
+        if policy is None:
+            raise RuntimeError("BacktestConfig must provide a fill policy")
+
         orders = [
             order
             for order in self.orders[symbol]
             if self._order_key(order) in eligible_order_keys
         ]
         position = self.positions[symbol].find_first()
-        policy = self.config.fill_policy
-        if policy is None:
-            raise RuntimeError("BacktestConfig must provide a fill policy")
         if position is None:
             candidates = []
             for sequence, order in enumerate(orders):
@@ -707,18 +706,28 @@ class Backtesting(Runner):
             self._sync_orders(symbol)
             return
 
-        selected = policy.select_exit(orders, candle, position.side)
-        if selected is None:
-            return
-        order, fill = selected
-        self._close_position(
-            symbol,
-            position,
-            fill,
-            candle.time,
-            order,
-            quantity=order.quantity,
-        )
+        while position is not None:
+            orders = [
+                order
+                for order in self.orders[symbol]
+                if self._order_key(order) in eligible_order_keys
+            ]
+            selected = policy.select_exit(orders, candle, position.side)
+            if selected is None:
+                return
+            order, fill = selected
+            if order.quantity <= 0:
+                self._remove_order(order)
+                continue
+            self._close_position(
+                symbol,
+                position,
+                fill,
+                candle.time,
+                order,
+                quantity=order.quantity,
+            )
+            position = self.positions[symbol].find_first()
 
     def _run_hook(self, name: str, *args: object) -> None:
         hook = getattr(self.strategy, name, None)

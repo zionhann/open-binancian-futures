@@ -117,6 +117,32 @@ def test_monthly_archive_is_loaded_and_end_date_is_inclusive(tmp_path) -> None:
     assert store.calls == [url]
 
 
+def test_timestamp_end_excludes_candles_that_close_after_the_boundary(tmp_path) -> None:
+    url = (
+        "https://data.binance.vision/data/futures/um/monthly/klines/"
+        "ETHUSDT/1h/ETHUSDT-1h-2024-01.zip"
+    )
+    store = ArchiveStore(
+        {
+            url: archive(
+                "ETHUSDT-1h-2024-01.csv",
+                ["2024-01-02 10:00", "2024-01-02 11:00"],
+            )
+        }
+    )
+
+    loaded = source(
+        store,
+        tmp_path,
+        start="2024-01-02 10:00",
+        end="2024-01-02 11:30",
+    ).load(["ETHUSDT"], ["1h"])
+
+    assert list(loaded["ETHUSDT"]["1h"].index) == [
+        pd.Timestamp("2024-01-02 10:00", tz="UTC")
+    ]
+
+
 def test_headerless_daily_fallback_is_parsed(tmp_path) -> None:
     urls = {
         (

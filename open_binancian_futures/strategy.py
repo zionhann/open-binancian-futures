@@ -519,7 +519,7 @@ class Strategy(ABC):
                 "quantity": float(intent_quantity),
                 "reduce_only": "true" if intent.reduce_only else "false",
             }
-            if intent.price is not None:
+            if intent.price is not None and intent.order_type != OrderType.MARKET:
                 kwargs["price"] = float(intent.price)
         if intent.gtd is not None:
             kwargs["time_in_force"] = (
@@ -540,7 +540,6 @@ class Strategy(ABC):
             intent.price is not None
             and intent.price > 0
             and not intent.reduce_only
-            and intent.order_type != OrderType.MARKET
         ):
             margin = float(intent.price) * float(intent_quantity) / settings.leverage
 

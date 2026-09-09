@@ -179,6 +179,23 @@ class DeterministicFillPolicy:
         return order.price if candle.low <= order.price else None
 
     @staticmethod
+    def _fill_stop_limit(order: Order, candle: Candle) -> float | None:
+        """Fill a stop-limit only after its limit price can execute.
+
+        The current domain order stores one price for a stop-limit, so that
+        value is used as both the trigger and the limit.  A gap through the
+        trigger therefore leaves the order pending unless the candle trades
+        back to the limit price.
+        """
+        if order.side == PositionSide.BUY:
+            if candle.open > order.price:
+                return order.price if candle.low <= order.price else None
+            return order.price if candle.high >= order.price else None
+        if candle.open < order.price:
+            return order.price if candle.high >= order.price else None
+        return order.price if candle.low <= order.price else None
+
+    @staticmethod
     def _fill_take_profit(order: Order, candle: Candle) -> float | None:
         if order.side == PositionSide.BUY:
             if candle.open <= order.price:
@@ -199,7 +216,9 @@ class DeterministicFillPolicy:
                 if order.type == OrderType.TAKE_PROFIT_LIMIT
                 else self._fill_limit(order, candle)
             )
-        if order.type in {OrderType.STOP_LIMIT, OrderType.STOP_MARKET}:
+        if order.type == OrderType.STOP_LIMIT:
+            return self._fill_stop_limit(order, candle)
+        if order.type == OrderType.STOP_MARKET:
             return self._fill_stop(order, candle)
         if order.type == OrderType.TAKE_PROFIT_MARKET:
             return self._fill_take_profit(order, candle)
@@ -778,10 +797,12 @@ class BinanceVisionDataSource:
             pd.concat(frames, ignore_index=True),
             symbol=symbol,
         )
-        selected = combined.loc[
-            (combined["Open_time"] >= load_start)
-            & (combined["Open_time"] < self.end_time)
-        ].copy()
+        selected_mask = combined["Open_time"] >= load_start
+        if "Close_time" in combined.columns:
+            selected_mask &= combined["Close_time"] < self.end_time
+        else:
+            selected_mask &= combined["Open_time"] < self.end_time
+        selected = combined.loc[selected_mask].copy()
         if selected.empty:
             raise ValueError(
                 "Binance Vision archives contain no completed candles in the "

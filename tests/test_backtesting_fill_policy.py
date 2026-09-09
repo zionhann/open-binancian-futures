@@ -70,6 +70,28 @@ def test_intrabar_orders_fill_at_their_configured_price() -> None:
     )
 
 
+def test_stop_limit_gap_preserves_the_limit_price_constraint() -> None:
+    gap = Candle(
+        pd.Timestamp("2026-01-01", tz="UTC"),
+        open=90.0,
+        high=94.0,
+        low=85.0,
+        close=92.0,
+    )
+    rebound = Candle(
+        pd.Timestamp("2026-01-02", tz="UTC"),
+        open=90.0,
+        high=95.0,
+        low=85.0,
+        close=93.0,
+    )
+    order = make_order(OrderType.STOP_LIMIT, PositionSide.SELL, 95.0)
+    policy = DeterministicFillPolicy()
+
+    assert policy.fill_price(order, gap) is None
+    assert policy.fill_price(order, rebound) == 95.0
+
+
 def test_stop_loss_wins_when_stop_and_take_profit_both_trigger() -> None:
     candle = Candle(
         pd.Timestamp("2026-01-01", tz="UTC"),
