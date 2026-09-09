@@ -2,29 +2,29 @@ import asyncio
 import logging
 import math
 import uuid
+from collections.abc import Hashable, Iterable
 from dataclasses import dataclass, field
-from typing import Iterable, Optional, TypeVar
-
-from pandas import DataFrame, Timestamp
+from typing import TypeVar
 
 from binance_sdk_derivatives_trading_usds_futures.rest_api.models import (
     ExchangeInformationResponseSymbolsInner,
     ExchangeInformationResponseSymbolsInnerFiltersInner,
 )
 from binance_sdk_derivatives_trading_usds_futures.websocket_streams.models import (
-    OrderTradeUpdateO,
     AlgoUpdateO,
+    OrderTradeUpdateO,
 )
+from pandas import DataFrame, Timestamp
 
+from .constants import settings
 from .types import (
     AlgoStatus,
-    FilterType,
     EventType,
+    FilterType,
     OrderStatus,
     OrderType,
     PositionSide,
 )
-from .constants import settings
 from .utils import decimal_places
 
 LOGGER = logging.getLogger(__name__)
@@ -45,6 +45,7 @@ class Balance:
     def __init__(self, balance: float):
         self._balance = math.floor(balance * 100) / 100
         self._lock = asyncio.Lock()
+        self._reserved_margins: dict[Hashable, float] = {}
 
     def __str__(self):
         return f"{self._balance:.2f}"
@@ -53,6 +54,14 @@ class Balance:
     def available(self) -> float:
         """Current available balance (may include optimistic deductions)."""
         return self._balance
+
+    @property
+    def reserved_margin(self) -> float:
+        """Margin held for pending backtest orders."""
+        return sum(self._reserved_margins.values())
+
+    def reserved_margin_for(self, order_id: Hashable) -> float:
+        return self._reserved_margins.get(order_id, 0.0)
 
     @property
     def lock(self) -> asyncio.Lock:
@@ -72,6 +81,34 @@ class Balance:
         """
         self._balance = max(0, self._balance - amount)
         LOGGER.debug(f"Deducted {amount:.2f}, new balance: {self._balance:.2f}")
+
+    def reserve_margin(self, order_id: Hashable, amount: float) -> None:
+        """Reserve pending-order margin by reducing free balance once."""
+        if amount < 0:
+            raise ValueError("margin amount must not be negative")
+        if order_id in self._reserved_margins:
+            raise ValueError(f"margin is already reserved for order {order_id}")
+        if amount > self._balance:
+            raise ValueError("insufficient available balance for margin reservation")
+        self._reserved_margins[order_id] = amount
+        self._balance -= amount
+
+    def release_margin(self, order_id: Hashable) -> float:
+        """Release a pending reservation and return the released amount."""
+        amount = self._reserved_margins.pop(order_id, 0.0)
+        self._balance += amount
+        return amount
+
+    def consume_margin(self, order_id: Hashable, actual_margin: float) -> float:
+        """Convert a pending reservation into actual position margin."""
+        if actual_margin < 0:
+            raise ValueError("actual margin must not be negative")
+        reserved = self._reserved_margins.get(order_id, 0.0)
+        if actual_margin > self._balance + reserved:
+            raise ValueError("insufficient available balance for position margin")
+        self._reserved_margins.pop(order_id, None)
+        self._balance += reserved - actual_margin
+        return reserved
 
     async def update(self, new_balance: float) -> None:
         """
@@ -99,7 +136,11 @@ class OrderIntent:
     price: float | None = None
     quantity: float | None = None
     reduce_only: bool = False
-    gtd: Optional[int] = None
+    gtd: int | None = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "side", PositionSide(self.side))
+        object.__setattr__(self, "order_type", OrderType(self.order_type))
 
 
 @dataclass
@@ -110,7 +151,9 @@ class Order:
     side: PositionSide
     price: float
     quantity: float
-    gtd: Optional[int] = None
+    gtd: int | None = None
+    created_at: Timestamp | None = None
+    reduce_only: bool = False
 
     def __repr__(self) -> str:
         return (
@@ -123,26 +166,38 @@ class Order:
     def is_expired(self, time: Timestamp) -> bool:
         return self.gtd < int(time.timestamp() * 1000) if self.gtd else False
 
-    def is_filled(self, high: float, low: float) -> bool:
+    def is_filled(
+        self, high: float, low: float, open_price: float | None = None
+    ) -> bool:
+        """Return whether OHLC values cross this order's trigger.
+
+        The two-argument form remains compatible with the live model.  The
+        optional open price makes the gap condition explicit for callers that
+        also need to calculate the fill price.  Use
+        :class:`DeterministicFillPolicy` for the actual price selected by a
+        backtest.
+        """
         if self.is_type(OrderType.MARKET):
             return True
         if self.is_type(OrderType.LIMIT):
             return (
-                self.price >= low
+                (open_price is not None and open_price <= self.price) or self.price >= low
                 if self.side == PositionSide.BUY
-                else self.price <= high
+                else (open_price is not None and open_price >= self.price) or self.price <= high
             )
-        if self.is_type(OrderType.TAKE_PROFIT_MARKET):
+        if self.is_type(
+            OrderType.TAKE_PROFIT_MARKET, OrderType.TAKE_PROFIT_LIMIT
+        ):
             return (
-                self.price <= high
+                (open_price is not None and open_price >= self.price) or self.price <= high
                 if self.side == PositionSide.SELL
-                else self.price >= low
+                else (open_price is not None and open_price <= self.price) or self.price >= low
             )
-        if self.is_type(OrderType.STOP_MARKET):
+        if self.is_type(OrderType.STOP_MARKET, OrderType.STOP_LIMIT):
             return (
-                self.price >= low
+                (open_price is not None and open_price <= self.price) or self.price >= low
                 if self.side == PositionSide.SELL
-                else self.price <= high
+                else (open_price is not None and open_price >= self.price) or self.price <= high
             )
         return False
 
@@ -196,7 +251,8 @@ class OrderList:
         entry_price: float,
         entry_quantity: float,
         time: Timestamp,
-        gtd_time: Optional[int] = None,
+        gtd_time: int | None = None,
+        reduce_only: bool = False,
     ) -> None:
         order_id = uuid.uuid4().int
         self.add(
@@ -208,6 +264,8 @@ class OrderList:
                 price=entry_price,
                 quantity=entry_quantity,
                 gtd=gtd_time,
+                created_at=time,
+                reduce_only=reduce_only,
             )
         )
         LOGGER.debug(
@@ -248,16 +306,16 @@ class OrderEvent:
     symbol: str
     order_id: int
     status: OrderStatus | AlgoStatus
-    order_type: Optional[OrderType] = None
-    side: Optional[PositionSide] = None
-    price: Optional[float] = None
-    stop_price: Optional[float] = None
-    quantity: Optional[float] = None
-    filled: Optional[float] = None
-    average_price: Optional[float] = None
-    realized_profit: Optional[float] = None
-    gtd: Optional[int] = None
-    is_reduce_only: Optional[bool] = None
+    order_type: OrderType | None = None
+    side: PositionSide | None = None
+    price: float | None = None
+    stop_price: float | None = None
+    quantity: float | None = None
+    filled: float | None = None
+    average_price: float | None = None
+    realized_profit: float | None = None
+    gtd: int | None = None
+    is_reduce_only: bool | None = None
 
     @staticmethod
     def from_order_trade_update(data: OrderTradeUpdateO) -> "OrderEvent":
@@ -309,9 +367,16 @@ class OrderEvent:
             order_id=self.order_id,
             type=self.order_type,
             side=self.side,
-            price=self.price or self.stop_price or 0.0,
+            price=(
+                self.price
+                if self.price is not None
+                else self.stop_price
+                if self.stop_price is not None
+                else 0.0
+            ),
             quantity=self.quantity or 0.0,
             gtd=self.gtd or None,
+            reduce_only=bool(self.is_reduce_only),
         )
 
     def can_convert_to_order(self) -> bool:

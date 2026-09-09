@@ -1,25 +1,32 @@
 import logging
+from collections.abc import Sequence
 from typing import cast
 
 import pandas as pd
 from binance_sdk_derivatives_trading_usds_futures.rest_api.models import (
+    AllOrdersResponse,
+    CurrentAllAlgoOpenOrdersResponse,
     ExchangeInformationResponse,
     FuturesAccountBalanceV3Response,
-    AllOrdersResponse,
-    PositionInformationV3Response,
     KlineCandlestickDataResponse,
-    CurrentAllAlgoOpenOrdersResponse,
+    PositionInformationV3Response,
 )
 
-from .models import Balance
-from .constants import settings
-from .types import OrderType, PositionSide
-from .models import ExchangeInfo
-from .models import Indicator
-from .models import Order, OrderBook, OrderList
-from .models import Position, PositionBook, PositionList
-from .utils import fetch, get_or_raise
 from .client import client
+from .constants import settings
+from .models import (
+    Balance,
+    ExchangeInfo,
+    Indicator,
+    Order,
+    OrderBook,
+    OrderList,
+    Position,
+    PositionBook,
+    PositionList,
+)
+from .types import OrderType, PositionSide
+from .utils import fetch, get_or_raise
 
 LOGGER = logging.getLogger(__name__)
 
@@ -157,10 +164,18 @@ def init_positions() -> PositionBook:
     return PositionBook(positions)
 
 
-def init_indicators(limit: int | None = None) -> Indicator:
+def init_indicators(
+    limit: int | None = None,
+    *,
+    symbols: Sequence[str] | None = None,
+    intervals: Sequence[str] | None = None,
+) -> Indicator:
+    """Fetch completed candles for the configured or requested dimensions."""
     indicators = Indicator()
-    for symbol in settings.symbols_list:
-        for interval in settings.intervals_list:
+    requested_symbols = symbols or settings.symbols_list
+    requested_intervals = intervals or settings.intervals_list
+    for symbol in requested_symbols:
+        for interval in requested_intervals:
             LOGGER.info(f"Fetching {symbol} klines by {interval}...")
             klines_data: KlineCandlestickDataResponse = fetch(
                 client().rest_api.kline_candlestick_data,

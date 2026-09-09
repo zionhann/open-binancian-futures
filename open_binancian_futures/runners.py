@@ -1,27 +1,59 @@
 import asyncio
+import inspect
 import json
 import logging
-import textwrap
 from abc import ABC, abstractmethod
-from typing import Optional, Self, override
+from collections.abc import Mapping, Sequence
+from pathlib import Path
+from typing import Any, Self, override
 
-from pandas import Timestamp
-
+import pandas as pd
 from binance_sdk_derivatives_trading_usds_futures.rest_api.models import (
     StartUserDataStreamResponse,
 )
 from binance_sdk_derivatives_trading_usds_futures.websocket_streams.models import (
-    KlineCandlestickStreamsResponse,
-    OrderTradeUpdate,
-    OrderTradeUpdateO,
     AccountUpdate,
     AccountUpdateA,
-    Listenkeyexpired,
     AlgoUpdate,
     AlgoUpdateO,
+    KlineCandlestickStreamsResponse,
+    Listenkeyexpired,
+    OrderTradeUpdate,
+    OrderTradeUpdateO,
 )
-from .models import Balance
+from pandas import Timestamp
+
+from .backtesting import (
+    BacktestConfig,
+    BacktestResult,
+    BacktestRunResult,
+    BacktestSummary,
+    BinanceHistoricalDataSource,
+    Candle,
+    CsvDataSource,
+    DataFrameDataSource,
+    EquityPoint,
+    HistoricalDataSource,
+    MarketExecutionPolicy,
+    ParquetDataSource,
+    build_timeline,
+    normalize_ohlcv_frame,
+)
+from .client import client
 from .constants import settings
+from .models import (
+    Balance,
+    Indicator,
+    Order,
+    OrderBook,
+    OrderEvent,
+    OrderIntent,
+    OrderList,
+    Position,
+    PositionBook,
+    PositionList,
+)
+from .strategy import Strategy, StrategyContext
 from .types import (
     AlgoStatus,
     EventType,
@@ -29,11 +61,6 @@ from .types import (
     OrderType,
     PositionSide,
 )
-from .models import Order, OrderBook, OrderEvent, OrderList
-from .models import Position, PositionBook
-from . import exchange as futures
-from .client import client
-from .strategy import Strategy, StrategyContext
 from .utils import fetch, get_or_raise
 from .webhook import Webhook
 
@@ -41,6 +68,7 @@ LOGGER = logging.getLogger(__name__)
 MESSAGE = "message"
 KEEPALIVE_USER_STREAM_INTERVAL = 60 * 50
 KLINE_SUBSCRIBE_RATE_PER_SECOND = 8
+OrderKey = tuple[str, int]
 
 
 class Runner(ABC):
@@ -74,7 +102,7 @@ class LiveTrading(Runner):
                 data = get_or_raise(stream.k)
                 asyncio.create_task(self.strategy.on_new_candlestick(data))
 
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - stream handlers are error boundaries
             LOGGER.error(f"An error occurred in the market stream handler: {e}")
             self.webhook.send_message(
                 f"[ALERT] An error occurred in the market stream handler:\n{e}"
@@ -109,7 +137,7 @@ class LiveTrading(Runner):
                         self._subscribe_to_user_stream(expired_listen_key=expired_key)
                     )
 
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - stream handlers are error boundaries
             LOGGER.error(f"An error occurred in the user data handler: {e}")
             self.webhook.send_message(
                 f"[ALERT] An error occurred in the user data handler: {e}"
@@ -196,7 +224,7 @@ class LiveTrading(Runner):
         stream.on(event=MESSAGE, callback=self._market_stream_handler)
         LOGGER.info(f"Subscribed to {symbol} klines by {interval}...")
 
-    async def _subscribe_to_user_stream(self, expired_listen_key: Optional[str] = None):
+    async def _subscribe_to_user_stream(self, expired_listen_key: str | None = None):
         if expired_listen_key:
             await self.client.websocket_streams.unsubscribe([expired_listen_key])
             await asyncio.sleep(1)
@@ -225,320 +253,573 @@ class LiveTrading(Runner):
         await self.client.websocket_streams.close_connection()
         await self.client.websocket_api.close_connection()
 
-
-class BacktestingResult:
-    """Stores backtesting metrics per symbol using dicts for cleaner aggregation."""
-
-    def __init__(self, symbol: str):
-        self._symbol = symbol
-        self._hit_count: dict[PositionSide, int] = {
-            PositionSide.BUY: 0,
-            PositionSide.SELL: 0,
-        }
-        self._win_count: dict[PositionSide, int] = {
-            PositionSide.BUY: 0,
-            PositionSide.SELL: 0,
-        }
-        self._trade_count: dict[PositionSide, int] = {
-            PositionSide.BUY: 0,
-            PositionSide.SELL: 0,
-        }
-        self._profit = 0.0
-        self._loss = 0.0
-
-    @property
-    def trade_count(self) -> int:
-        return sum(self._trade_count.values())
-
-    @property
-    def hit_count(self) -> int:
-        return sum(self._hit_count.values())
-
-    @property
-    def win_count(self) -> int:
-        return sum(self._win_count.values())
-
-    @property
-    def loss_count(self) -> int:
-        return self.trade_count - self.win_count
-
-    @property
-    def average_win(self) -> float:
-        return self._profit / self.win_count if self.win_count else 0.0
-
-    @property
-    def average_loss(self) -> float:
-        return self._loss / self.loss_count if self.loss_count else 0.0
-
-    def increment_hit_count(self, side: PositionSide) -> None:
-        self._hit_count[side] += 1
-
-    def increment_trade_count(self, side: PositionSide, is_win: bool) -> None:
-        self._trade_count[side] += 1
-        if is_win:
-            self._win_count[side] += 1
-
-    def increase_pnl(self, pnl: float) -> None:
-        if pnl > 0:
-            self._profit += pnl
-        else:
-            self._loss += pnl
-
-    def print(self):
-        hit_rate = round(self.hit_count / settings.sample_size, 2)
-        win_rate = round(
-            self.win_count / self.trade_count if self.trade_count else 0, 2
-        )
-
-        buy_hits = self._hit_count[PositionSide.BUY]
-        sell_hits = self._hit_count[PositionSide.SELL]
-        buy_rate = round(buy_hits / self.hit_count if self.hit_count else 0, 2)
-        sell_rate = round(sell_hits / self.hit_count if self.hit_count else 0, 2)
-
-        buy_trades = self._trade_count[PositionSide.BUY]
-        sell_trades = self._trade_count[PositionSide.SELL]
-        buy_wins = self._win_count[PositionSide.BUY]
-        sell_wins = self._win_count[PositionSide.SELL]
-        buy_win_rate = round(buy_wins / buy_trades if buy_trades else 0, 2)
-        sell_win_rate = round(sell_wins / sell_trades if sell_trades else 0, 2)
-
-        expectancy = (win_rate * self.average_win) - (
-            (1 - win_rate) * self.average_loss
-        )
-        rr = self.average_win / abs(self.average_loss) if self.average_loss else 0.0
-        pf = self._profit / abs(self._loss) if self._loss else 0.0
-
-        LOGGER.info(
-            f"==={self._symbol} Backtesting Results===\n"
-            f"Hit Rate: {hit_rate*100:.2f}% ({self.hit_count}/{settings.sample_size})\n"
-            f"- BUY Hit Rate: {buy_rate*100:.2f}% ({buy_hits}/{self.hit_count})\n"
-            f"- SELL Hit Rate: {sell_rate*100:.2f}% ({sell_hits}/{self.hit_count})\n\n"
-            f"Win Rate: {win_rate*100:.2f}% ({self.win_count}/{self.trade_count})\n"
-            f"- BUY Win Rate: {buy_win_rate*100:.2f}% ({buy_wins}/{buy_trades})\n"
-            f"- SELL Win Rate: {sell_win_rate*100:.2f}% ({sell_wins}/{sell_trades})\n\n"
-            f"Cumulative PNL: {self._profit+self._loss:.2f} USDT\n"
-            f"Expectancy: {expectancy:.2f} USDT\n"
-            f"Risk-Reward Ratio: {rr:.2f}\n"
-            f"Profit Factor: {pf:.2f}"
-        )
-
-
-class BacktestingSummary:
-    def __init__(self, results: list[BacktestingResult]) -> None:
-        self._results = results
-        self._total_trade_count = 0
-        self._total_hit_count = 0
-        self._total_win_count = 0
-        self._total_profit = 0.0
-        self._total_loss = 0.0
-
-    def print(self):
-        self._print_details()
-        self._print_summary()
-
-    def _print_details(self):
-        for result in self._results:
-            self._total_trade_count += result.trade_count
-            self._total_hit_count += result.hit_count
-            self._total_win_count += result.win_count
-            self._total_profit += result._profit
-            self._total_loss += result._loss
-            result.print()
-
-    def _print_summary(self):
-        total_hit_rate = (
-            self._total_hit_count / settings.sample_size
-            if settings.sample_size > 0
-            else 0
-        )
-        total_win_rate = (
-            self._total_win_count / self._total_trade_count
-            if self._total_trade_count > 0
-            else 0
-        )
-        cumulative_pnl = self._total_profit + self._total_loss
-        roi = cumulative_pnl / settings.balance * 100
-        total_average_win = (
-            self._total_profit / self._total_win_count
-            if self._total_win_count > 0
-            else 0.0
-        )
-        loss_count = self._total_trade_count - self._total_win_count
-        total_average_loss = self._total_loss / loss_count if loss_count > 0 else 0.0
-        expectancy = (total_win_rate * total_average_win) - (
-            (1 - total_win_rate) * total_average_loss
-        )
-        rr = total_average_win / abs(total_average_loss) if total_average_loss else 0.0
-        pf = self._total_profit / abs(self._total_loss) if self._total_loss else 0.0
-        LOGGER.info(
-            textwrap.dedent(
-                f"""
-                ===Overall Results===
-                Hit Rate: {total_hit_rate*100:.2f}%
-                Win Rate: {total_win_rate*100:.2f}%
-                Cumulative PNL: {cumulative_pnl:.2f} USDT ({roi:.2f}%)
-                
-                Expectancy: {expectancy:.2f} USDT
-                Risk-Reward Ratio: {rr:.2f}
-                Profit Factor: {pf:.2f}
-                """
-            )
-        )
+# Backward-compatible names retained for imports from runners.py.
+BacktestingResult = BacktestResult
+BacktestingSummary = BacktestSummary
 
 
 class Backtesting(Runner):
-    def __init__(self) -> None:
-        self.client = client()
-        self.balance = Balance(settings.balance)
-        self.orders = OrderBook()
-        self.positions = PositionBook()
-        self.indicators = futures.init_indicators(limit=settings.klines_limit)
-        context = StrategyContext(
-            client=self.client,
-            balance=self.balance,
-            orders=self.orders,
-            positions=self.positions,
-            indicators=self.indicators,
+    """Run a deterministic backtest over completed historical candles.
+
+    Supplying both ``strategy`` and ``data_source`` keeps construction fully
+    offline.  Omitting them preserves the existing Binance REST-backed CLI
+    behavior.
+    """
+
+    def __init__(
+        self,
+        strategy: object | None = None,
+        data_source: HistoricalDataSource | pd.DataFrame | Mapping | str | Path | None = None,
+        config: BacktestConfig | None = None,
+    ) -> None:
+        self.config = config or BacktestConfig(
+            initial_balance=settings.balance,
+            leverage=settings.leverage,
+            warmup_bars=settings.indicator_init_size,
+            interval=(settings.intervals_list[0] if settings.intervals_list else "1d"),
         )
-        self.strategy = Strategy.of(name=settings.strategy, context=context)
-        self.test_results = {s: BacktestingResult(s) for s in settings.symbols_list}
-
-    @override
-    def run(self) -> None:
-        LOGGER.info("Starting backtesting...")
-        asyncio.run(self._run_backtest_loop())
-
-    async def _run_backtest_loop(self) -> None:
-        if not settings.intervals_list:
-            raise ValueError(
-                "No intervals configured. Set INTERVALS to at least one interval."
+        self.interval = self.config.interval or (
+            settings.intervals_list[0] if settings.intervals_list else "1d"
+        )
+        self.client = None
+        injected_source = data_source is not None
+        if data_source is None:
+            source: HistoricalDataSource = BinanceHistoricalDataSource(
+                limit=settings.klines_limit
             )
-        primary_interval = settings.intervals_list[0]
-        actual_length = min(
-            len(self.indicators[s][primary_interval]) for s in settings.symbols_list
+            self.client = client()
+            requested_symbols = settings.symbols_list
+        else:
+            source = self._coerce_data_source(data_source)
+            requested_symbols = self._requested_source_symbols(source)
+
+        requested_intervals = (
+            (settings.intervals_list or [self.interval])
+            if data_source is None
+            else [self.interval]
         )
-        for i in range(settings.indicator_init_size, actual_length):
-            for symbol in settings.symbols_list:
-                klines = self.indicators[symbol][primary_interval][: i + 1]
-                current = klines.iloc[-1]
-                time, high, low = current["Open_time"], current["High"], current["Low"]
+        loaded = source.load(requested_symbols, requested_intervals)
+        self.indicators = self._normalize_loaded_indicators(
+            loaded, requested_symbols=requested_symbols
+        )
+        self.symbols = tuple(sorted(self.indicators))
+        if not self.symbols:
+            raise ValueError("No historical data was loaded")
 
-                self._expire_orders(symbol, time)
-                await self.strategy.run_backtest(symbol, primary_interval, i)
-                self._eval_orders(symbol, high, low, time)
+        self.balance = Balance(self.config.initial_balance)
+        self.orders = OrderBook({symbol: OrderList() for symbol in self.symbols})
+        self.positions = PositionBook(
+            {symbol: PositionList() for symbol in self.symbols}
+        )
+        self.test_results = {
+            symbol: BacktestResult(symbol) for symbol in self.symbols
+        }
+        self.results = self.test_results
+        self.equity_curve: list[EquityPoint] = []
+        self._open_trades: dict[str, tuple[PositionSide, float, Timestamp]] = {}
+        self._known_order_ids: set[OrderKey] = set()
+        self._tracked_orders: dict[OrderKey, Order] = {}
+        self._next_order_id = 1
+        self._current_time: Timestamp | None = None
 
-        LOGGER.info("Backtesting finished. Closing remaining positions...")
-
-        for symbol in settings.symbols_list:
-            self._flush_position(symbol)
-
-        BacktestingSummary(list(self.test_results.values())).print()
-
-    def _expire_orders(self, symbol: str, time: Timestamp) -> None:
-        orders = self.orders[symbol]
-        if (
-            order := orders.find_by_type(OrderType.LIMIT)
-        ) is not None and order.is_expired(time):
-            LOGGER.debug(
-                textwrap.dedent(
-                    f"""
-                        {order.type.value} ORDER EXPIRED @ {time}
-                        ID: {order.order_id}
-                        Symbol: {order.symbol}
-                        Side: {order.side.value}
-                        Price: {order.price}
-                        Quantity: {order.quantity}
-                        """
+        self.strategy: object
+        if strategy is None:
+            if injected_source:
+                raise ValueError(
+                    "strategy is required when data_source is injected"
                 )
+            context = StrategyContext(
+                client=self.client,
+                balance=self.balance,
+                orders=self.orders,
+                positions=self.positions,
+                indicators=self.indicators,
             )
-            orders.clear()
+            self.strategy = Strategy.of(settings.strategy, context=context)
+            self._bind_strategy()
+        else:
+            self.strategy = strategy
+            self._bind_strategy()
+            if isinstance(self.strategy, Strategy):
+                self.strategy.add_indicators(self.indicators)
+
+    @property
+    def pending_margin(self) -> float:
+        """Free-balance amount reserved by unfilled entry orders."""
+        return self.balance.reserved_margin
+
+    def _effective_market_execution(self) -> MarketExecutionPolicy:
+        policy = self.config.fill_policy
+        configured = getattr(policy, "market_execution", self.config.market_execution)
+        return MarketExecutionPolicy(configured)
+
+    @staticmethod
+    def _coerce_data_source(data_source: object) -> HistoricalDataSource:
+        if hasattr(data_source, "load"):
+            return data_source  # type: ignore[return-value]
+        if isinstance(data_source, pd.DataFrame):
+            default_symbol = (
+                settings.symbols_list[0]
+                if len(settings.symbols_list) == 1
+                else None
+            )
+            return DataFrameDataSource(data_source, symbol=default_symbol)
+        if isinstance(data_source, Mapping):
+            return DataFrameDataSource(data_source)
+        if isinstance(data_source, (str, Path)):
+            path = Path(data_source)
+            default_symbol = (
+                settings.symbols_list[0]
+                if len(settings.symbols_list) == 1
+                else None
+            )
+            if path.suffix.lower() == ".parquet":
+                return ParquetDataSource(path, symbol=default_symbol)
+            if path.suffix.lower() == ".csv":
+                return CsvDataSource(path, symbol=default_symbol)
+            raise ValueError("data_source path must end in .csv or .parquet")
+        raise TypeError(
+            "data_source must implement load(), be a DataFrame/mapping, or be a CSV/Parquet path"
+        )
+
+    @staticmethod
+    def _requested_source_symbols(source: HistoricalDataSource) -> list[str]:
+        if not isinstance(source, DataFrameDataSource):
+            return settings.symbols_list
+        if isinstance(source, (CsvDataSource, ParquetDataSource)):
+            return []
+        if isinstance(source.data, pd.DataFrame) and "Symbol" in source.data.columns:
+            return []
+        if source.symbol is not None:
+            return []
+        if isinstance(source.data, Mapping):
+            return []
+        return settings.symbols_list
+
+    def _normalize_loaded_indicators(
+        self, loaded: object, *, requested_symbols: Sequence[str] = ()
+    ) -> Indicator:
+        if isinstance(loaded, pd.DataFrame):
+            has_symbols = "Symbol" in loaded.columns
+            loaded = DataFrameDataSource(
+                loaded,
+                symbol=(
+                    requested_symbols[0]
+                    if not has_symbols and len(requested_symbols) == 1
+                    else None
+                ),
+            ).load(
+                [] if has_symbols else list(requested_symbols), [self.interval]
+            )
+        if not isinstance(loaded, Mapping):
+            raise TypeError("historical source must return symbol-indexed frames")
+        if loaded and all(isinstance(frame, pd.DataFrame) for frame in loaded.values()):
+            loaded = DataFrameDataSource(loaded).load([], [self.interval])
+        indicators = Indicator()
+        for symbol, interval_frames in loaded.items():
+            if not isinstance(interval_frames, Mapping):
+                raise TypeError(f"Historical data for {symbol} must be interval-indexed")
+            for interval, frame in interval_frames.items():
+                if not isinstance(frame, pd.DataFrame):
+                    raise TypeError(
+                        f"Historical data for {symbol} must be a DataFrame"
+                    )
+                indicators[str(symbol)][str(interval)] = normalize_ohlcv_frame(
+                    frame, symbol=str(symbol)
+                )
+            if self.interval not in indicators[str(symbol)] and indicators[str(symbol)]:
+                first_interval = next(iter(indicators[str(symbol)]))
+                indicators[str(symbol)][self.interval] = indicators[str(symbol)][
+                    first_interval
+                ].copy()
+        return indicators
+
+    def _bind_strategy(self) -> None:
+        for name, value in (
+            ("client", self.client),
+            ("balance", self.balance),
+            ("orders", self.orders),
+            ("positions", self.positions),
+            ("indicators", self.indicators),
+        ):
+            try:
+                setattr(self.strategy, name, value)
+            except (AttributeError, TypeError):
+                pass
+        try:
+            setattr(self.strategy, "_backtest_gateway", self)  # noqa: B010
+        except (AttributeError, TypeError):
+            pass
+
+    def _next_id(self) -> int:
+        order_id = self._next_order_id
+        self._next_order_id += 1
+        return order_id
+
+    @staticmethod
+    def _order_key(order: Order) -> OrderKey:
+        return order.symbol, order.order_id
+
+    async def submit_order(self, intent: OrderIntent) -> bool:
+        """Submit a domain ``OrderIntent`` during a backtest."""
+        if intent.symbol not in self.symbols:
+            raise KeyError(f"Unknown backtest symbol: {intent.symbol}")
+        quantity = intent.quantity
+        if quantity is None:
+            if intent.price is None or intent.price <= 0:
+                return False
+            quantity = (
+                self.balance.available
+                * settings.size
+                * self.config.leverage
+                / intent.price
+            )
+        if quantity <= 0:
+            return False
+        order = Order(
+            symbol=intent.symbol,
+            order_id=self._next_id(),
+            type=intent.order_type,
+            side=intent.side,
+            price=float(intent.price or 0.0),
+            quantity=float(quantity),
+            gtd=intent.gtd,
+            created_at=self._current_time,
+            reduce_only=intent.reduce_only,
+        )
+        self.orders[order.symbol].add(order)
+        if not self._register_order(order):
+            self.orders[order.symbol].remove_by_id(order.order_id)
+            return False
+        return True
+
+    def _transfer_legacy_reservation(self, symbol: str) -> None:
+        mapping = getattr(self.strategy, "_backtest_reserved_margin", None)
+        release = getattr(self.strategy, "_release_backtest_margin", None)
+        if isinstance(mapping, dict) and symbol in mapping and callable(release):
+            release(symbol)
+
+    def _register_order(self, order: Order) -> bool:
+        order_key = self._order_key(order)
+        if order_key in self._known_order_ids:
+            return True
+        if order.created_at is None:
+            order.created_at = self._current_time
+        self._known_order_ids.add(order_key)
+        self._tracked_orders[order_key] = order
+        if (
+            order.reduce_only
+            or order.type == OrderType.MARKET
+            or self._is_position_exit(order)
+        ):
+            return True
+        margin = order.price * order.quantity / self.config.leverage
+        if margin <= 0:
+            return True
+        self._transfer_legacy_reservation(order.symbol)
+        try:
+            self.balance.reserve_margin(order_key, margin)
+        except ValueError:
+            self._known_order_ids.discard(order_key)
+            self._tracked_orders.pop(order_key, None)
+            return False
+        return True
+
+    def _is_position_exit(self, order: Order) -> bool:
+        position = self.positions[order.symbol].find_first()
+        if position is None:
+            return False
+        close_side = (
+            PositionSide.SELL
+            if position.side == PositionSide.BUY
+            else PositionSide.BUY
+        )
+        return order.side == close_side and order.type in {
+            OrderType.STOP_MARKET,
+            OrderType.STOP_LIMIT,
+            OrderType.TAKE_PROFIT_MARKET,
+            OrderType.TAKE_PROFIT_LIMIT,
+        }
+
+    def _sync_orders(self, symbol: str) -> set[OrderKey]:
+        active_order_keys = {
+            self._order_key(order) for order in self.orders[symbol]
+        }
+        for order_key, order in list(self._tracked_orders.items()):
+            if order.symbol == symbol and order_key not in active_order_keys:
+                self.balance.release_margin(order_key)
+                self._known_order_ids.discard(order_key)
+                self._tracked_orders.pop(order_key, None)
+
+        new_order_keys: set[OrderKey] = set()
+        for order in list(self.orders[symbol]):
+            order_key = self._order_key(order)
+            if order_key not in self._known_order_ids:
+                if not self._register_order(order):
+                    self.orders[symbol].remove_by_id(order.order_id)
+                else:
+                    new_order_keys.add(order_key)
+        return new_order_keys
+
+    def _remove_order(self, order: Order) -> None:
+        order_key = self._order_key(order)
+        self.orders[order.symbol].remove_by_id(order.order_id)
+        self.balance.release_margin(order_key)
+        self._known_order_ids.discard(order_key)
+        self._tracked_orders.pop(order_key, None)
+
+    def _clear_orders(self, symbol: str) -> None:
+        order_keys = {self._order_key(order) for order in self.orders[symbol]}
+        order_keys.update(
+            order_key
+            for order_key, order in self._tracked_orders.items()
+            if order.symbol == symbol
+        )
+        for order_key in order_keys:
+            self.balance.release_margin(order_key)
+            self._known_order_ids.discard(order_key)
+            self._tracked_orders.pop(order_key, None)
+        self.orders[symbol].clear()
+
+    def _expire_orders(self, symbol: str, time_value: Timestamp) -> None:
+        for order in list(self.orders[symbol]):
+            if order.is_expired(time_value):
+                self._remove_order(order)
+
+    @staticmethod
+    def _as_timestamp(value: object) -> Timestamp:
+        return pd.Timestamp(value)
+
+    async def _run_strategy(self, symbol: str, index: int) -> None:
+        method: Any = getattr(self.strategy, "run_backtest")  # noqa: B009
+        parameters = list(inspect.signature(method).parameters.values())
+        if len(parameters) == 2:
+            outcome = method(symbol, index)
+        else:
+            outcome = method(symbol, self.interval, index)
+        if inspect.isawaitable(outcome):
+            await outcome
 
     def _eval_orders(
-        self, symbol: str, high: float, low: float, time: Timestamp
+        self,
+        symbol: str,
+        candle: Candle,
+        eligible_order_keys: set[OrderKey],
     ) -> None:
-        for order in self._filled_orders(symbol, high, low):
-            test_result = get_or_raise(
-                self.test_results.get(symbol),
-                lambda: KeyError(f"Test result not found for symbol: {symbol}"),
-            )
-            if not self.positions[symbol] and order.is_type(OrderType.LIMIT):
-                self._open_position(order, time)
-                test_result.increment_hit_count(order.side)
-            if (position := self.positions[symbol].find_first()) is not None and (
-                order.is_type(
-                    OrderType.TAKE_PROFIT_MARKET,
-                    OrderType.STOP_MARKET,
-                    OrderType.MARKET,
-                )
-            ):
-                pnl = self._close_position(position, order, time)
-                test_result.increase_pnl(pnl)
-                test_result.increment_trade_count(position.side, pnl > 0)
+        orders = [
+            order
+            for order in self.orders[symbol]
+            if self._order_key(order) in eligible_order_keys
+        ]
+        position = self.positions[symbol].find_first()
+        policy = self.config.fill_policy
+        if policy is None:
+            raise RuntimeError("BacktestConfig must provide a fill policy")
+        if position is None:
+            candidates = []
+            for sequence, order in enumerate(orders):
+                if order.reduce_only:
+                    continue
+                fill = policy.fill_price(order, candle)
+                if fill is not None:
+                    candidates.append((sequence, order, fill))
+            if not candidates:
                 return
+            _, order, fill = min(candidates, key=lambda item: item[0])
+            if not self._open_position(order, float(fill), candle.time):
+                return
+            self.test_results[symbol].record_entry(order.side)
+            self._run_hook("on_backtest_entry_filled", symbol, candle.time)
+            self._sync_orders(symbol)
+            return
 
-    def _filled_orders(self, symbol: str, high: float, low: float) -> OrderList:
-        return OrderList(
-            [order for order in self.orders[symbol] if order.is_filled(high, low)]
-        )
+        selected = policy.select_exit(orders, candle, position.side)
+        if selected is None:
+            return
+        order, fill = selected
+        self._close_position(symbol, position, fill, candle.time, order)
 
-    def _open_position(self, order: Order, time: Timestamp) -> None:
+    def _run_hook(self, name: str, *args: object) -> None:
+        hook = getattr(self.strategy, name, None)
+        if callable(hook):
+            outcome = hook(*args)
+            if inspect.isawaitable(outcome):
+                raise TypeError(f"Backtest hook {name} must be synchronous")
+
+    def _open_position(
+        self, order: Order, fill: float, time_value: Timestamp
+    ) -> bool:
         position = Position(
             symbol=order.symbol,
             amount=order.quantity,
-            price=order.price,
+            price=fill,
             side=order.side,
-            leverage=settings.leverage,
+            leverage=self.config.leverage,
         )
-        self.orders[order.symbol].remove_by_id(order.order_id)
+        actual_margin = position.initial_margin()
+        reserved_margin = self.balance.reserved_margin_for(self._order_key(order))
+        if actual_margin > self.balance.available + reserved_margin:
+            self._remove_order(order)
+            return False
+        if reserved_margin:
+            self.balance.consume_margin(self._order_key(order), actual_margin)
+        else:
+            self.balance.deduct(actual_margin)
+        self._remove_order(order)
         self.positions[order.symbol].update_positions([position])
-        self.balance.increase_balance(-position.initial_margin())
-        LOGGER.info(
-            textwrap.dedent(
-                f"""
-                Date: {time.strftime("%Y-%m-%d %H:%M:%S")}
-                {order.side.value} {position.symbol} @ {position.price}
-                ID: {order.order_id}
-                Type: {order.type.value}
-                Size: {order.quantity} {position.symbol[:-4]}
-                """
-            )
-        )
+        self._open_trades[order.symbol] = (position.side, fill, time_value)
+        return True
 
     def _close_position(
-        self, position: Position, order: Order, time: Timestamp
-    ) -> float:
-        pnl, margin = position.simple_pnl(order.price), position.initial_margin()
-        self.balance.increase_balance(pnl + margin)
-        LOGGER.info(
-            textwrap.dedent(
-                f"""
-                Date: {time.strftime("%Y-%m-%d %H:%M:%S")}
-                {order.side.value} {order.symbol} @ {order.price}
-                ID: {order.order_id}
-                Type: {order.type.value}
-                Realized PNL: {pnl:.2f} USDT ({pnl / margin * 100:.2f}%)
-                Balance: {self.balance}
-                """
+        self,
+        symbol: str,
+        position: Position,
+        fill: float,
+        time_value: Timestamp,
+        exit_order: Order | None = None,
+    ) -> None:
+        cost = self.config.cost_model.cost(
+            exit_order, fill, position.amount, time_value
+        )
+        pnl = position.simple_pnl(fill) - cost
+        self.balance.increase_balance(position.initial_margin() + pnl)
+        self.positions[symbol].clear()
+        self._clear_orders(symbol)
+        side, entry_price, entry_time = self._open_trades.pop(
+            symbol, (position.side, position.price, time_value)
+        )
+        self.test_results[symbol].record_trade(
+            side,
+            pnl,
+            entry_time=entry_time,
+            entry_price=entry_price,
+            exit_time=time_value,
+            exit_price=fill,
+            quantity=position.amount,
+            exit_order_type=exit_order.type if exit_order else None,
+        )
+
+    def _mark_to_market(
+        self,
+        frames: Mapping[str, pd.DataFrame],
+        timestamp: Timestamp,
+    ) -> None:
+        equity = self.balance.available + self.balance.reserved_margin
+        unrealized = 0.0
+        for symbol, frame in frames.items():
+            frame_index = frame.index.searchsorted(timestamp, side="right") - 1
+            if frame_index < 0:
+                continue
+            position = self.positions[symbol].find_first()
+            if position is None:
+                continue
+            close = float(frame.iloc[frame_index]["Close"])
+            unrealized += position.simple_pnl(close)
+            equity += position.initial_margin() + position.simple_pnl(close)
+        self.equity_curve.append(
+            EquityPoint(
+                timestamp=timestamp,
+                equity=equity,
+                balance=self.balance.available,
+                unrealized_pnl=unrealized,
             )
         )
-        self.positions[order.symbol].clear()
-        self.orders[order.symbol].clear()
-        return pnl
 
-    def _flush_position(self, symbol: str) -> None:
-        for position in self.positions[symbol]:
-            margin = position.initial_margin()
-            self.balance.increase_balance(margin)
-            LOGGER.info(
-                textwrap.dedent(
-                    f"""
-                    CLOSED {position.symbol}
-                    Balance: {self.balance}
-                    """
-                )
-            )
-        self.positions[symbol].clear()
-        self.orders[symbol].clear()
+    def _flush_position(self, symbol: str, candle: Candle) -> None:
+        position = self.positions[symbol].find_first()
+        if position is not None:
+            self._close_position(symbol, position, candle.close, candle.time)
+        else:
+            self._clear_orders(symbol)
+
+    async def _run_backtest_loop(self) -> BacktestRunResult:
+        frames = {
+            symbol: self.indicators[symbol][self.interval]
+            for symbol in self.symbols
+        }
+        eligible_indices = {
+            symbol: frame.index[self.config.warmup_bars :]
+            for symbol, frame in frames.items()
+        }
+        timeline = build_timeline(
+            frames,
+            self.config.warmup_bars,
+            mode=self.config.timeline_mode,
+        )
+        if timeline.empty:
+            raise ValueError("No timestamps available after warm-up")
+
+        for symbol in self.symbols:
+            self._sync_orders(symbol)
+
+        for timestamp in timeline:
+            for symbol in self.symbols:
+                frame = frames[symbol]
+                if timestamp not in eligible_indices[symbol]:
+                    continue
+                index = int(frame.index.get_loc(timestamp))
+                candle = Candle.from_series(frame.iloc[index])
+                self._current_time = candle.time
+                self.test_results[symbol].record_bars()
+                self._expire_orders(symbol, candle.time)
+                existing_order_keys = {
+                    self._order_key(order) for order in self.orders[symbol]
+                }
+                await self._run_strategy(symbol, index)
+                new_order_keys = self._sync_orders(symbol)
+                current_orders = {
+                    self._order_key(order): order for order in self.orders[symbol]
+                }
+                deferred = {
+                    order_key
+                    for order_key in new_order_keys
+                    if current_orders[order_key].type != OrderType.MARKET
+                    or self._effective_market_execution()
+                    == MarketExecutionPolicy.NEXT_OPEN
+                }
+                eligible = {
+                    self._order_key(order)
+                    for order in self.orders[symbol]
+                    if self._order_key(order) in existing_order_keys
+                    or self._order_key(order) not in deferred
+                }
+                self._eval_orders(symbol, candle, eligible)
+            self._mark_to_market(frames, self._as_timestamp(timestamp))
+
+        for symbol in self.symbols:
+            frame = frames[symbol]
+            evaluated_index = eligible_indices[symbol]
+            evaluated_index = evaluated_index[evaluated_index <= timeline[-1]]
+            if evaluated_index.empty:
+                self._clear_orders(symbol)
+                continue
+            last_timestamp = evaluated_index[-1]
+            self._flush_position(symbol, Candle.from_series(frame.loc[last_timestamp]))
+
+        final_timestamp = self._as_timestamp(timeline[-1])
+        final_point = EquityPoint(
+            timestamp=final_timestamp,
+            equity=self.balance.available,
+            balance=self.balance.available,
+        )
+        if self.equity_curve and self.equity_curve[-1].timestamp == final_timestamp:
+            self.equity_curve[-1] = final_point
+        else:
+            self.equity_curve.append(final_point)
+
+        summary = BacktestSummary.from_results(list(self.test_results.values()))
+        summary.print()
+        return BacktestRunResult(
+            by_symbol=dict(self.test_results),
+            summary=summary,
+            equity_curve=tuple(self.equity_curve),
+            final_balance=self.balance.available,
+        )
+
+    @override
+    def run(self) -> BacktestRunResult:
+        LOGGER.info("Starting deterministic backtesting...")
+        return asyncio.run(self._run_backtest_loop())
 
     @override
     def close(self) -> None:

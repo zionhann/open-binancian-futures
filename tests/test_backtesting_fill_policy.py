@@ -1,0 +1,108 @@
+from __future__ import annotations
+
+import pandas as pd
+
+from open_binancian_futures import (
+    Candle,
+    DeterministicFillPolicy,
+    MarketExecutionPolicy,
+)
+from open_binancian_futures.models import Order
+from open_binancian_futures.types import OrderType, PositionSide
+
+
+def make_order(order_type: OrderType, side: PositionSide, price: float) -> Order:
+    return Order(
+        symbol="ETHUSDT",
+        order_id=1,
+        type=order_type,
+        side=side,
+        price=price,
+        quantity=1.0,
+    )
+
+
+def test_limit_and_stop_gap_fill_at_candle_open() -> None:
+    candle = Candle(
+        pd.Timestamp("2026-01-01", tz="UTC"),
+        open=85.0,
+        high=95.0,
+        low=80.0,
+        close=90.0,
+    )
+    policy = DeterministicFillPolicy()
+
+    assert (
+        policy.fill_price(
+            make_order(OrderType.LIMIT, PositionSide.BUY, 90.0), candle
+        )
+        == 85.0
+    )
+    assert (
+        policy.fill_price(
+            make_order(OrderType.STOP_MARKET, PositionSide.SELL, 90.0), candle
+        )
+        == 85.0
+    )
+
+
+def test_intrabar_orders_fill_at_their_configured_price() -> None:
+    candle = Candle(
+        pd.Timestamp("2026-01-01", tz="UTC"),
+        open=100.0,
+        high=110.0,
+        low=90.0,
+        close=105.0,
+    )
+    policy = DeterministicFillPolicy()
+
+    assert (
+        policy.fill_price(
+            make_order(OrderType.LIMIT, PositionSide.BUY, 95.0), candle
+        )
+        == 95.0
+    )
+    assert (
+        policy.fill_price(
+            make_order(OrderType.STOP_MARKET, PositionSide.BUY, 105.0), candle
+        )
+        == 105.0
+    )
+
+
+def test_stop_loss_wins_when_stop_and_take_profit_both_trigger() -> None:
+    candle = Candle(
+        pd.Timestamp("2026-01-01", tz="UTC"),
+        open=100.0,
+        high=110.0,
+        low=90.0,
+        close=105.0,
+    )
+    stop = make_order(OrderType.STOP_MARKET, PositionSide.SELL, 95.0)
+    take_profit = make_order(OrderType.TAKE_PROFIT_MARKET, PositionSide.SELL, 105.0)
+
+    selected = DeterministicFillPolicy().select_exit(
+        [take_profit, stop], candle, PositionSide.BUY
+    )
+
+    assert selected is not None
+    assert selected[0] is stop
+    assert selected[1] == 95.0
+
+
+def test_market_policy_defaults_to_completed_candle_close() -> None:
+    candle = Candle(
+        pd.Timestamp("2026-01-01", tz="UTC"),
+        open=100.0,
+        high=110.0,
+        low=90.0,
+        close=105.0,
+    )
+    market = make_order(OrderType.MARKET, PositionSide.SELL, 0.0)
+
+    assert DeterministicFillPolicy().fill_price(market, candle) == 105.0
+    assert (
+        DeterministicFillPolicy(market_execution=MarketExecutionPolicy.NEXT_OPEN)
+        .market_execution
+        == MarketExecutionPolicy.NEXT_OPEN
+    )

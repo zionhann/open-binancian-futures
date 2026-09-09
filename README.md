@@ -8,13 +8,13 @@ A Python framework for creating, backtesting, and deploying automated trading bo
 ## Features
 
 - **Live Trading** – Monitor multiple symbols and execute trades automatically
-- **Backtesting** – Test strategies on historical data (experimental)
+- **Backtesting** – Run deterministic, credential-free backtests on injected historical data
 - **Webhooks** – Real-time notifications via Slack/Discord
 
 ## Prerequisites
 
 - Python 3.12+
-- Binance API keys with `Enable Futures` permission ([Get keys](https://www.binance.com/en/support/faq/360002502072))
+- Binance API keys with `Enable Futures` permission for live trading ([Get keys](https://www.binance.com/en/support/faq/360002502072))
 
 ## Getting Started
 
@@ -120,7 +120,83 @@ class MyStrategy(Strategy):
 
 </details>
 
-### 4. Running
+### 4. Deterministic backtesting without credentials
+
+The package backtester accepts a `DataFrame`, a CSV/Parquet path, or a custom
+`HistoricalDataSource`. The input must contain `Open_time`, `Open`, `High`,
+`Low`, and `Close`; add `Symbol` when more than one symbol is present.
+
+```python
+from open_binancian_futures import (
+    BacktestConfig,
+    Backtesting,
+    DataFrameDataSource,
+    MarketExecutionPolicy,
+    OrderType,
+    PositionSide,
+)
+
+runner = Backtesting(
+    strategy=my_strategy,
+    data_source=DataFrameDataSource(candles, interval="1h"),
+    config=BacktestConfig(
+        initial_balance=100.0,
+        leverage=1,
+        warmup_bars=0,
+        interval="1h",
+        market_execution=MarketExecutionPolicy.CLOSE,
+    ),
+)
+result = runner.run()
+
+print(result.summary.format())
+print(result.summary.trades)
+print(result.equity_curve)
+```
+
+`Backtesting.run()` returns the `BacktestRunResult`; existing callers that
+only use the side effects can continue to ignore the return value.
+
+`CsvDataSource(path, symbol="ETHUSDT", interval="1h")` and
+`ParquetDataSource(...)` provide the file-backed equivalents. Injected data
+does not create a Binance client or make a network request. Calling
+`Backtesting()` without a source keeps the existing Binance REST data loader
+for CLI compatibility.
+
+The default engine evaluates completed candles in UTC chronological order.
+Existing orders are eligible on the current candle, while newly created
+`LIMIT`, `STOP`, `TAKE_PROFIT`, and `TAKE_PROFIT_MARKET` orders wait until the
+next candle. A newly created `MARKET` order fills at the completed candle close
+by default; `MarketExecutionPolicy.NEXT_OPEN` explicitly defers it to the next
+candle open. Limit and stop gaps fill at the candle open, intrabar triggers
+fill at the configured price, and Stop Loss wins over Take Profit when both
+are reached. Costs, slippage, and funding are zero by default. Open positions
+are realized at each symbol's final evaluated close.
+
+The returned `BacktestRunResult` exposes `by_symbol`, `summary`,
+`equity_curve`, and `final_balance`. Metrics use each symbol's actual
+evaluated-bar count, classify zero PNL as break-even, and keep the loss sign
+negative in expectancy calculations.
+
+For strategy code that should work without Binance SDK enums, use the domain
+adapter:
+
+```python
+await self.submit_order(
+    self.order_intent(
+        "ETHUSDT", PositionSide.BUY, OrderType.LIMIT,
+        price=99.0, quantity=1.0,
+    )
+)
+```
+
+Existing `run_backtest(symbol, interval, index)` implementations and direct
+`OrderList.open_order(...)` calls remain supported. The latter are discovered
+by the runner after each callback; new non-market orders still follow the
+same-candle deferral rule. The SDK-specific `open_order(...)` method remains
+available for live REST execution.
+
+### 5. Running
 
 ```bash
 open-binancian-futures my_strategy.py
