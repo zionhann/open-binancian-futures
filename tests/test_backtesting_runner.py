@@ -346,6 +346,7 @@ def test_strategy_order_intent_is_executed_by_the_runner_gateway() -> None:
 
     assert result.summary.entry_count == 1
     assert result.summary.trades[0].entry_price == 99.0
+    assert result.summary.trades[0].entry_time == timestamps[1]
 
 
 def test_strategy_cancellation_releases_pending_margin_before_next_callback() -> None:

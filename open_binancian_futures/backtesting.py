@@ -9,7 +9,9 @@ from __future__ import annotations
 
 import io
 import logging
+import os
 import re
+import tempfile
 import urllib.error
 import urllib.request
 import zipfile
@@ -26,6 +28,13 @@ from .models import Indicator, Order, OrderIntent
 from .types import OrderType, PositionSide
 
 LOGGER = logging.getLogger(__name__)
+
+
+def _profit_factor(profit: float, loss: float) -> float:
+    """Return gross profit divided by gross loss with an explicit no-loss case."""
+    if loss < 0:
+        return profit / abs(loss)
+    return float("inf") if profit > 0 else 0.0
 
 
 @dataclass(frozen=True)
@@ -208,6 +217,7 @@ class DeterministicFillPolicy:
             else PositionSide.BUY
         )
         priority = {
+            OrderType.LIMIT: self.take_profit_priority,
             OrderType.STOP_MARKET: self.stop_loss_priority,
             OrderType.STOP_LIMIT: self.stop_loss_priority,
             OrderType.TAKE_PROFIT_MARKET: self.take_profit_priority,
@@ -263,7 +273,11 @@ class BacktestConfig:
 
 
 class HistoricalDataSource(Protocol):
-    """Source protocol for completed OHLCV frames."""
+    """Source protocol for completed OHLCV frames.
+
+    A source may expose an optional ``start_time`` attribute.  When present,
+    the runner uses it as the exact evaluation boundary after warm-up data.
+    """
 
     def load(
         self, symbols: Sequence[str], intervals: Sequence[str]
@@ -306,16 +320,34 @@ def build_timeline(
     frames: Mapping[str, pd.DataFrame],
     warmup_bars: int,
     mode: str = "intersection",
+    *,
+    start_time: pd.Timestamp | None = None,
 ) -> pd.DatetimeIndex:
-    """Build a sorted timestamp timeline after per-symbol warm-up."""
+    """Build a sorted timestamp timeline after per-symbol warm-up.
+
+    ``start_time`` is useful for sources that load an exact warm-up context but
+    expose a requested evaluation boundary that cannot be represented by a
+    fixed number of rows (for example, sparse daily candles).
+    """
 
     if warmup_bars < 0:
         raise ValueError("warmup_bars must not be negative")
     if mode not in {"intersection", "union"}:
         raise ValueError("mode must be 'intersection' or 'union'")
+    normalized_start = None
+    if start_time is not None:
+        normalized_start = pd.Timestamp(start_time)
+        if normalized_start.tzinfo is None:
+            normalized_start = normalized_start.tz_localize("UTC")
+        else:
+            normalized_start = normalized_start.tz_convert("UTC")
     timeline: pd.DatetimeIndex | None = None
     for frame in frames.values():
-        index = pd.DatetimeIndex(frame.index).sort_values()[warmup_bars:]
+        index = pd.DatetimeIndex(frame.index).sort_values()
+        if normalized_start is not None:
+            index = index[index >= normalized_start]
+        else:
+            index = index[warmup_bars:]
         if timeline is None:
             timeline = index
         elif mode == "intersection":
@@ -610,6 +642,94 @@ class BinanceVisionDataSource:
                 raise FileNotFoundError(url) from error
             raise
 
+    @staticmethod
+    def _parse_archive(payload: bytes, url: str, symbol: str) -> pd.DataFrame:
+        expected_member = url.rsplit("/", 1)[-1][:-4] + ".csv"
+        try:
+            with zipfile.ZipFile(io.BytesIO(payload)) as archive_file:
+                members = sorted(
+                    name
+                    for name in archive_file.namelist()
+                    if name.lower().endswith(".csv")
+                )
+                if not members:
+                    raise ValueError(
+                        f"Binance Vision archive contains no CSV: {url}"
+                    )
+                member = next(
+                    (name for name in members if Path(name).name == expected_member),
+                    members[0],
+                )
+                raw = pd.read_csv(
+                    io.BytesIO(archive_file.read(member)),
+                    header=None,
+                )
+
+            if not raw.empty and str(raw.iloc[0, 0]).strip().lower() in {
+                "open_time",
+                "open time",
+            }:
+                raw = raw.iloc[1:].reset_index(drop=True)
+            if raw.shape[1] < len(VISION_KLINE_COLUMNS):
+                raise ValueError(
+                    f"Binance Vision kline archive has {raw.shape[1]} columns; "
+                    f"expected at least {len(VISION_KLINE_COLUMNS)}: {url}"
+                )
+            raw = raw.iloc[:, : len(VISION_KLINE_COLUMNS)]
+            raw.columns = VISION_KLINE_COLUMNS
+            for column in ("Open", "High", "Low", "Close", "Volume"):
+                raw[column] = pd.to_numeric(raw[column], errors="raise").astype(float)
+            for column in ("Open_time", "Close_time"):
+                raw[column] = pd.to_datetime(
+                    pd.to_numeric(raw[column], errors="raise"),
+                    unit="ms",
+                    utc=True,
+                )
+            return normalize_ohlcv_frame(raw, symbol=symbol)
+        except (
+            KeyError,
+            OSError,
+            OverflowError,
+            TypeError,
+            UnicodeError,
+            ValueError,
+            zipfile.BadZipFile,
+            pd.errors.EmptyDataError,
+            pd.errors.ParserError,
+        ) as error:
+            raise ValueError(f"Invalid Binance Vision archive: {url}") from error
+
+    @staticmethod
+    def _remove_cached_archive(path: Path) -> None:
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass
+        except OSError:
+            LOGGER.warning("Unable to remove invalid Binance Vision cache: %s", path)
+
+    @staticmethod
+    def _write_cache_atomically(path: Path, payload: bytes) -> None:
+        temporary_path: Path | None = None
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with tempfile.NamedTemporaryFile(
+                mode="wb",
+                dir=path.parent,
+                prefix=f".{path.name}.",
+                suffix=".tmp",
+                delete=False,
+            ) as temporary_file:
+                temporary_path = Path(temporary_file.name)
+                temporary_file.write(payload)
+                temporary_file.flush()
+                os.fsync(temporary_file.fileno())
+            os.replace(temporary_path, path)
+            temporary_path = None
+        finally:
+            if temporary_path is not None:
+                BinanceVisionDataSource._remove_cached_archive(temporary_path)
+
     def _read_archive(
         self,
         archive_type: str,
@@ -621,51 +741,16 @@ class BinanceVisionDataSource:
         path = self._archive_path(archive_type, symbol, interval, timestamp)
         if path.exists():
             payload = path.read_bytes()
-        else:
-            payload = self._downloader(url)
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_bytes(payload)
+            try:
+                return self._parse_archive(payload, url, symbol)
+            except ValueError:
+                LOGGER.warning("Removing invalid Binance Vision cache: %s", path)
+                self._remove_cached_archive(path)
 
-        expected_member = url.rsplit("/", 1)[-1][:-4] + ".csv"
-        try:
-            with zipfile.ZipFile(io.BytesIO(payload)) as archive_file:
-                members = sorted(
-                    name for name in archive_file.namelist() if name.lower().endswith(".csv")
-                )
-                if not members:
-                    raise ValueError(f"Binance Vision archive contains no CSV: {url}")
-                member = next(
-                    (name for name in members if Path(name).name == expected_member),
-                    members[0],
-                )
-                raw = pd.read_csv(
-                    io.BytesIO(archive_file.read(member)),
-                    header=None,
-                )
-        except (OSError, zipfile.BadZipFile, pd.errors.ParserError) as error:
-            raise ValueError(f"Invalid Binance Vision archive: {url}") from error
-
-        if not raw.empty and str(raw.iloc[0, 0]).strip().lower() in {
-            "open_time",
-            "open time",
-        }:
-            raw = raw.iloc[1:].reset_index(drop=True)
-        if raw.shape[1] < len(VISION_KLINE_COLUMNS):
-            raise ValueError(
-                f"Binance Vision kline archive has {raw.shape[1]} columns; "
-                f"expected at least {len(VISION_KLINE_COLUMNS)}: {url}"
-            )
-        raw = raw.iloc[:, : len(VISION_KLINE_COLUMNS)]
-        raw.columns = VISION_KLINE_COLUMNS
-        for column in ("Open", "High", "Low", "Close", "Volume"):
-            raw[column] = pd.to_numeric(raw[column], errors="raise").astype(float)
-        for column in ("Open_time", "Close_time"):
-            raw[column] = pd.to_datetime(
-                pd.to_numeric(raw[column], errors="raise"),
-                unit="ms",
-                utc=True,
-            )
-        return normalize_ohlcv_frame(raw, symbol=symbol)
+        payload = self._downloader(url)
+        frame = self._parse_archive(payload, url, symbol)
+        self._write_cache_atomically(path, payload)
+        return frame
 
     def _load_interval(self, symbol: str, interval: str) -> pd.DataFrame:
         load_start = self._load_start_time(interval)
@@ -976,7 +1061,7 @@ class BacktestResult:
 
     @property
     def profit_factor(self) -> float:
-        return self.profit / abs(self.loss) if self.loss else 0.0
+        return _profit_factor(self.profit, self.loss)
 
 
 class BacktestSummary:
@@ -1059,7 +1144,7 @@ class BacktestSummary:
 
     @property
     def profit_factor(self) -> float:
-        return self.profit / abs(self.loss) if self.loss else 0.0
+        return _profit_factor(self.profit, self.loss)
 
     @property
     def average_loss_abs(self) -> float:

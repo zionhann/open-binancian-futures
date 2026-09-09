@@ -308,7 +308,9 @@ class Backtesting(Runner):
             warmup_bars=settings.indicator_init_size,
             interval=source_interval,
         )
+        self._interval_explicit = config is not None and config.interval is not None
         self.interval = self.config.interval or source_interval
+        self._evaluation_start = self._source_start_time(source)
 
         if default_source:
             requested_intervals = settings.intervals_list or [self.interval]
@@ -334,10 +336,14 @@ class Backtesting(Runner):
         self.results = self.test_results
         self.equity_curve: list[EquityPoint] = []
         self._open_trades: dict[str, tuple[PositionSide, float, Timestamp]] = {}
+        self._entry_costs: dict[str, float] = {}
+        self._entry_quantities: dict[str, float] = {}
         self._known_order_ids: set[OrderKey] = set()
         self._tracked_orders: dict[OrderKey, Order] = {}
         self._next_order_id = 1
         self._current_time: Timestamp | None = None
+        self._current_candle: Candle | None = None
+        self._run_backtest_takes_two_args: bool | None = None
 
         self.strategy: object
         if strategy is None:
@@ -392,6 +398,13 @@ class Backtesting(Runner):
         if configured:
             return str(configured)
         return cls._default_interval()
+
+    @classmethod
+    def _source_start_time(
+        cls, source: HistoricalDataSource
+    ) -> Timestamp | None:
+        configured = getattr(source, "start_time", None)
+        return cls._as_timestamp(configured) if configured is not None else None
 
     @staticmethod
     def _coerce_data_source(data_source: object) -> HistoricalDataSource:
@@ -468,6 +481,12 @@ class Backtesting(Runner):
                     frame, symbol=str(symbol)
                 )
             if self.interval not in indicators[str(symbol)] and indicators[str(symbol)]:
+                if self._interval_explicit:
+                    loaded_intervals = sorted(indicators[str(symbol)])
+                    raise ValueError(
+                        f"Configured interval {self.interval!r} is missing for "
+                        f"{symbol}; loaded intervals: {loaded_intervals}"
+                    )
                 first_interval = next(iter(indicators[str(symbol)]))
                 indicators[str(symbol)][self.interval] = indicators[str(symbol)][
                     first_interval
@@ -547,15 +566,23 @@ class Backtesting(Runner):
             order.created_at = self._current_time
         self._known_order_ids.add(order_key)
         self._tracked_orders[order_key] = order
+        if order.reduce_only or self._is_position_exit(order):
+            return True
         if (
-            order.reduce_only
-            or order.type == OrderType.MARKET
-            or self._is_position_exit(order)
+            order.type == OrderType.MARKET
+            and self._effective_market_execution() != MarketExecutionPolicy.NEXT_OPEN
         ):
             return True
-        margin = order.price * order.quantity / self.config.leverage
+        margin_price = order.price
+        if order.type == OrderType.MARKET and margin_price <= 0:
+            margin_price = (
+                self._current_candle.close if self._current_candle is not None else 0.0
+            )
+        margin = margin_price * order.quantity / self.config.leverage
         if margin <= 0:
-            return True
+            self._known_order_ids.discard(order_key)
+            self._tracked_orders.pop(order_key, None)
+            return False
         self._transfer_legacy_reservation(order.symbol)
         try:
             self.balance.reserve_margin(order_key, margin)
@@ -575,6 +602,8 @@ class Backtesting(Runner):
             else PositionSide.BUY
         )
         return order.side == close_side and order.type in {
+            OrderType.LIMIT,
+            OrderType.MARKET,
             OrderType.STOP_MARKET,
             OrderType.STOP_LIMIT,
             OrderType.TAKE_PROFIT_MARKET,
@@ -628,12 +657,17 @@ class Backtesting(Runner):
 
     @staticmethod
     def _as_timestamp(value: object) -> Timestamp:
-        return pd.Timestamp(value)
+        timestamp = pd.Timestamp(value)
+        if timestamp.tzinfo is None:
+            return timestamp.tz_localize("UTC")
+        return timestamp.tz_convert("UTC")
 
     async def _run_strategy(self, symbol: str, index: int) -> None:
         method: Any = getattr(self.strategy, "run_backtest")  # noqa: B009
-        parameters = list(inspect.signature(method).parameters.values())
-        if len(parameters) == 2:
+        if self._run_backtest_takes_two_args is None:
+            parameters = list(inspect.signature(method).parameters.values())
+            self._run_backtest_takes_two_args = len(parameters) == 2
+        if self._run_backtest_takes_two_args:
             outcome = method(symbol, index)
         else:
             outcome = method(symbol, self.interval, index)
@@ -677,7 +711,14 @@ class Backtesting(Runner):
         if selected is None:
             return
         order, fill = selected
-        self._close_position(symbol, position, fill, candle.time, order)
+        self._close_position(
+            symbol,
+            position,
+            fill,
+            candle.time,
+            order,
+            quantity=order.quantity,
+        )
 
     def _run_hook(self, name: str, *args: object) -> None:
         hook = getattr(self.strategy, name, None)
@@ -697,17 +738,27 @@ class Backtesting(Runner):
             leverage=self.config.leverage,
         )
         actual_margin = position.initial_margin()
-        reserved_margin = self.balance.reserved_margin_for(self._order_key(order))
-        if actual_margin > self.balance.available + reserved_margin:
+        order_key = self._order_key(order)
+        reserved_margin = self.balance.reserved_margin_for(order_key)
+        entry_cost = float(
+            self.config.cost_model.cost(
+                order, fill, position.amount, time_value
+            )
+        )
+        if actual_margin + entry_cost > self.balance.available + reserved_margin:
             self._remove_order(order)
             return False
         if reserved_margin:
-            self.balance.consume_margin(self._order_key(order), actual_margin)
+            self.balance.consume_margin(order_key, actual_margin)
         else:
             self.balance.deduct(actual_margin)
+        if entry_cost:
+            self.balance.deduct(entry_cost)
         self._remove_order(order)
         self.positions[order.symbol].update_positions([position])
         self._open_trades[order.symbol] = (position.side, fill, time_value)
+        self._entry_costs[order.symbol] = entry_cost
+        self._entry_quantities[order.symbol] = position.amount
         return True
 
     def _close_position(
@@ -717,17 +768,55 @@ class Backtesting(Runner):
         fill: float,
         time_value: Timestamp,
         exit_order: Order | None = None,
+        quantity: float | None = None,
     ) -> None:
-        cost = self.config.cost_model.cost(
-            exit_order, fill, position.amount, time_value
+        close_quantity = (
+            position.amount
+            if quantity is None
+            else min(float(quantity), position.amount)
         )
-        pnl = position.simple_pnl(fill) - cost
-        self.balance.increase_balance(position.initial_margin() + pnl)
-        self.positions[symbol].clear()
-        self._clear_orders(symbol)
-        side, entry_price, entry_time = self._open_trades.pop(
+        if close_quantity <= 0:
+            return
+
+        gross_pnl = (
+            (fill - position.price) * close_quantity
+            if position.is_long()
+            else (position.price - fill) * close_quantity
+        )
+        exit_cost = float(
+            self.config.cost_model.cost(
+                exit_order, fill, close_quantity, time_value
+            )
+        )
+        entry_quantity = self._entry_quantities.get(symbol, position.amount)
+        entry_cost = self._entry_costs.get(symbol, 0.0)
+        allocated_entry_cost = (
+            entry_cost * close_quantity / entry_quantity
+            if entry_quantity > 0
+            else 0.0
+        )
+        pnl = gross_pnl - allocated_entry_cost - exit_cost
+        released_margin = close_quantity * position.price / self.config.leverage
+        self.balance.increase_balance(released_margin + gross_pnl - exit_cost)
+
+        side, entry_price, entry_time = self._open_trades.get(
             symbol, (position.side, position.price, time_value)
         )
+        is_full_close = close_quantity >= position.amount - 1e-12
+        if is_full_close:
+            self.positions[symbol].clear()
+            self._clear_orders(symbol)
+            self._open_trades.pop(symbol, None)
+            self._entry_costs.pop(symbol, None)
+            self._entry_quantities.pop(symbol, None)
+        else:
+            position.amount -= close_quantity
+            self.positions[symbol].update_positions([position])
+            self._entry_costs[symbol] = entry_cost - allocated_entry_cost
+            self._entry_quantities[symbol] = entry_quantity - close_quantity
+            if exit_order is not None:
+                self._remove_order(exit_order)
+
         self.test_results[symbol].record_trade(
             side,
             pnl,
@@ -735,7 +824,7 @@ class Backtesting(Runner):
             entry_price=entry_price,
             exit_time=time_value,
             exit_price=fill,
-            quantity=position.amount,
+            quantity=close_quantity,
             exit_order_type=exit_order.type if exit_order else None,
         )
 
@@ -753,7 +842,7 @@ class Backtesting(Runner):
             position = self.positions[symbol].find_first()
             if position is None:
                 continue
-            close = float(frame.iloc[frame_index]["Close"])
+            close = float(frame["Close"].values[frame_index])
             unrealized += position.simple_pnl(close)
             equity += position.initial_margin() + position.simple_pnl(close)
         self.equity_curve.append(
@@ -777,14 +866,19 @@ class Backtesting(Runner):
             symbol: self.indicators[symbol][self.interval]
             for symbol in self.symbols
         }
-        eligible_indices = {
-            symbol: frame.index[self.config.warmup_bars :]
-            for symbol, frame in frames.items()
-        }
+        eligible_indices: dict[str, pd.DatetimeIndex] = {}
+        for symbol, frame in frames.items():
+            index = pd.DatetimeIndex(frame.index).sort_values()
+            if self._evaluation_start is not None:
+                index = index[index >= self._evaluation_start]
+            else:
+                index = index[self.config.warmup_bars :]
+            eligible_indices[symbol] = index
         timeline = build_timeline(
             frames,
             self.config.warmup_bars,
             mode=self.config.timeline_mode,
+            start_time=self._evaluation_start,
         )
         if timeline.empty:
             raise ValueError("No timestamps available after warm-up")
@@ -800,6 +894,7 @@ class Backtesting(Runner):
                 index = int(frame.index.get_loc(timestamp))
                 candle = Candle.from_series(frame.iloc[index])
                 self._current_time = candle.time
+                self._current_candle = candle
                 self.test_results[symbol].record_bars()
                 self._expire_orders(symbol, candle.time)
                 existing_order_keys = {
@@ -810,6 +905,11 @@ class Backtesting(Runner):
                 current_orders = {
                     self._order_key(order): order for order in self.orders[symbol]
                 }
+                new_order_keys.update(
+                    order_key
+                    for order_key in current_orders
+                    if order_key not in existing_order_keys
+                )
                 deferred = {
                     order_key
                     for order_key in new_order_keys

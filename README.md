@@ -179,6 +179,9 @@ start date, so the requested dates describe the evaluated period rather than
 being consumed by indicator initialization. The
 old `BinanceHistoricalDataSource` remains available only as an explicit
 compatibility source for callers migrating from the previous engine.
+When an execution interval is explicitly configured, the source must provide
+that interval; the runner raises instead of evaluating another interval under
+the wrong label.
 
 The default engine evaluates completed candles in UTC chronological order.
 Existing orders are eligible on the current candle, while newly created
@@ -188,7 +191,9 @@ by default; `MarketExecutionPolicy.NEXT_OPEN` explicitly defers it to the next
 candle open. Limit and stop gaps fill at the candle open, intrabar triggers
 fill at the configured price, and Stop Loss wins over Take Profit when both
 are reached. Costs, slippage, and funding are zero by default. Open positions
-are realized at each symbol's final evaluated close.
+are realized at each symbol's final evaluated close. Partial exit orders close
+only their requested quantity. A custom `CostModel` is applied to both entry
+and exit fills.
 
 The returned `BacktestRunResult` exposes `by_symbol`, `summary`,
 `equity_curve`, and `final_balance`. Metrics use each symbol's actual

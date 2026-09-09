@@ -15,6 +15,8 @@ from binance_sdk_derivatives_trading_usds_futures.derivatives_trading_usds_futur
     DerivativesTradingUsdsFutures,
 )
 from binance_sdk_derivatives_trading_usds_futures.rest_api.models import (
+    NewAlgoOrderSideEnum,
+    NewAlgoOrderTimeInForceEnum,
     NewOrderSideEnum,
     NewOrderTimeInForceEnum,
 )
@@ -454,7 +456,13 @@ class Strategy(ABC):
         )
 
     async def submit_order(self, intent: OrderIntent) -> bool:
-        """Submit an order through the backtest gateway or live REST adapter."""
+        """Submit a domain order through the backtest or live adapter.
+
+        Live entry margin is deducted under the balance lock and restored when
+        the exchange request fails. Conditional intents use Binance's algo
+        endpoint; their single domain price is used as the trigger price and,
+        for conditional limit orders, as the limit price as well.
+        """
         gateway = getattr(self, "_backtest_gateway", None)
         if gateway is not None:
             outcome = gateway.submit_order(intent)
@@ -462,6 +470,9 @@ class Strategy(ABC):
                 outcome = await outcome
             return bool(outcome)
 
+        balance = self.balance
+        if balance is None:
+            return False
         if intent.quantity is None:
             if intent.price is None:
                 return False
@@ -472,27 +483,84 @@ class Strategy(ABC):
             )
         else:
             intent_quantity = intent.quantity
-        if not intent_quantity:
+        if intent_quantity is None or intent_quantity <= 0:
             return False
 
-        kwargs = {
-            "symbol": intent.symbol,
-            "side": NewOrderSideEnum(intent.side.value),
-            "type": intent.order_type.value,
-            "quantity": float(intent_quantity),
-            "reduce_only": "true" if intent.reduce_only else "false",
+        client = self._require_client()
+        is_conditional = intent.order_type in {
+            OrderType.STOP_LIMIT,
+            OrderType.STOP_MARKET,
+            OrderType.TAKE_PROFIT_LIMIT,
+            OrderType.TAKE_PROFIT_MARKET,
         }
-        if intent.price is not None:
-            kwargs["price"] = float(intent.price)
+        if is_conditional:
+            request = client.rest_api.new_algo_order
+            kwargs: dict[str, object] = {
+                "algo_type": "CONDITIONAL",
+                "symbol": intent.symbol,
+                "side": NewAlgoOrderSideEnum(intent.side.value),
+                "type": intent.order_type.value,
+                "quantity": float(intent_quantity),
+                "reduce_only": "true" if intent.reduce_only else "false",
+            }
+            if intent.price is not None:
+                kwargs["trigger_price"] = float(intent.price)
+                if intent.order_type in {
+                    OrderType.STOP_LIMIT,
+                    OrderType.TAKE_PROFIT_LIMIT,
+                }:
+                    kwargs["price"] = float(intent.price)
+        else:
+            request = client.rest_api.new_order
+            kwargs = {
+                "symbol": intent.symbol,
+                "side": NewOrderSideEnum(intent.side.value),
+                "type": intent.order_type.value,
+                "quantity": float(intent_quantity),
+                "reduce_only": "true" if intent.reduce_only else "false",
+            }
+            if intent.price is not None:
+                kwargs["price"] = float(intent.price)
         if intent.gtd is not None:
-            kwargs["time_in_force"] = NewOrderTimeInForceEnum.GTD
+            kwargs["time_in_force"] = (
+                NewAlgoOrderTimeInForceEnum.GTD
+                if is_conditional
+                else NewOrderTimeInForceEnum.GTD
+            )
             kwargs["good_till_date"] = intent.gtd
         else:
-            kwargs["time_in_force"] = NewOrderTimeInForceEnum.GTC
-        await asyncio.to_thread(
-            fetch, self._require_client().rest_api.new_order, **kwargs
-        )
-        return True
+            kwargs["time_in_force"] = (
+                NewAlgoOrderTimeInForceEnum.GTC
+                if is_conditional
+                else NewOrderTimeInForceEnum.GTC
+            )
+
+        margin = 0.0
+        if (
+            intent.price is not None
+            and intent.price > 0
+            and not intent.reduce_only
+            and intent.order_type != OrderType.MARKET
+        ):
+            margin = float(intent.price) * float(intent_quantity) / settings.leverage
+
+        try:
+            async with balance.lock:
+                if margin > balance.available:
+                    return False
+                if margin:
+                    balance.deduct(margin)
+            await asyncio.to_thread(fetch, request, **kwargs)
+            return True
+        except Exception as error:  # noqa: BLE001 - rollback covers SDK failures
+            self.LOGGER.error(
+                f"Failed to submit {intent.order_type.value} order for "
+                f"{intent.symbol}: {error}"
+            )
+            if margin:
+                async with balance.lock:
+                    balance.increase_balance(margin)
+            return False
 
     async def on_new_candlestick(self, data: KlineCandlestickStreamsResponseK) -> None:
         if not get_or_raise(data.x):

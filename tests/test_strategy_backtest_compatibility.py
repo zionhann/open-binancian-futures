@@ -6,6 +6,7 @@ from types import SimpleNamespace
 import pandas as pd
 import pytest
 from binance_sdk_derivatives_trading_usds_futures.rest_api.models import (
+    NewAlgoOrderSideEnum,
     NewOrderSideEnum,
     NewOrderTimeInForceEnum,
 )
@@ -68,7 +69,7 @@ async def test_domain_intent_maps_sdk_enums_only_at_live_boundary(monkeypatch) -
     strategy = object.__new__(MinimalStrategy)
     strategy._backtest_gateway = None
     strategy.client = SimpleNamespace(
-        rest_api=SimpleNamespace(new_order=object())
+        rest_api=SimpleNamespace(new_order=object(), new_algo_order=object())
     )
     strategy.exchange_info = None
     strategy.balance = Balance(100.0)
@@ -100,14 +101,14 @@ async def test_domain_intent_preserves_reduce_only_at_live_boundary(monkeypatch)
     strategy = object.__new__(MinimalStrategy)
     strategy._backtest_gateway = None
     strategy.client = SimpleNamespace(
-        rest_api=SimpleNamespace(new_order=object())
+        rest_api=SimpleNamespace(new_order=object(), new_algo_order=object())
     )
     strategy.exchange_info = None
     strategy.balance = Balance(100.0)
     captured = {}
 
     def fake_fetch(method, **kwargs):
-        del method
+        captured["method"] = method
         captured.update(kwargs)
         return object()
 
@@ -123,6 +124,9 @@ async def test_domain_intent_preserves_reduce_only_at_live_boundary(monkeypatch)
     )
 
     assert await strategy.submit_order(intent) is True
+    assert captured["method"] is strategy.client.rest_api.new_algo_order
+    assert captured["side"] is NewAlgoOrderSideEnum.SELL
+    assert captured["trigger_price"] == 95.0
     assert captured["reduce_only"] == "true"
 
 

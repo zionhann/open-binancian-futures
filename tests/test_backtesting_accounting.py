@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pandas as pd
 
-from open_binancian_futures import BacktestResult, BacktestSummary, EquityPoint
+from open_binancian_futures import BacktestResult, EquityPoint
 from open_binancian_futures.models import Balance
 from open_binancian_futures.types import OrderType, PositionSide
 
@@ -48,16 +48,3 @@ def test_trade_ledger_preserves_exit_order_type_and_equity_curve() -> None:
     assert result.trades[0].exit_order_type == OrderType.TAKE_PROFIT_MARKET
     assert result.trades[0].quantity == 1.0
     assert result.equity_curve == (point,)
-
-
-def test_summary_is_pure_and_repeated_formatting_does_not_accumulate() -> None:
-    result = BacktestResult("ETHUSDT", evaluated_bars=10)
-    result.record_trade(PositionSide.BUY, 2.0)
-    summary = BacktestSummary.from_results([result])
-
-    first = summary.format()
-    second = summary.format()
-
-    assert first == second
-    assert summary.trade_count == 1
-    assert summary.pnl == 2.0

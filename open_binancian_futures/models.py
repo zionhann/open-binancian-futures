@@ -367,13 +367,7 @@ class OrderEvent:
             order_id=self.order_id,
             type=self.order_type,
             side=self.side,
-            price=(
-                self.price
-                if self.price is not None
-                else self.stop_price
-                if self.stop_price is not None
-                else 0.0
-            ),
+            price=self.price or self.stop_price or 0.0,
             quantity=self.quantity or 0.0,
             gtd=self.gtd or None,
             reduce_only=bool(self.is_reduce_only),
