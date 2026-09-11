@@ -273,13 +273,13 @@ class BacktestConfig:
 
     initial_balance: float = 100.0
     leverage: int = 1
-    position_size: float = 0.05
     warmup_bars: int = 0
     interval: str | None = None
     timeline_mode: str = "intersection"
     fill_policy: FillPolicy | None = None
     cost_model: CostModel = field(default_factory=ZeroCostModel)
     market_execution: MarketExecutionPolicy = MarketExecutionPolicy.CLOSE
+    position_size: float = 0.05
 
     def __post_init__(self) -> None:
         if self.initial_balance <= 0:

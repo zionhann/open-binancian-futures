@@ -23,6 +23,7 @@ from binance_sdk_derivatives_trading_usds_futures.websocket_streams.models impor
 )
 from pandas import Timestamp
 
+from . import exchange as futures
 from .backtesting import (
     BacktestConfig,
     BacktestResult,
@@ -101,9 +102,28 @@ class LiveTrading(Runner):
             timezone=settings.timezone,
         )
         self.webhook = Webhook.of(settings.webhook_url)
+        self.exchange_info = futures.init_exchange_info(symbols=self.symbols)
+        self.balance = futures.init_balance(
+            execution_config=self.execution_config,
+        )
+        self.orders = futures.init_orders(symbols=self.symbols)
+        self.positions = futures.init_positions(
+            leverage=self.execution_config.leverage,
+            symbols=self.symbols,
+        )
+        self.indicators = futures.init_indicators(
+            symbols=self.symbols,
+            intervals=self.intervals,
+            timezone=self.execution_config.timezone,
+        )
         context = StrategyContext(
             client=self.client,
+            exchange_info=self.exchange_info,
+            balance=self.balance,
+            orders=self.orders,
+            positions=self.positions,
             webhook=self.webhook,
+            indicators=self.indicators,
             execution_config=self.execution_config,
         )
         self.strategy = Strategy.of(name=settings.strategy, context=context)

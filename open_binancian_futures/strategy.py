@@ -229,7 +229,9 @@ class Strategy(ABC):
         execution_config: ExecutionConfig | None = None,
     ) -> None:
         self.client = client
-        self.execution_config = execution_config or ExecutionConfig()
+        self.execution_config = execution_config or (
+            balance.execution_config if balance is not None else ExecutionConfig()
+        )
         self.exchange_info = (
             exchange_info
             if exchange_info is not None
@@ -263,7 +265,13 @@ class Strategy(ABC):
         self.indicators = (
             indicators
             if indicators is not None
-            else (futures.init_indicators() if client is not None else Indicator())
+            else (
+                futures.init_indicators(
+                    timezone=self.execution_config.timezone,
+                )
+                if client is not None
+                else Indicator()
+            )
         )
         self._realized_profit: dict[str, float] = {}
         self.add_indicators(self.indicators)
@@ -273,6 +281,10 @@ class Strategy(ABC):
         self.execution_config = execution_config
         if self.balance is not None:
             self.balance.configure_execution(execution_config)
+        if self.positions is not None:
+            for position_list in self.positions.values():
+                for position in position_list:
+                    position.leverage = execution_config.leverage
 
     def _require_exchange_info(self) -> ExchangeInfo:
         if self.exchange_info is None:
@@ -683,7 +695,7 @@ class Strategy(ABC):
 
     def accumulate_realized_profit(self, symbol: str, profit: float) -> None:
         """Accumulate realized profit for partial fills."""
-        self._realized_profit[symbol] += profit
+        self._realized_profit[symbol] = self._realized_profit.get(symbol, 0.0) + profit
 
     def on_new_order(self, event: OrderEvent) -> None:
         if event.can_convert_to_order():
@@ -716,7 +728,7 @@ class Strategy(ABC):
         average_price = round(event.average_price or 0.0, decimal_places(price))
         filled_percentage = (filled / quantity * 100) if quantity else 0.0
         side_str = event.side.value if event.side else "N/A"
-        realized_profit = self._realized_profit[event.symbol]
+        realized_profit = self._realized_profit.get(event.symbol, 0.0)
 
         self.LOGGER.info(
             textwrap.dedent(

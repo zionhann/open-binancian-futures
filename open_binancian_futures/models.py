@@ -83,6 +83,8 @@ class Balance:
         self._execution_config = execution_config
 
     def calculate_quantity(self, entry_price: float) -> float:
+        if not math.isfinite(entry_price) or entry_price <= 0.0:
+            raise ValueError("entry_price must be finite and greater than zero")
         initial_margin = self._balance * self._execution_config.position_size
         return initial_margin * self._execution_config.leverage / entry_price
 

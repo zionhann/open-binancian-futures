@@ -49,13 +49,16 @@ KLINES_COLUMNS = [
 ]
 
 
-def init_exchange_info() -> ExchangeInfo:
+def init_exchange_info(symbols: Sequence[str] | None = None) -> ExchangeInfo:
     data: ExchangeInformationResponse = fetch(client().rest_api.exchange_information)
-    symbols = get_or_raise(data.symbols)
+    exchange_symbols = get_or_raise(data.symbols)
+    requested_symbols = set(
+        symbols if symbols is not None else settings.symbols_list
+    )
     target_symbols = [
         item
-        for item in symbols
-        if item.symbol is not None and item.symbol in settings.symbols_list
+        for item in exchange_symbols
+        if item.symbol is not None and item.symbol in requested_symbols
     ]
     return ExchangeInfo(target_symbols)
 
@@ -119,13 +122,16 @@ def _fetch_algo_orders(symbol: str) -> list[Order]:
     return [_create_order_from_algo(item, symbol) for item in items]
 
 
-def init_orders() -> OrderBook:
+def init_orders(symbols: Sequence[str] | None = None) -> OrderBook:
+    requested_symbols = tuple(
+        symbols if symbols is not None else settings.symbols_list
+    )
     orders = {
         symbol: OrderList(_fetch_regular_orders(symbol) + _fetch_algo_orders(symbol))
-        for symbol in settings.symbols_list
+        for symbol in requested_symbols
     }
     LOGGER.info(f"Loaded open orders: {orders}")
-    return OrderBook(orders)
+    return OrderBook(orders, symbols=requested_symbols)
 
 
 def _create_position_from_response(
@@ -150,9 +156,14 @@ def _create_position_from_response(
     )
 
 
-def init_positions(leverage: int = 1) -> PositionBook:
+def init_positions(
+    leverage: int = 1, *, symbols: Sequence[str] | None = None
+) -> PositionBook:
+    requested_symbols = tuple(
+        symbols if symbols is not None else settings.symbols_list
+    )
     positions = {}
-    for symbol in settings.symbols_list:
+    for symbol in requested_symbols:
         items = cast(
             list[PositionInformationV3Response],
             fetch(client().rest_api.position_information_v3, symbol=symbol),
@@ -164,7 +175,7 @@ def init_positions(leverage: int = 1) -> PositionBook:
         ]
         positions[symbol] = PositionList(position_list)
     LOGGER.info(f"Loaded positions: {positions}")
-    return PositionBook(positions)
+    return PositionBook(positions, symbols=requested_symbols)
 
 
 def init_indicators(
@@ -172,11 +183,13 @@ def init_indicators(
     *,
     symbols: Sequence[str] | None = None,
     intervals: Sequence[str] | None = None,
+    timezone: str | None = None,
 ) -> Indicator:
     """Fetch completed candles for the configured or requested dimensions."""
     indicators = Indicator()
-    requested_symbols = symbols or settings.symbols_list
-    requested_intervals = intervals or settings.intervals_list
+    requested_symbols = symbols if symbols is not None else settings.symbols_list
+    requested_intervals = intervals if intervals is not None else settings.intervals_list
+    requested_timezone = timezone if timezone is not None else settings.timezone
     for symbol in requested_symbols:
         for interval in requested_intervals:
             LOGGER.info(f"Fetching {symbol} klines by {interval}...")
@@ -190,7 +203,7 @@ def init_indicators(
             df["Open_time"] = (
                 pd.to_datetime(df["Open_time"], unit="ms")
                 .dt.tz_localize("UTC")
-                .dt.tz_convert(settings.timezone)
+                .dt.tz_convert(requested_timezone)
             )
             df.set_index("Open_time", inplace=True, drop=False)
             df["Symbol"] = symbol
