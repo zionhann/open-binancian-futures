@@ -14,6 +14,7 @@ from binance_sdk_derivatives_trading_usds_futures.rest_api.models import (
 
 from .client import client
 from .constants import settings
+from .execution import ExecutionConfig
 from .models import (
     Balance,
     ExchangeInfo,
@@ -59,7 +60,7 @@ def init_exchange_info() -> ExchangeInfo:
     return ExchangeInfo(target_symbols)
 
 
-def init_balance() -> Balance:
+def init_balance(execution_config: ExecutionConfig | None = None) -> Balance:
     LOGGER.info("Fetching available balance...")
     data: list[FuturesAccountBalanceV3Response] = fetch(
         client().rest_api.futures_account_balance_v3
@@ -68,8 +69,8 @@ def init_balance() -> Balance:
     if usdt_balance:
         available = float(get_or_raise(usdt_balance.available_balance))
         LOGGER.info(f'Available USDT balance: "{available:.2f}"')
-        return Balance(available)
-    return Balance(0.0)
+        return Balance(available, execution_config=execution_config)
+    return Balance(0.0, execution_config=execution_config)
 
 
 def _create_order_from_regular(item: AllOrdersResponse, symbol: str) -> Order:
@@ -128,7 +129,9 @@ def init_orders() -> OrderBook:
 
 
 def _create_position_from_response(
-    item: PositionInformationV3Response, symbol: str
+    item: PositionInformationV3Response,
+    symbol: str,
+    leverage: int,
 ) -> Position | None:
     price = float(get_or_raise(item.entry_price))
     amount = float(get_or_raise(item.position_amt))
@@ -142,12 +145,12 @@ def _create_position_from_response(
         price=price,
         amount=amount,
         side=(PositionSide.BUY if amount > 0 else PositionSide.SELL),
-        leverage=settings.leverage,
+        leverage=leverage,
         break_even_price=bep,
     )
 
 
-def init_positions() -> PositionBook:
+def init_positions(leverage: int = 1) -> PositionBook:
     positions = {}
     for symbol in settings.symbols_list:
         items = cast(
@@ -157,7 +160,7 @@ def init_positions() -> PositionBook:
         position_list = [
             pos
             for item in items
-            if (pos := _create_position_from_response(item, symbol)) is not None
+            if (pos := _create_position_from_response(item, symbol, leverage)) is not None
         ]
         positions[symbol] = PositionList(position_list)
     LOGGER.info(f"Loaded positions: {positions}")

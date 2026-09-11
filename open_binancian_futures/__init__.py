@@ -34,6 +34,7 @@ from .backtesting import (
     normalize_ohlcv_frame,
 )
 from .constants import settings
+from .execution import ExecutionConfig
 from .models import (
     Balance,
     ExchangeInfo,
@@ -85,6 +86,7 @@ __all__ = [
     "EquityPoint",
     "EventType",
     "ExchangeInfo",
+    "ExecutionConfig",
     "FillPolicy",
     "Filter",
     "FilterType",

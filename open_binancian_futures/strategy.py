@@ -28,7 +28,7 @@ from binance_sdk_derivatives_trading_usds_futures.websocket_streams.models impor
 from pandas import DataFrame
 
 from . import exchange as futures
-from .constants import settings
+from .execution import ExecutionConfig
 from .models import (
     Balance,
     ExchangeInfo,
@@ -76,6 +76,7 @@ class StrategyContext:
     positions: PositionBook | None = None
     webhook: Webhook | None = None
     indicators: Indicator | None = None
+    execution_config: ExecutionConfig | None = None
 
 
 class Strategy(ABC):
@@ -102,15 +103,37 @@ class Strategy(ABC):
 
         try:
             strategy_class = Strategy._import_strategy(name)
-            return strategy_class(
-                client=context.client,
-                exchange_info=context.exchange_info,
-                balance=context.balance,
-                orders=context.orders,
-                positions=context.positions,
-                webhook=context.webhook,
-                indicators=context.indicators,
-            )
+            parameters = inspect.signature(strategy_class).parameters
+            if context.execution_config is not None and (
+                "execution_config" in parameters
+                or any(
+                    parameter.kind is inspect.Parameter.VAR_KEYWORD
+                    for parameter in parameters.values()
+                )
+            ):
+                strategy = strategy_class(
+                    client=context.client,
+                    exchange_info=context.exchange_info,
+                    balance=context.balance,
+                    orders=context.orders,
+                    positions=context.positions,
+                    webhook=context.webhook,
+                    indicators=context.indicators,
+                    execution_config=context.execution_config,
+                )
+            else:
+                strategy = strategy_class(
+                    client=context.client,
+                    exchange_info=context.exchange_info,
+                    balance=context.balance,
+                    orders=context.orders,
+                    positions=context.positions,
+                    webhook=context.webhook,
+                    indicators=context.indicators,
+                )
+            if context.execution_config is not None:
+                strategy.configure_execution(context.execution_config)
+            return strategy
         except StrategyLoadError:
             Strategy.LOGGER.error(f"Failed to load strategy '{name}'")
             raise
@@ -203,8 +226,10 @@ class Strategy(ABC):
         positions: PositionBook | None,
         webhook: Webhook | None,
         indicators: Indicator | None,
+        execution_config: ExecutionConfig | None = None,
     ) -> None:
         self.client = client
+        self.execution_config = execution_config or ExecutionConfig()
         self.exchange_info = (
             exchange_info
             if exchange_info is not None
@@ -213,8 +238,13 @@ class Strategy(ABC):
         self.balance = (
             balance
             if balance is not None
-            else (futures.init_balance() if client is not None else Balance(settings.balance))
+            else (
+                futures.init_balance(execution_config=self.execution_config)
+                if client is not None
+                else Balance(100.0, execution_config=self.execution_config)
+            )
         )
+        self.balance.configure_execution(self.execution_config)
         self.orders = (
             orders
             if orders is not None
@@ -223,7 +253,11 @@ class Strategy(ABC):
         self.positions = (
             positions
             if positions is not None
-            else (futures.init_positions() if client is not None else PositionBook())
+            else (
+                futures.init_positions(leverage=self.execution_config.leverage)
+                if client is not None
+                else PositionBook()
+            )
         )
         self.webhook = webhook or Webhook.of(url=None)
         self.indicators = (
@@ -231,11 +265,14 @@ class Strategy(ABC):
             if indicators is not None
             else (futures.init_indicators() if client is not None else Indicator())
         )
+        self._realized_profit: dict[str, float] = {}
         self.add_indicators(self.indicators)
-        self._realized_profit = {
-            symbol: 0.0
-            for symbol in set(settings.symbols_list) | set(self.indicators)
-        }
+
+    def configure_execution(self, execution_config: ExecutionConfig) -> None:
+        """Inject the runner execution policy into strategy-owned state."""
+        self.execution_config = execution_config
+        if self.balance is not None:
+            self.balance.configure_execution(execution_config)
 
     def _require_exchange_info(self) -> ExchangeInfo:
         if self.exchange_info is None:
@@ -252,6 +289,7 @@ class Strategy(ABC):
     def add_indicators(self, indicator: Indicator) -> None:
         """Load custom indicators for all symbols and intervals."""
         for symbol, intervals in indicator.items():
+            self._realized_profit.setdefault(symbol, 0.0)
             for interval, frame in list(intervals.items()):
                 indicator[symbol][interval] = self.load(frame[BASIC_COLUMNS])
                 self.LOGGER.info(
@@ -277,7 +315,7 @@ class Strategy(ABC):
         tp_orders = {OrderType.TAKE_PROFIT_MARKET, OrderType.TAKE_PROFIT_LIMIT}
 
         # Normalize ratios by leverage
-        _ratio = ratio / settings.leverage
+        _ratio = ratio / self.execution_config.leverage
 
         # Calculate price movement direction
         # SL SELL (close long) or TP BUY (close short) → price decreases (1 - ratio)
@@ -347,8 +385,8 @@ class Strategy(ABC):
             if activation_price
             else None
         )
-        _callback_ratio = callback_ratio / settings.leverage * 100
-        max_cb_ratio = min(100 // settings.leverage, 10)
+        _callback_ratio = callback_ratio / self.execution_config.leverage * 100
+        max_cb_ratio = min(100 // self.execution_config.leverage, 10)
         safe_cb_ratio = round(min(max(0.1, _callback_ratio), max_cb_ratio), 2)
 
         fetch(
@@ -406,7 +444,7 @@ class Strategy(ABC):
                 return False
 
             # Optimistic deduction BEFORE releasing lock
-            margin = entry_price * quantity / settings.leverage
+            margin = entry_price * quantity / self.execution_config.leverage
             self.balance.deduct(margin)
 
         # Step 2: Lock released - make network call in thread pool
@@ -552,12 +590,17 @@ class Strategy(ABC):
             )
 
         margin = 0.0
+        execution_config = getattr(self, "execution_config", balance.execution_config)
         if (
             intent.price is not None
             and intent.price > 0
             and not intent.reduce_only
         ):
-            margin = float(intent.price) * float(intent_quantity) / settings.leverage
+            margin = (
+                float(intent.price)
+                * float(intent_quantity)
+                / execution_config.leverage
+            )
 
         try:
             async with balance.lock:
@@ -584,7 +627,7 @@ class Strategy(ABC):
         open_time = (
             pd.to_datetime(get_or_raise(data.t), unit="ms")
             .tz_localize("UTC")
-            .tz_convert(settings.timezone)
+            .tz_convert(self.execution_config.timezone)
         )
         symbol = get_or_raise(data.s)
         interval = get_or_raise(data.i)
@@ -626,7 +669,7 @@ class Strategy(ABC):
                     price=price,
                     amount=amount,
                     side=(PositionSide.BUY if amount > 0 else PositionSide.SELL),
-                    leverage=settings.leverage,
+                    leverage=self.execution_config.leverage,
                     break_even_price=bep,
                 )
             ]
