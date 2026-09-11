@@ -23,6 +23,7 @@ from binance_sdk_derivatives_trading_usds_futures.websocket_streams.models impor
 )
 from pandas import Timestamp
 
+from . import exchange as futures
 from .backtesting import (
     BacktestConfig,
     BacktestResult,
@@ -41,6 +42,7 @@ from .backtesting import (
 )
 from .client import client
 from .constants import settings
+from .execution import ExecutionConfig
 from .models import (
     Balance,
     Indicator,
@@ -92,8 +94,38 @@ class Runner(ABC):
 class LiveTrading(Runner):
     def __init__(self) -> None:
         self.client = client()
+        self.symbols = tuple(settings.symbols_list)
+        self.intervals = tuple(settings.intervals_list)
+        self.execution_config = ExecutionConfig(
+            leverage=settings.leverage,
+            position_size=settings.size,
+            timezone=settings.timezone,
+        )
         self.webhook = Webhook.of(settings.webhook_url)
-        context = StrategyContext(client=self.client, webhook=self.webhook)
+        self.exchange_info = futures.init_exchange_info(symbols=self.symbols)
+        self.balance = futures.init_balance(
+            execution_config=self.execution_config,
+        )
+        self.orders = futures.init_orders(symbols=self.symbols)
+        self.positions = futures.init_positions(
+            leverage=self.execution_config.leverage,
+            symbols=self.symbols,
+        )
+        self.indicators = futures.init_indicators(
+            symbols=self.symbols,
+            intervals=self.intervals,
+            timezone=self.execution_config.timezone,
+        )
+        context = StrategyContext(
+            client=self.client,
+            exchange_info=self.exchange_info,
+            balance=self.balance,
+            orders=self.orders,
+            positions=self.positions,
+            webhook=self.webhook,
+            indicators=self.indicators,
+            execution_config=self.execution_config,
+        )
         self.strategy = Strategy.of(name=settings.strategy, context=context)
 
     def _market_stream_handler(self, stream: KlineCandlestickStreamsResponse) -> None:
@@ -147,7 +179,7 @@ class LiveTrading(Runner):
         event = OrderEvent.from_order_trade_update(data)
         curr_order_type = OrderType(get_or_raise(data.o))
 
-        if event.symbol in settings.symbols_list:
+        if event.symbol in self.symbols:
             if event.status == OrderStatus.NEW and event.order_type == curr_order_type:
                 self.strategy.on_new_order(event)
 
@@ -167,7 +199,7 @@ class LiveTrading(Runner):
     def _handle_algo_update(self, data: AlgoUpdateO):
         event = OrderEvent.from_algo_update(data)
 
-        if event.symbol not in settings.symbols_list:
+        if event.symbol not in self.symbols:
             return
 
         if event.status == AlgoStatus.NEW:
@@ -193,7 +225,7 @@ class LiveTrading(Runner):
     @override
     def run(self) -> None:
         LOGGER.info("Starting to run...")
-        for s in settings.symbols_list:
+        for s in self.symbols:
             self._set_leverage(symbol=s)
         asyncio.run(self._run_async())
 
@@ -201,8 +233,8 @@ class LiveTrading(Runner):
         await self.client.websocket_streams.create_connection()
         await self._subscribe_to_user_stream()
 
-        for s in settings.symbols_list:
-            for i in settings.intervals_list:
+        for s in self.symbols:
+            for i in self.intervals:
                 await self._subscribe_to_kline_stream(symbol=s, interval=i)
                 await asyncio.sleep(1 / KLINE_SUBSCRIBE_RATE_PER_SECOND)
 
@@ -213,9 +245,9 @@ class LiveTrading(Runner):
         fetch(
             self.client.rest_api.change_initial_leverage,
             symbol=symbol,
-            leverage=settings.leverage,
+            leverage=self.execution_config.leverage,
         )
-        LOGGER.info(f"Set leverage for {symbol} to {settings.leverage}.")
+        LOGGER.info(f"Set leverage for {symbol} to {self.execution_config.leverage}.")
 
     async def _subscribe_to_kline_stream(self, symbol: str, interval: str):
         stream = await self.client.websocket_streams.kline_candlestick_streams(
@@ -273,6 +305,7 @@ class Backtesting(Runner):
         data_source: HistoricalDataSource | pd.DataFrame | Mapping | str | Path | None = None,
         config: BacktestConfig | None = None,
     ) -> None:
+        config_was_provided = config is not None
         self.client = None
         default_source = data_source is None
         source: HistoricalDataSource
@@ -302,13 +335,22 @@ class Backtesting(Runner):
             source_interval = self._source_interval(source)
             requested_symbols = self._requested_source_symbols(source)
 
-        self.config = config or BacktestConfig(
-            initial_balance=settings.balance,
-            leverage=settings.leverage,
-            warmup_bars=settings.indicator_init_size,
-            interval=source_interval,
+        if config is None:
+            config = (
+                BacktestConfig(
+                    initial_balance=settings.balance,
+                    leverage=settings.leverage,
+                    position_size=settings.size,
+                    warmup_bars=settings.indicator_init_size,
+                    interval=source_interval,
+                )
+                if default_source
+                else BacktestConfig(interval=source_interval)
+            )
+        self.config = config
+        self._interval_explicit = (
+            config_was_provided and config.interval is not None
         )
-        self._interval_explicit = config is not None and config.interval is not None
         self.interval = self.config.interval or source_interval
         self._evaluation_start = self._source_start_time(source)
 
@@ -325,7 +367,10 @@ class Backtesting(Runner):
         if not self.symbols:
             raise ValueError("No historical data was loaded")
 
-        self.balance = Balance(self.config.initial_balance)
+        self.balance = Balance(
+            self.config.initial_balance,
+            execution_config=self.config.execution_config,
+        )
         self.orders = OrderBook({symbol: OrderList() for symbol in self.symbols})
         self.positions = PositionBook(
             {symbol: PositionList() for symbol in self.symbols}
@@ -358,6 +403,7 @@ class Backtesting(Runner):
                 orders=self.orders,
                 positions=self.positions,
                 indicators=self.indicators,
+                execution_config=self.config.execution_config,
             )
             self.strategy = Strategy.of(settings.strategy, context=context)
             self._bind_strategy()
@@ -504,6 +550,17 @@ class Backtesting(Runner):
                 setattr(self.strategy, name, value)
             except (AttributeError, TypeError):
                 pass
+        if isinstance(self.strategy, Strategy):
+            self.strategy.configure_execution(self.config.execution_config)
+        else:
+            try:
+                setattr(  # noqa: B010 - support plain strategy objects
+                    self.strategy,
+                    "execution_config",
+                    self.config.execution_config,
+                )
+            except (AttributeError, TypeError):
+                pass
         try:
             setattr(self.strategy, "_backtest_gateway", self)  # noqa: B010
         except (AttributeError, TypeError):
@@ -528,7 +585,7 @@ class Backtesting(Runner):
                 return False
             quantity = (
                 self.balance.available
-                * settings.size
+                * self.config.position_size
                 * self.config.leverage
                 / intent.price
             )

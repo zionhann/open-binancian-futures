@@ -20,6 +20,7 @@ from open_binancian_futures import (
     Candle,
     DataFrameDataSource,
     DeterministicFillPolicy,
+    ExecutionConfig,
     MarketExecutionPolicy,
 )
 from open_binancian_futures.models import Balance, Order, OrderEvent
@@ -543,12 +544,12 @@ async def test_live_intent_deducts_entry_margin_and_rolls_it_back_on_failure(
         ) -> None:
             del symbol, interval, index
 
-    monkeypatch.setattr("open_binancian_futures.constants.settings.leverage", 10)
     strategy = object.__new__(MinimalStrategy)
     strategy._backtest_gateway = None
     strategy.client = SimpleNamespace(rest_api=SimpleNamespace(new_order=object()))
     strategy.exchange_info = None
-    strategy.balance = Balance(100.0)
+    strategy.execution_config = ExecutionConfig(leverage=10)
+    strategy.balance = Balance(100.0, execution_config=strategy.execution_config)
 
     monkeypatch.setattr(
         "open_binancian_futures.strategy.fetch", lambda method, **kwargs: object()
@@ -560,7 +561,7 @@ async def test_live_intent_deducts_entry_margin_and_rolls_it_back_on_failure(
     assert await strategy.submit_order(intent) is True
     assert strategy.balance.available == 90.0
 
-    strategy.balance = Balance(100.0)
+    strategy.balance = Balance(100.0, execution_config=strategy.execution_config)
 
     def fail_fetch(method, **kwargs):
         del method, kwargs
@@ -586,12 +587,12 @@ async def test_live_market_intent_reserves_reference_margin(monkeypatch) -> None
         ) -> None:
             del symbol, interval, index
 
-    monkeypatch.setattr("open_binancian_futures.constants.settings.leverage", 10)
     strategy = object.__new__(MinimalStrategy)
     strategy._backtest_gateway = None
     strategy.client = SimpleNamespace(rest_api=SimpleNamespace(new_order=object()))
     strategy.exchange_info = None
-    strategy.balance = Balance(100.0)
+    strategy.execution_config = ExecutionConfig(leverage=10)
+    strategy.balance = Balance(100.0, execution_config=strategy.execution_config)
 
     monkeypatch.setattr(
         "open_binancian_futures.strategy.fetch", lambda method, **kwargs: object()

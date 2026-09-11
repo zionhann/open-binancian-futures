@@ -16,7 +16,7 @@ from binance_sdk_derivatives_trading_usds_futures.websocket_streams.models impor
 )
 from pandas import DataFrame, Timestamp
 
-from .constants import settings
+from .execution import ExecutionConfig
 from .types import (
     AlgoStatus,
     EventType,
@@ -42,8 +42,14 @@ class Balance:
     place orders simultaneously. The websocket balance update will correct any drift.
     """
 
-    def __init__(self, balance: float):
+    def __init__(
+        self,
+        balance: float,
+        *,
+        execution_config: ExecutionConfig | None = None,
+    ):
         self._balance = math.floor(balance * 100) / 100
+        self._execution_config = execution_config or ExecutionConfig()
         self._lock = asyncio.Lock()
         self._reserved_margins: dict[Hashable, float] = {}
 
@@ -68,9 +74,19 @@ class Balance:
         """Lock for coordinating concurrent order placement."""
         return self._lock
 
+    @property
+    def execution_config(self) -> ExecutionConfig:
+        return self._execution_config
+
+    def configure_execution(self, execution_config: ExecutionConfig) -> None:
+        """Update sizing inputs when a runner injects its execution policy."""
+        self._execution_config = execution_config
+
     def calculate_quantity(self, entry_price: float) -> float:
-        initial_margin = self._balance * settings.size
-        return initial_margin * settings.leverage / entry_price
+        if not math.isfinite(entry_price) or entry_price <= 0.0:
+            raise ValueError("entry_price must be finite and greater than zero")
+        initial_margin = self._balance * self._execution_config.position_size
+        return initial_margin * self._execution_config.leverage / entry_price
 
     def deduct(self, amount: float) -> None:
         """
@@ -279,23 +295,31 @@ class OrderList:
 class OrderBook(dict[str, OrderList]):
     """Dict mapping symbol to OrderList with guaranteed non-null access."""
 
-    def __init__(self, orders: dict[str, OrderList] | None = None) -> None:
+    def __init__(
+        self,
+        orders: dict[str, OrderList] | None = None,
+        *,
+        symbols: Iterable[str] | None = None,
+    ) -> None:
+        self._configured_symbols = frozenset(
+            symbols if symbols is not None else (orders or {})
+        )
         if orders is not None:
             super().__init__(orders)
         else:
-            super().__init__({symbol: OrderList() for symbol in settings.symbols_list})
+            super().__init__({symbol: OrderList() for symbol in self._configured_symbols})
 
     def __getitem__(self, key: str) -> OrderList:
         """
         Get OrderList for symbol, auto-creating if missing.
 
-        Logs warning if symbol not in settings.symbols_list to aid debugging.
+        Logs a warning when a configured symbol is accessed for the first time.
         """
         if key not in self:
-            if key not in settings.symbols_list:
+            if self._configured_symbols and key not in self._configured_symbols:
                 LOGGER.warning(
                     f"OrderBook accessed with unknown symbol '{key}'. "
-                    f"Configured symbols: {settings.symbols_list}"
+                    f"Configured symbols: {sorted(self._configured_symbols)}"
                 )
             self[key] = OrderList()
         return super().__getitem__(key)
@@ -476,25 +500,33 @@ class PositionList:
 class PositionBook(dict[str, PositionList]):
     """Dict mapping symbol to PositionList with guaranteed non-null access."""
 
-    def __init__(self, positions: dict[str, PositionList] | None = None) -> None:
+    def __init__(
+        self,
+        positions: dict[str, PositionList] | None = None,
+        *,
+        symbols: Iterable[str] | None = None,
+    ) -> None:
+        self._configured_symbols = frozenset(
+            symbols if symbols is not None else (positions or {})
+        )
         if positions is not None:
             super().__init__(positions)
         else:
             super().__init__(
-                {symbol: PositionList() for symbol in settings.symbols_list}
+                {symbol: PositionList() for symbol in self._configured_symbols}
             )
 
     def __getitem__(self, key: str) -> PositionList:
         """
         Get PositionList for symbol, auto-creating if missing.
 
-        Logs warning if symbol not in settings.symbols_list to aid debugging.
+        Logs a warning when a configured symbol is accessed for the first time.
         """
         if key not in self:
-            if key not in settings.symbols_list:
+            if self._configured_symbols and key not in self._configured_symbols:
                 LOGGER.warning(
                     f"PositionBook accessed with unknown symbol '{key}'. "
-                    f"Configured symbols: {settings.symbols_list}"
+                    f"Configured symbols: {sorted(self._configured_symbols)}"
                 )
             self[key] = PositionList()
         return super().__getitem__(key)

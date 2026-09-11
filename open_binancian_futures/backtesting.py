@@ -24,6 +24,7 @@ from typing import Any, Protocol
 
 import pandas as pd
 
+from .execution import ExecutionConfig
 from .models import Indicator, Order, OrderIntent
 from .types import OrderType, PositionSide
 
@@ -278,12 +279,17 @@ class BacktestConfig:
     fill_policy: FillPolicy | None = None
     cost_model: CostModel = field(default_factory=ZeroCostModel)
     market_execution: MarketExecutionPolicy = MarketExecutionPolicy.CLOSE
+    position_size: float = 0.05
 
     def __post_init__(self) -> None:
         if self.initial_balance <= 0:
             raise ValueError("initial_balance must be positive")
         if self.leverage < 1:
             raise ValueError("leverage must be at least one")
+        ExecutionConfig(
+            leverage=self.leverage,
+            position_size=self.position_size,
+        )
         if self.warmup_bars < 0:
             raise ValueError("warmup_bars must not be negative")
         if self.timeline_mode not in {"intersection", "union"}:
@@ -299,6 +305,14 @@ class BacktestConfig:
                 "fill_policy",
                 DeterministicFillPolicy(self.market_execution),
             )
+
+    @property
+    def execution_config(self) -> ExecutionConfig:
+        """Return the execution policy used by all balance-aware components."""
+        return ExecutionConfig(
+            leverage=self.leverage,
+            position_size=self.position_size,
+        )
 
 
 class HistoricalDataSource(Protocol):
