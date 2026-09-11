@@ -27,7 +27,8 @@ classifiers = [
 requires-python = ">=3.12"
 
 dependencies = [
-    "binance-sdk-derivatives-trading-usds-futures>=6.2.0",
+    # The generated model names used by runners.py match this SDK release.
+    "binance-sdk-derivatives-trading-usds-futures==7.1.1",
     "binance-common",
     "numpy<2.4",
     "pandas",
