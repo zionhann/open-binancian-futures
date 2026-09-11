@@ -6,33 +6,40 @@ import logging
 import os
 import sys
 import textwrap
+import traceback
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-import traceback
 
 import pandas as pd
 from binance_sdk_derivatives_trading_usds_futures.derivatives_trading_usds_futures import (
     DerivativesTradingUsdsFutures,
 )
 from binance_sdk_derivatives_trading_usds_futures.rest_api.models import (
+    NewAlgoOrderSideEnum,
+    NewAlgoOrderTimeInForceEnum,
     NewOrderSideEnum,
     NewOrderTimeInForceEnum,
 )
 from binance_sdk_derivatives_trading_usds_futures.websocket_streams.models import (
-    KlineCandlestickStreamsResponseK,
-    AccountUpdateAPInner,
     AccountUpdateABInner,
+    AccountUpdateAPInner,
+    KlineCandlestickStreamsResponseK,
 )
 from pandas import DataFrame
 
-from .models import Balance
-from .constants import settings
-from .types import OrderType, PositionSide, TimeInForce
-from .models import ExchangeInfo
-from .models import Indicator
-from .models import OrderBook, OrderEvent
-from .models import Position, PositionBook
 from . import exchange as futures
+from .constants import settings
+from .models import (
+    Balance,
+    ExchangeInfo,
+    Indicator,
+    OrderBook,
+    OrderEvent,
+    OrderIntent,
+    Position,
+    PositionBook,
+)
+from .types import OrderType, PositionSide, TimeInForce
 from .utils import decimal_places, fetch, get_or_raise
 from .webhook import Webhook
 
@@ -51,20 +58,18 @@ BASIC_COLUMNS = [
 class StrategyLoadError(Exception):
     """Base exception for strategy loading failures."""
 
-    pass
 
 
 class StrategyNotFoundError(StrategyLoadError):
     """Strategy file or module not found."""
 
-    pass
 
 
 @dataclass
 class StrategyContext:
     """Context object containing all dependencies for a strategy."""
 
-    client: DerivativesTradingUsdsFutures
+    client: DerivativesTradingUsdsFutures | None = None
     exchange_info: ExchangeInfo | None = None
     balance: Balance | None = None
     orders: OrderBook | None = None
@@ -191,7 +196,7 @@ class Strategy(ABC):
 
     def __init__(
         self,
-        client: DerivativesTradingUsdsFutures,
+        client: DerivativesTradingUsdsFutures | None,
         exchange_info: ExchangeInfo | None,
         balance: Balance | None,
         orders: OrderBook | None,
@@ -200,25 +205,58 @@ class Strategy(ABC):
         indicators: Indicator | None,
     ) -> None:
         self.client = client
-        self.exchange_info = exchange_info or futures.init_exchange_info()
-        self.balance = balance or futures.init_balance()
-        self.orders = orders or futures.init_orders()
-        self.positions = positions or futures.init_positions()
+        self.exchange_info = (
+            exchange_info
+            if exchange_info is not None
+            else (futures.init_exchange_info() if client is not None else None)
+        )
+        self.balance = (
+            balance
+            if balance is not None
+            else (futures.init_balance() if client is not None else Balance(settings.balance))
+        )
+        self.orders = (
+            orders
+            if orders is not None
+            else (futures.init_orders() if client is not None else OrderBook())
+        )
+        self.positions = (
+            positions
+            if positions is not None
+            else (futures.init_positions() if client is not None else PositionBook())
+        )
         self.webhook = webhook or Webhook.of(url=None)
-        self.indicators = indicators or futures.init_indicators()
+        self.indicators = (
+            indicators
+            if indicators is not None
+            else (futures.init_indicators() if client is not None else Indicator())
+        )
         self.add_indicators(self.indicators)
-        self._realized_profit = {s: 0.0 for s in settings.symbols_list}
+        self._realized_profit = {
+            symbol: 0.0
+            for symbol in set(settings.symbols_list) | set(self.indicators)
+        }
+
+    def _require_exchange_info(self) -> ExchangeInfo:
+        if self.exchange_info is None:
+            raise RuntimeError(
+                "Exchange information is required for this live order operation"
+            )
+        return self.exchange_info
+
+    def _require_client(self) -> DerivativesTradingUsdsFutures:
+        if self.client is None:
+            raise RuntimeError("A Binance client is required for this live operation")
+        return self.client
 
     def add_indicators(self, indicator: Indicator) -> None:
         """Load custom indicators for all symbols and intervals."""
-        for symbol in settings.symbols_list:
-            for interval in settings.intervals_list:
-                indicator[symbol][interval] = self.load(
-                    indicator[symbol][interval][BASIC_COLUMNS]
-                )
+        for symbol, intervals in indicator.items():
+            for interval, frame in list(intervals.items()):
+                indicator[symbol][interval] = self.load(frame[BASIC_COLUMNS])
                 self.LOGGER.info(
                     f"Loaded indicators for {symbol} [{interval}]:\n"
-                    f"{indicator[symbol][interval].tail().to_string(index=False)}"
+                    f"{intervals[interval].tail().to_string(index=False)}"
                 )
 
     def calculate_stop_price(
@@ -250,7 +288,9 @@ class Strategy(ABC):
 
         factor = (1 - _ratio) if should_decrease_price else (1 + _ratio)
 
-        return self.exchange_info.to_entry_price(symbol, entry_price * factor)
+        return self._require_exchange_info().to_entry_price(
+            symbol, entry_price * factor
+        )
 
     def set_tpsl(
         self,
@@ -277,14 +317,16 @@ class Strategy(ABC):
         )
         _price = _stop_price if reduce_only else None
 
+        client = self._require_client()
+        exchange_info = self._require_exchange_info()
         fetch(
-            self.client.rest_api.new_algo_order,
+            client.rest_api.new_algo_order,
             algo_type="CONDITIONAL",
             symbol=symbol,
             side=position_side.value,
             type=order_type.value,
             price=_price,
-            trigger_price=self.exchange_info.to_entry_price(symbol, _stop_price),
+            trigger_price=exchange_info.to_entry_price(symbol, _stop_price),
             quantity=_quantity,
             close_position=close_position,
             time_in_force=TimeInForce.GTE_GTC.value,
@@ -299,8 +341,9 @@ class Strategy(ABC):
         callback_ratio: float,
         activation_price: float | None = None,
     ) -> None:
+        exchange_info = self._require_exchange_info()
         _activation_price = (
-            self.exchange_info.to_entry_price(symbol, activation_price)
+            exchange_info.to_entry_price(symbol, activation_price)
             if activation_price
             else None
         )
@@ -309,7 +352,7 @@ class Strategy(ABC):
         safe_cb_ratio = round(min(max(0.1, _callback_ratio), max_cb_ratio), 2)
 
         fetch(
-            self.client.rest_api.new_algo_order,
+            self._require_client().rest_api.new_algo_order,
             algo_type="CONDITIONAL",
             symbol=symbol,
             side=position_side.value,
@@ -349,8 +392,9 @@ class Strategy(ABC):
             True if order placed successfully, False if insufficient balance or order failed
         """
         # Step 1: Acquire lock, calculate quantity, optimistically deduct balance
+        exchange_info = self._require_exchange_info()
         async with self.balance.lock:
-            quantity = self.exchange_info.to_entry_quantity(
+            quantity = exchange_info.to_entry_quantity(
                 symbol=symbol,
                 entry_price=entry_price,
                 balance=self.balance,
@@ -369,7 +413,7 @@ class Strategy(ABC):
         try:
             await asyncio.to_thread(
                 fetch,
-                self.client.rest_api.new_order,
+                self._require_client().rest_api.new_order,
                 symbol=symbol,
                 side=side,
                 type=order_type.value,
@@ -381,12 +425,156 @@ class Strategy(ABC):
             return True
 
         # Step 3: On failure, rollback the optimistic deduction
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - rollback must cover SDK failures
             self.LOGGER.error(
                 f"Failed to place {symbol} order at {entry_price}: {e}. Rolling back balance."
             )
             async with self.balance.lock:
                 self.balance.increase_balance(margin)  # Rollback using existing method
+            return False
+
+    def order_intent(
+        self,
+        symbol: str,
+        side: PositionSide,
+        order_type: OrderType,
+        *,
+        price: float | None = None,
+        quantity: float | None = None,
+        reduce_only: bool = False,
+        gtd: int | None = None,
+    ) -> OrderIntent:
+        """Create a Binance-independent order request for a strategy."""
+        return OrderIntent(
+            symbol=symbol,
+            side=PositionSide(side),
+            order_type=order_type,
+            price=price,
+            quantity=quantity,
+            reduce_only=reduce_only,
+            gtd=gtd,
+        )
+
+    async def submit_order(self, intent: OrderIntent) -> bool:
+        """Submit a domain order through the backtest or live adapter.
+
+        Live entry margin is deducted under the balance lock and restored when
+        the exchange request fails. Conditional intents use Binance's algo
+        endpoint; their single domain price is used as the trigger price and,
+        for conditional limit orders, as the limit price as well.
+        """
+        if intent.order_type == OrderType.TRAILING_STOP_MARKET:
+            self.LOGGER.warning(
+                "TRAILING_STOP_MARKET intents are not supported by the domain "
+                "adapter; use set_trailing_stop()"
+            )
+            return False
+
+        gateway = getattr(self, "_backtest_gateway", None)
+        if gateway is not None:
+            outcome = gateway.submit_order(intent)
+            if inspect.isawaitable(outcome):
+                outcome = await outcome
+            return bool(outcome)
+
+        balance = self.balance
+        if balance is None:
+            return False
+        if (
+            intent.order_type == OrderType.MARKET
+            and not intent.reduce_only
+            and (intent.price is None or intent.price <= 0)
+        ):
+            self.LOGGER.warning(
+                "A live market entry requires a positive reference price"
+            )
+            return False
+        if intent.quantity is None:
+            if intent.price is None:
+                return False
+            intent_quantity = self._require_exchange_info().to_entry_quantity(
+                symbol=intent.symbol,
+                entry_price=intent.price,
+                balance=self.balance,
+            )
+        else:
+            intent_quantity = intent.quantity
+        if intent_quantity is None or intent_quantity <= 0:
+            return False
+
+        client = self._require_client()
+        is_conditional = intent.order_type in {
+            OrderType.STOP_LIMIT,
+            OrderType.STOP_MARKET,
+            OrderType.TAKE_PROFIT_LIMIT,
+            OrderType.TAKE_PROFIT_MARKET,
+        }
+        if is_conditional:
+            request = client.rest_api.new_algo_order
+            kwargs: dict[str, object] = {
+                "algo_type": "CONDITIONAL",
+                "symbol": intent.symbol,
+                "side": NewAlgoOrderSideEnum(intent.side.value),
+                "type": intent.order_type.value,
+                "quantity": float(intent_quantity),
+                "reduce_only": "true" if intent.reduce_only else "false",
+            }
+            if intent.price is not None:
+                kwargs["trigger_price"] = float(intent.price)
+                if intent.order_type in {
+                    OrderType.STOP_LIMIT,
+                    OrderType.TAKE_PROFIT_LIMIT,
+                }:
+                    kwargs["price"] = float(intent.price)
+        else:
+            request = client.rest_api.new_order
+            kwargs = {
+                "symbol": intent.symbol,
+                "side": NewOrderSideEnum(intent.side.value),
+                "type": intent.order_type.value,
+                "quantity": float(intent_quantity),
+                "reduce_only": "true" if intent.reduce_only else "false",
+            }
+            if intent.price is not None and intent.order_type != OrderType.MARKET:
+                kwargs["price"] = float(intent.price)
+        if intent.gtd is not None:
+            kwargs["time_in_force"] = (
+                NewAlgoOrderTimeInForceEnum.GTD
+                if is_conditional
+                else NewOrderTimeInForceEnum.GTD
+            )
+            kwargs["good_till_date"] = intent.gtd
+        else:
+            kwargs["time_in_force"] = (
+                NewAlgoOrderTimeInForceEnum.GTC
+                if is_conditional
+                else NewOrderTimeInForceEnum.GTC
+            )
+
+        margin = 0.0
+        if (
+            intent.price is not None
+            and intent.price > 0
+            and not intent.reduce_only
+        ):
+            margin = float(intent.price) * float(intent_quantity) / settings.leverage
+
+        try:
+            async with balance.lock:
+                if margin > balance.available:
+                    return False
+                if margin:
+                    balance.deduct(margin)
+            await asyncio.to_thread(fetch, request, **kwargs)
+            return True
+        except Exception as error:  # noqa: BLE001 - rollback covers SDK failures
+            self.LOGGER.error(
+                f"Failed to submit {intent.order_type.value} order for "
+                f"{intent.symbol}: {error}"
+            )
+            if margin:
+                async with balance.lock:
+                    balance.increase_balance(margin)
             return False
 
     async def on_new_candlestick(self, data: KlineCandlestickStreamsResponseK) -> None:
