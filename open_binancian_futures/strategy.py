@@ -463,6 +463,13 @@ class Strategy(ABC):
         endpoint; their single domain price is used as the trigger price and,
         for conditional limit orders, as the limit price as well.
         """
+        if intent.order_type == OrderType.TRAILING_STOP_MARKET:
+            self.LOGGER.warning(
+                "TRAILING_STOP_MARKET intents are not supported by the domain "
+                "adapter; use set_trailing_stop()"
+            )
+            return False
+
         gateway = getattr(self, "_backtest_gateway", None)
         if gateway is not None:
             outcome = gateway.submit_order(intent)
@@ -472,6 +479,15 @@ class Strategy(ABC):
 
         balance = self.balance
         if balance is None:
+            return False
+        if (
+            intent.order_type == OrderType.MARKET
+            and not intent.reduce_only
+            and (intent.price is None or intent.price <= 0)
+        ):
+            self.LOGGER.warning(
+                "A live market entry requires a positive reference price"
+            )
             return False
         if intent.quantity is None:
             if intent.price is None:

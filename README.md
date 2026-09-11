@@ -127,6 +127,7 @@ class MyStrategy(Strategy):
 The package backtester accepts a `DataFrame`, a CSV/Parquet path, or a custom
 `HistoricalDataSource`. The input must contain `Open_time`, `Open`, `High`,
 `Low`, and `Close`; add `Symbol` when more than one symbol is present.
+Numeric `Open_time` values follow Binance's epoch-millisecond convention.
 
 ```python
 from open_binancian_futures import (
@@ -190,9 +191,10 @@ Existing orders are eligible on the current candle, while newly created
 next candle. A newly created `MARKET` order fills at the completed candle close
 by default; `MarketExecutionPolicy.NEXT_OPEN` explicitly defers it to the next
 candle open. Limit and `STOP_MARKET` gaps fill at the candle open; a
-`STOP_LIMIT` gap remains pending until its limit can execute. Intrabar
-triggers fill at the configured price, and Stop Loss wins over Take Profit when
-both are reached. Multiple crossed partial exits are processed in that same
+`STOP_LIMIT` gaps remain pending until their limit can execute, while the
+triggered limit remains active across later candles. Intrabar triggers fill at
+the configured price, and Stop Loss wins over Take Profit when both are
+reached. Multiple crossed partial exits are processed in that same
 deterministic priority order. Costs, slippage, and funding are zero by
 default. Open positions are realized at each symbol's final evaluated close.
 Partial exit orders close only their requested quantity. A custom `CostModel`
@@ -214,6 +216,12 @@ await self.submit_order(
     )
 )
 ```
+
+`OrderIntent` currently rejects `TRAILING_STOP_MARKET` because the domain
+request does not yet carry activation-price and callback-rate fields. Use the
+existing `set_trailing_stop(...)` live API for trailing stops. A live
+non-reduce-only `MARKET` intent also requires a positive reference price so
+entry margin can be reserved safely; reduce-only market exits may omit it.
 
 Existing `run_backtest(symbol, interval, index)` implementations and direct
 `OrderList.open_order(...)` calls remain supported. The latter are discovered

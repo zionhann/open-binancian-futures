@@ -154,6 +154,7 @@ class Order:
     gtd: int | None = None
     created_at: Timestamp | None = None
     reduce_only: bool = False
+    stop_triggered: bool = False
 
     def __repr__(self) -> str:
         return (

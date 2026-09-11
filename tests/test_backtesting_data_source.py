@@ -56,6 +56,26 @@ def test_csv_data_source_is_credential_free(tmp_path) -> None:
     assert len(loaded["ETHUSDT"]["1h"]) == 2
 
 
+def test_numeric_epoch_millisecond_timestamps_are_normalized_as_milliseconds() -> None:
+    frame = pd.DataFrame(
+        {
+            "Open_time": [1704067200000],
+            "Open": [100.0],
+            "High": [101.0],
+            "Low": [99.0],
+            "Close": [100.0],
+        }
+    )
+
+    loaded = DataFrameDataSource(
+        frame, symbol="ETHUSDT", interval="1h"
+    ).load(["ETHUSDT"], ["1h"])
+
+    assert loaded["ETHUSDT"]["1h"].index[0] == pd.Timestamp(
+        "2024-01-01", tz="UTC"
+    )
+
+
 def test_nested_interval_mapping_is_preserved() -> None:
     timestamps = pd.date_range("2026-01-01", periods=2, freq="h", tz="UTC")
     source = DataFrameDataSource(

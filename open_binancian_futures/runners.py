@@ -343,6 +343,7 @@ class Backtesting(Runner):
         self._next_order_id = 1
         self._current_time: Timestamp | None = None
         self._current_candle: Candle | None = None
+        self._current_candles: dict[str, Candle] = {}
         self._run_backtest_takes_two_args: bool | None = None
 
         self.strategy: object
@@ -573,9 +574,8 @@ class Backtesting(Runner):
             return True
         margin_price = order.price
         if order.type == OrderType.MARKET and margin_price <= 0:
-            margin_price = (
-                self._current_candle.close if self._current_candle is not None else 0.0
-            )
+            current_candle = self._current_candles.get(order.symbol)
+            margin_price = current_candle.close if current_candle is not None else 0.0
         margin = margin_price * order.quantity / self.config.leverage
         if margin <= 0:
             self._known_order_ids.discard(order_key)
@@ -896,19 +896,34 @@ class Backtesting(Runner):
             self._sync_orders(symbol)
 
         for timestamp in timeline:
+            current_candles = {
+                symbol: Candle.from_series(
+                    frames[symbol].iloc[
+                        int(frames[symbol].index.get_loc(timestamp))
+                    ]
+                )
+                for symbol in self.symbols
+                if timestamp in eligible_indices[symbol]
+            }
+            self._current_candles = current_candles
+            for symbol, candle in current_candles.items():
+                self._expire_orders(symbol, candle.time)
+            existing_order_keys_by_symbol = {
+                symbol: {
+                    self._order_key(order) for order in self.orders[symbol]
+                }
+                for symbol in self.symbols
+            }
             for symbol in self.symbols:
                 frame = frames[symbol]
                 if timestamp not in eligible_indices[symbol]:
                     continue
                 index = int(frame.index.get_loc(timestamp))
-                candle = Candle.from_series(frame.iloc[index])
+                candle = current_candles[symbol]
                 self._current_time = candle.time
                 self._current_candle = candle
                 self.test_results[symbol].record_bars()
-                self._expire_orders(symbol, candle.time)
-                existing_order_keys = {
-                    self._order_key(order) for order in self.orders[symbol]
-                }
+                existing_order_keys = existing_order_keys_by_symbol[symbol]
                 await self._run_strategy(symbol, index)
                 new_order_keys = self._sync_orders(symbol)
                 current_orders = {

@@ -185,15 +185,25 @@ class DeterministicFillPolicy:
         The current domain order stores one price for a stop-limit, so that
         value is used as both the trigger and the limit.  A gap through the
         trigger therefore leaves the order pending unless the candle trades
-        back to the limit price.
+        back to the limit price.  Once triggered, the limit remains active on
+        later candles even when the first candle never traded back to it.
         """
+        if order.stop_triggered:
+            return DeterministicFillPolicy._fill_limit(order, candle)
+
         if order.side == PositionSide.BUY:
+            if candle.high < order.price:
+                return None
+            order.stop_triggered = True
             if candle.open > order.price:
                 return order.price if candle.low <= order.price else None
-            return order.price if candle.high >= order.price else None
+            return order.price
+        if candle.low > order.price:
+            return None
+        order.stop_triggered = True
         if candle.open < order.price:
             return order.price if candle.high >= order.price else None
-        return order.price if candle.low <= order.price else None
+        return order.price
 
     @staticmethod
     def _fill_take_profit(order: Order, candle: Candle) -> float | None:
@@ -317,7 +327,22 @@ def normalize_ohlcv_frame(
     missing = required - set(normalized.columns)
     if missing:
         raise ValueError(f"Missing OHLC columns: {sorted(missing)}")
-    normalized["Open_time"] = pd.to_datetime(normalized["Open_time"], utc=True)
+    raw_open_time = normalized["Open_time"]
+    if pd.api.types.is_numeric_dtype(raw_open_time):
+        normalized["Open_time"] = pd.to_datetime(
+            raw_open_time, unit="ms", utc=True
+        )
+    else:
+        numeric_open_time = pd.to_numeric(raw_open_time, errors="coerce")
+        if (
+            not pd.api.types.is_datetime64_any_dtype(raw_open_time)
+            and numeric_open_time.notna().all()
+        ):
+            normalized["Open_time"] = pd.to_datetime(
+                numeric_open_time, unit="ms", utc=True
+            )
+        else:
+            normalized["Open_time"] = pd.to_datetime(raw_open_time, utc=True)
     if normalized["Open_time"].duplicated().any():
         raise ValueError("Duplicate candle timestamps are not supported")
     if symbol is not None:

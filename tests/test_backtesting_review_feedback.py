@@ -55,6 +55,17 @@ class NoOpStrategy:
         del symbol, interval, index
 
 
+class LiveIntentStrategy(Strategy):
+    def load(self, df):
+        return df
+
+    async def run(self, symbol: str, interval: str) -> None:
+        del symbol, interval
+
+    async def run_backtest(self, symbol: str, interval: str, index: int) -> None:
+        del symbol, interval, index
+
+
 def test_explicit_interval_is_not_aliased_to_a_different_loaded_interval() -> None:
     timestamps = list(pd.date_range("2026-01-01", periods=2, freq="h", tz="UTC"))
     source = DataFrameDataSource(
@@ -268,6 +279,81 @@ def test_deferred_market_entry_reserves_margin_before_the_next_symbol_callback()
 
     assert strategy.observed == [("ETHUSDT", 40.0, 60.0), ("SOLUSDT", 40.0, 60.0)]
     assert result.final_balance == pytest.approx(100.0)
+
+
+def test_cross_symbol_market_order_uses_target_candle_and_waits_for_next_open() -> None:
+    timestamps = list(pd.date_range("2026-01-01", periods=2, freq="h", tz="UTC"))
+    frames = {
+        "ETHUSDT": make_frame(
+            "ETHUSDT",
+            timestamps,
+            opens=[100.0, 100.0],
+            highs=[100.0, 100.0],
+            lows=[100.0, 100.0],
+            closes=[100.0, 100.0],
+        ),
+        "SOLUSDT": make_frame(
+            "SOLUSDT",
+            timestamps,
+            opens=[11.0, 12.0],
+            highs=[11.0, 12.0],
+            lows=[10.0, 12.0],
+            closes=[10.0, 12.0],
+        ),
+    }
+
+    class CrossSymbolMarketStrategy(Strategy):
+        def __init__(self, *args, **kwargs) -> None:
+            super().__init__(*args, **kwargs)
+            self.accepted: list[bool] = []
+
+        def load(self, df):
+            return df
+
+        async def run(self, symbol: str, interval: str) -> None:
+            del symbol, interval
+
+        async def run_backtest(
+            self, symbol: str, interval: str, index: int
+        ) -> None:
+            del interval
+            if symbol == "ETHUSDT" and index == 0:
+                self.accepted.append(
+                    await self.submit_order(
+                        self.order_intent(
+                            "SOLUSDT",
+                            PositionSide.BUY,
+                            OrderType.MARKET,
+                            quantity=1.0,
+                        )
+                    )
+                )
+
+    strategy = CrossSymbolMarketStrategy(
+        client=None,
+        exchange_info=None,
+        balance=None,
+        orders=None,
+        positions=None,
+        webhook=None,
+        indicators=None,
+    )
+    result = Backtesting(
+        strategy=strategy,
+        data_source=DataFrameDataSource(frames, interval="1h"),
+        config=BacktestConfig(
+            initial_balance=15.0,
+            leverage=1,
+            interval="1h",
+            market_execution=MarketExecutionPolicy.NEXT_OPEN,
+        ),
+    ).run()
+
+    assert strategy.accepted == [True]
+    assert result.summary.trade_count == 1
+    trade = result.by_symbol["SOLUSDT"].trades[0]
+    assert trade.entry_time == timestamps[1]
+    assert trade.entry_price == 12.0
 
 
 def test_profit_factor_is_infinite_when_all_completed_trades_win() -> None:
@@ -523,6 +609,32 @@ async def test_live_market_intent_reserves_reference_margin(monkeypatch) -> None
 
 
 @pytest.mark.asyncio
+async def test_live_unpriced_market_entry_is_rejected(monkeypatch) -> None:
+    strategy = object.__new__(LiveIntentStrategy)
+    strategy._backtest_gateway = None
+    strategy.client = SimpleNamespace(rest_api=SimpleNamespace(new_order=object()))
+    strategy.exchange_info = None
+    strategy.balance = Balance(100.0)
+    calls: list[object] = []
+
+    def fake_fetch(method, **kwargs):
+        calls.append((method, kwargs))
+        return object()
+
+    monkeypatch.setattr("open_binancian_futures.strategy.fetch", fake_fetch)
+    intent = strategy.order_intent(
+        "ETHUSDT",
+        PositionSide.BUY,
+        OrderType.MARKET,
+        quantity=1.0,
+    )
+
+    assert await strategy.submit_order(intent) is False
+    assert calls == []
+    assert strategy.balance.available == 100.0
+
+
+@pytest.mark.asyncio
 async def test_live_conditional_intent_uses_the_algo_order_adapter(monkeypatch) -> None:
     class MinimalStrategy(Strategy):
         def load(self, df):
@@ -566,6 +678,36 @@ async def test_live_conditional_intent_uses_the_algo_order_adapter(monkeypatch) 
     assert captured["side"] is NewAlgoOrderSideEnum.SELL
     assert captured["trigger_price"] == 95.0
     assert captured["reduce_only"] == "true"
+
+
+@pytest.mark.asyncio
+async def test_live_trailing_stop_intent_is_rejected_without_trailing_parameters(
+    monkeypatch,
+) -> None:
+    strategy = object.__new__(LiveIntentStrategy)
+    strategy._backtest_gateway = None
+    strategy.client = SimpleNamespace(
+        rest_api=SimpleNamespace(new_order=object(), new_algo_order=object())
+    )
+    strategy.exchange_info = None
+    strategy.balance = Balance(100.0)
+    calls: list[object] = []
+
+    def fake_fetch(method, **kwargs):
+        calls.append((method, kwargs))
+        return object()
+
+    monkeypatch.setattr("open_binancian_futures.strategy.fetch", fake_fetch)
+    intent = strategy.order_intent(
+        "ETHUSDT",
+        PositionSide.SELL,
+        OrderType.TRAILING_STOP_MARKET,
+        quantity=1.0,
+        reduce_only=True,
+    )
+
+    assert await strategy.submit_order(intent) is False
+    assert calls == []
 
 
 def test_backtest_run_strategy_inspects_signature_once(monkeypatch) -> None:

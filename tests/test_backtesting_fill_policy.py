@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import pandas as pd
+import pytest
 
 from open_binancian_futures import (
     Candle,
@@ -90,6 +91,60 @@ def test_stop_limit_gap_preserves_the_limit_price_constraint() -> None:
 
     assert policy.fill_price(order, gap) is None
     assert policy.fill_price(order, rebound) == 95.0
+
+
+@pytest.mark.parametrize(
+    ("side", "gap", "later_candle", "expected_fill"),
+    [
+        (
+            PositionSide.BUY,
+            Candle(
+                pd.Timestamp("2026-01-01", tz="UTC"),
+                open=100.0,
+                high=105.0,
+                low=96.0,
+                close=100.0,
+            ),
+            Candle(
+                pd.Timestamp("2026-01-02", tz="UTC"),
+                open=90.0,
+                high=91.0,
+                low=89.0,
+                close=90.0,
+            ),
+            90.0,
+        ),
+        (
+            PositionSide.SELL,
+            Candle(
+                pd.Timestamp("2026-01-01", tz="UTC"),
+                open=90.0,
+                high=94.0,
+                low=85.0,
+                close=90.0,
+            ),
+            Candle(
+                pd.Timestamp("2026-01-02", tz="UTC"),
+                open=100.0,
+                high=101.0,
+                low=100.0,
+                close=100.0,
+            ),
+            100.0,
+        ),
+    ],
+)
+def test_stop_limit_trigger_remains_active_after_gap(
+    side: PositionSide,
+    gap: Candle,
+    later_candle: Candle,
+    expected_fill: float,
+) -> None:
+    order = make_order(OrderType.STOP_LIMIT, side, 95.0)
+    policy = DeterministicFillPolicy()
+
+    assert policy.fill_price(order, gap) is None
+    assert policy.fill_price(order, later_candle) == expected_fill
 
 
 def test_stop_loss_wins_when_stop_and_take_profit_both_trigger() -> None:
