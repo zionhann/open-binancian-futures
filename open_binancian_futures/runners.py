@@ -1075,18 +1075,32 @@ class Backtesting(Runner):
                 self._set_strategy_view(decision_time)
                 visible = getattr(self.strategy, "indicators")[symbol][self.interval]
                 self.test_results[symbol].record_bars()
-                before_callback = {self._order_key(order) for order in self.orders[symbol]}
+                before_callback = {
+                    target: {self._order_key(order) for order in self.orders[target]}
+                    for target in current_candles
+                }
                 await self._run_strategy(symbol, len(visible) - 1)
                 # Reconcile cross-symbol submissions and cancellation immediately.
                 for target in self.symbols:
                     self._sync_orders(target)
                 if self._effective_market_execution() == MarketExecutionPolicy.CLOSE:
-                    eligible = {
-                        self._order_key(order) for order in self.orders[symbol]
-                        if self._order_key(order) not in before_callback
-                        and order.type == OrderType.MARKET
+                    # Snapshot every target before any close-fill hook runs.
+                    # Cross-symbol decisions share this close; orders created by
+                    # the resulting hooks still wait for the next candle.
+                    eligible_by_symbol = {
+                        target: {
+                            self._order_key(order) for order in self.orders[target]
+                            if self._order_key(order) not in before_callback[target]
+                            and order.type == OrderType.MARKET
+                        }
+                        for target in current_candles
                     }
-                    self._eval_orders(symbol, candle, eligible)
+                    for target, target_candle in current_candles.items():
+                        self._current_time = target_candle.time
+                        self._current_candle = target_candle
+                        self._eval_orders(
+                            target, target_candle, eligible_by_symbol[target]
+                        )
             self._mark_to_market(frames, self._as_timestamp(timestamp))
 
         for symbol in self.symbols:
