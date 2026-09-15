@@ -19,6 +19,9 @@ leverage setting. Once those orders are gone, the next entry confirms the reques
 leverage at the exchange before it sends an order. Protective close-position algo
 orders count as reduce-only and do not hold back this transition.
 
+Intent fields and explicit quantities are validated before a leverage change;
+automatic sizing uses the confirmed effective leverage after any permitted transition.
+
 The journal stores generated client IDs, normalized intents, margin and processing
 state in SQLite with FULL synchronous commits before each send. It stores no API
 keys or secrets. A different endpoint/key cannot silently reuse it. API key rotation
@@ -28,7 +31,9 @@ journal; do not simply delete unresolved records to unblock trading.
 The OS releases the lock after a crash. The lock excludes processes using the same
 resolved path, not different paths, machines, symlink aliases to the DB file itself,
 or a distributed fleet. Use a local filesystem with working POSIX locks and SQLite
-durability. Do not place the journal in source control; default DB files are ignored.
+durability. Platforms without `fcntl` can still import the package and backtesting
+APIs; opening the live journal explicitly reports the POSIX requirement. Do not
+place the journal in source control; default DB files are ignored.
 
 ## Uncertain orders and recovery
 
@@ -48,12 +53,19 @@ Accepted orders/positions instead use exchange-reported available balance.
 
 Every account/order event triggers an authoritative REST snapshot. Event `cw`
 (cross-wallet balance) never replaces free balance. Event order quantities never
-replace snapshot quantities. Per-order versions/cumulative progress reject backward
+replace snapshot quantities. Regular and algo event IDs have separate namespaces in version, progress and hook
+tracking, including matching NEW events against adopted order types. Per-order
+versions/cumulative progress reject backward
 state movement; trade IDs deduplicate realized-PNL notifications. Delayed distinct
 partial trades can contribute their own PNL once even when received out of order.
 No past trade notification is fabricated for fills missed entirely during downtime.
 Sync/async notification hooks observe fresh state and are deduplicated by status;
 base hooks do not overwrite it. Strategy trading remains driven by new closed bars.
+
+Required symbol/interval subscriptions each track their own last update, including
+forming-candle heartbeats. A new subscription generation gets a fresh first-update
+grace period. Forming candles update freshness but never enter the strategy event
+queue; closed candles and user events retain their arrival order.
 
 On receiver exit/error, stale market transport, listen-key expiry/keepalive failure,
 or scheduled rotation, decisions pause. A fresh SDK stream instance is created;

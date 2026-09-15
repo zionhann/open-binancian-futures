@@ -1,11 +1,11 @@
 """Durable submission ledger and local process ownership (POSIX)."""
 
-import fcntl
 import json
 import sqlite3
 import uuid
 from dataclasses import asdict, dataclass
 from pathlib import Path
+from types import ModuleType
 from typing import IO
 
 from .models import OrderIntent
@@ -26,6 +26,7 @@ class OrderJournal:
             raise ValueError("account identity is required")
         self.identity = identity
         self._lock: IO[bytes] | None = None
+        self._fcntl: ModuleType | None = None
         self._connection: sqlite3.Connection | None = None
 
     @property
@@ -37,6 +38,13 @@ class OrderJournal:
     def open(self) -> None:
         if self._lock is not None:
             return
+        try:
+            import fcntl
+        except ImportError as error:
+            raise RuntimeError(
+                "Live journal requires POSIX file locking (fcntl)"
+            ) from error
+        self._fcntl = fcntl
         self.path.parent.mkdir(parents=True, exist_ok=True)
         lock = open(str(self.path) + ".lock", "a+b")
         try:
@@ -100,6 +108,7 @@ class OrderJournal:
                 self._connection = None
         finally:
             if self._lock is not None:
-                fcntl.flock(self._lock.fileno(), fcntl.LOCK_UN)
+                assert self._fcntl is not None
+                self._fcntl.flock(self._lock.fileno(), self._fcntl.LOCK_UN)
                 self._lock.close()
                 self._lock = None

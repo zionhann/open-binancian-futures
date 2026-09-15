@@ -127,9 +127,8 @@ class ManagedOrderGateway:
         state.leverage[symbol] = confirmed
         return confirmed
 
-    def _normalize(
-        self, intent: OrderIntent, leverage: int
-    ) -> tuple[OrderIntent, float]:
+    def _prepare_intent(self, intent: OrderIntent) -> tuple[OrderIntent, float]:
+        """Validate and normalize fields without using any leverage-dependent size."""
         if intent.symbol not in self.symbols:
             raise ValueError("Order symbol is outside managed symbols")
         if intent.order_type == OrderType.LIQUIDATION:
@@ -198,13 +197,6 @@ class ManagedOrderGateway:
                 raise ValueError("price is below the exchange tick size")
             reference = price
         quantity = intent.quantity
-        if quantity is None and not intent.close_position:
-            quantity = (
-                state.balance.available
-                * self.config.position_size
-                * leverage
-                / reference
-            )
         if quantity is not None:
             quantity = round_step(quantity, rule.step_size, ROUND_DOWN)
             if quantity <= 0 or (
@@ -214,6 +206,31 @@ class ManagedOrderGateway:
         normalized = replace(
             intent, quantity=quantity, price=price, activation_price=activation
         )
+        return normalized, reference
+
+    def _size_intent(
+        self, intent: OrderIntent, reference: float, leverage: int
+    ) -> tuple[OrderIntent, float]:
+        quantity = intent.quantity
+        if quantity is None and not intent.close_position:
+            state = self.snapshot()
+            rule = state.exchange_info._get_filter(intent.symbol)
+            initial = (
+                state.balance.available
+                * self.config.position_size
+                * leverage
+                / reference
+            )
+            step = Decimal(str(rule.step_size))
+            quantity = float(
+                (Decimal(str(initial)) / step).to_integral_value(rounding=ROUND_DOWN)
+                * step
+            )
+            if quantity <= 0 or (
+                not intent.reduce_only and quantity * reference < rule.min_notional
+            ):
+                raise ValueError("Order quantity violates exchange filters")
+        normalized = replace(intent, quantity=quantity)
         margin = (
             0.0
             if intent.reduce_only or intent.close_position
@@ -221,19 +238,25 @@ class ManagedOrderGateway:
         )
         return normalized, margin
 
+    def _normalize(
+        self, intent: OrderIntent, leverage: int
+    ) -> tuple[OrderIntent, float]:
+        prepared, reference = self._prepare_intent(intent)
+        return self._size_intent(prepared, reference, leverage)
+
     async def submit_order(self, intent: OrderIntent) -> bool:
         async with self._mutex:
             if not self.active or self.failed or not self.can_send():
                 raise OrderOutcomeUnknown("Managed runtime is paused")
             if intent.symbol in self.blocked:
                 raise OrderOutcomeUnknown(f"Unresolved order blocks {intent.symbol}")
-            self._normalize(intent, self.effective_leverage(intent.symbol))
+            intent, reference = self._prepare_intent(intent)
             leverage = (
                 self.effective_leverage(intent.symbol)
                 if intent.reduce_only or intent.close_position
                 else self._leverage_for_entry(intent.symbol)
             )
-            intent, margin = self._normalize(intent, leverage)
+            intent, margin = self._size_intent(intent, reference, leverage)
             state = self.snapshot()
             if margin > state.balance.available:
                 return False

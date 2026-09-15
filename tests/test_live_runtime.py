@@ -421,7 +421,7 @@ async def test_keepalive_failure_and_receiver_signal_trigger_recovery(tmp_path):
     runner.sleep=tick
     task=asyncio.create_task(runner.run_async());await eventually(lambda:runner.active)
     await asyncio.sleep(.01)
-    now[0]=3001;runner._last_market=3001
+    now[0]=3001;runner._last_market[(SYMBOL,'1m')]=3001
     runner.adapter.keepalive_listen_key=lambda key:(_ for _ in ()).throw(ConnectionError('key lost'))
     await eventually(lambda:len(streams)>=2)
     runner.adapter.keepalive_listen_key=lambda key:None

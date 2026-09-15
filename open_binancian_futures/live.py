@@ -34,6 +34,7 @@ from .managed_orders import ManagedOrderGateway
 from .models import Indicator, OrderEvent
 from .sdk_streams import BinanceStreams
 from .strategy import Strategy, StrategyContext
+from .types import OrderType
 from .webhook import Webhook
 
 LOGGER = logging.getLogger(__name__)
@@ -100,12 +101,16 @@ class LiveTrading:
         self.closed = False
         self.indicators = Indicator()
         self.last_bars: dict[tuple[str, str], int] = {}
-        self._trade_progress: dict[tuple[str, int], float] = {}
-        self._trade_ids: set[tuple[str, int, int]] = set()
-        self._versions: dict[tuple[str, int], int] = {}
-        self._hook_events: set[tuple[str, int, str]] = set()
+        self._trade_progress: dict[tuple[str, str, int], float] = {}
+        self._trade_ids: set[tuple[str, str, int, int]] = set()
+        self._versions: dict[tuple[str, str, int], int] = {}
+        self._hook_events: set[tuple[str, str, int, str]] = set()
         self._notified: set[str] = set()
-        self._last_market = self.clock()
+        self._last_market = {
+            (symbol, interval): self.clock()
+            for symbol in self.symbols
+            for interval in self.intervals
+        }
         self._loop: asyncio.AbstractEventLoop | None = None
 
     def _default_streams(self) -> ExchangeStreams:
@@ -220,7 +225,17 @@ class LiveTrading:
                 self._pause()
                 self.recovery.set()
             if data.get("e") == "kline":
-                self._last_market = self.clock()
+                candle = data.get("k")
+                if not isinstance(candle, dict):
+                    raise ValueError("Malformed kline payload")
+                key = (candle.get("s", data.get("s")), candle.get("i"))
+                if key not in self._last_market:
+                    return
+                if not isinstance(candle.get("x"), bool):
+                    raise ValueError("Malformed kline close flag")
+                self._last_market[key] = self.clock()
+                if not candle["x"]:
+                    return
             self.queue.put_nowait((generation, data))
         except Exception:
             self._pause()
@@ -232,6 +247,7 @@ class LiveTrading:
         try:
             self.generation += 1
             generation = self.generation
+            self._last_market = {}
             self.streams = self.streams_factory()
             await self.streams.connect()
             self.listen_key = self.adapter.start_listen_key()
@@ -242,8 +258,8 @@ class LiveTrading:
             await self.streams.subscribe_user(self.listen_key, callback)
             for symbol in self.symbols:
                 for interval in self.intervals:
+                    self._last_market[(symbol, interval)] = self.clock()
                     await self.streams.subscribe_klines(symbol, interval, callback)
-            self._last_market = self.clock()
         finally:
             self._connecting = False
 
@@ -414,11 +430,11 @@ class LiveTrading:
             if symbol not in self.symbols:
                 return
             identifier = int(order.get("i", order.get("aid", 0)))
-            key = (symbol, identifier)
+            key = (event, symbol, identifier)
             version = int(order.get("T", data.get("T", data.get("E", 0))))
             cumulative = float(order.get("z", 0))
             trade_id = int(order.get("t", -1))
-            trade_key = (symbol, identifier, trade_id)
+            trade_key = (*key, trade_id)
             if event == "ORDER_TRADE_UPDATE" and cumulative > 0 and not self.failed:
                 if trade_id >= 0 and trade_key not in self._trade_ids:
                     self._trade_ids.add(trade_key)
@@ -447,7 +463,7 @@ class LiveTrading:
         self.gateway.reconcile()
         if hook_data is not None and not self.failed:
             symbol, order, status, identifier = hook_data
-            hook_key = (symbol, identifier, status)
+            hook_key = (event, symbol, identifier, status)
             methods = {
                 "NEW": "on_new_order",
                 "FILLED": "on_filled_order",
@@ -458,7 +474,12 @@ class LiveTrading:
             name = methods.get(status)
             # A delayed NEW notification for an absent order is stale relative to
             # the fresh snapshot. Never invoke entry hooks for it.
-            present = any(item.order_id == identifier for item in self.orders[symbol])
+            present = any(
+                item.order_id == identifier
+                and (item.type in {OrderType.LIMIT, OrderType.MARKET})
+                == (event == "ORDER_TRADE_UPDATE")
+                for item in self.orders[symbol]
+            )
             method = getattr(self.strategy, name, None) if name is not None else None
             if (
                 method is not None
@@ -514,7 +535,13 @@ class LiveTrading:
                 if (
                     (signal is not None and signal.is_set())
                     or not healthy()
-                    or self.clock() - self._last_market > 90
+                    or any(
+                        self.clock()
+                        - self._last_market.get((symbol, interval), float("-inf"))
+                        > 90
+                        for symbol in self.symbols
+                        for interval in self.intervals
+                    )
                 ):
                     raise ConnectionError("Stream disconnected or stale")
                 if self.active and self.clock() - last_reconcile >= 15:
