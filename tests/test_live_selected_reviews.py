@@ -262,3 +262,35 @@ async def test_slow_strategy_does_not_accumulate_forming_bar_backlog(tmp_path):
         release.set()
         runner.close()
         await task
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "intent",
+    [
+        OrderIntent(
+            SYMBOL, PositionSide.BUY, OrderType.MARKET, 100, time_in_force="GTC"
+        ),
+        OrderIntent(SYMBOL, PositionSide.BUY, OrderType.MARKET, 100, gtd=123),
+        OrderIntent(
+            SYMBOL,
+            PositionSide.SELL,
+            OrderType.STOP_MARKET,
+            90,
+            close_position=True,
+            reduce_only=True,
+        ),
+    ],
+)
+async def test_adapter_semantic_conflicts_fail_before_leverage_or_journal(
+    tmp_path, intent
+):
+    adapter = Adapter()
+    adapter.state.leverage[SYMBOL] = 1
+    managed, journal = gateway(tmp_path, adapter, ExecutionConfig(leverage=20))
+    try:
+        with pytest.raises(ValueError):
+            await managed.submit_order(intent)
+        assert not adapter.mutations and not journal.pending()
+    finally:
+        journal.close()

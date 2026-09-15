@@ -133,6 +133,10 @@ class ManagedOrderGateway:
             raise ValueError("Order symbol is outside managed symbols")
         if intent.order_type == OrderType.LIQUIDATION:
             raise ValueError("Liquidation is not a placement order type")
+        if intent.order_type == OrderType.MARKET and (
+            intent.time_in_force is not None or intent.gtd is not None
+        ):
+            raise ValueError("MARKET orders do not support time_in_force or gtd")
         if intent.gtd is not None and intent.time_in_force not in {None, "GTD"}:
             raise ValueError("good till date requires GTD")
         if intent.close_position:
@@ -140,9 +144,10 @@ class ManagedOrderGateway:
                 intent.order_type
                 not in {OrderType.STOP_MARKET, OrderType.TAKE_PROFIT_MARKET}
                 or intent.quantity is not None
+                or intent.reduce_only
             ):
                 raise ValueError(
-                    "close_position requires stop/take-profit market without quantity"
+                    "close_position requires stop/take-profit market without quantity or reduce_only"
                 )
         if intent.order_type == OrderType.TRAILING_STOP_MARKET:
             if (
