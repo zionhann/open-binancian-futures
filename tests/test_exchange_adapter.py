@@ -231,42 +231,34 @@ def test_malformed_identifier_is_unknown(identifier):
 
 
 def test_runner_accepts_adapter_without_global_client(monkeypatch):
-    from open_binancian_futures import runners
-    from open_binancian_futures.models import (
-        Balance,
-        ExchangeInfo,
-        OrderBook,
-        PositionBook,
-        Indicator,
-    )
-    from open_binancian_futures.exchange_adapter import ExchangeSnapshot
-
-    monkeypatch.setattr(
-        runners, "client", Mock(side_effect=AssertionError("global client used"))
-    )
-    adapter = SimpleNamespace(
-        snapshot=Mock(
-            return_value=ExchangeSnapshot(
-                ExchangeInfo([]), Balance(100), OrderBook(), PositionBook(), {}
-            )
-        ),
-        initial_indicators=Mock(return_value=Indicator()),
-    )
-    build = Mock(return_value=object())
-    monkeypatch.setattr(runners.Strategy, "of", build)
-    gateway = object()
-    runner = runners.LiveTrading(adapter=adapter, order_gateway=gateway)
-    context = build.call_args.kwargs["context"]
-    assert context.client is None and context.order_gateway is gateway
-    assert context.preserve_position_leverage
-    assert runner.orders is adapter.snapshot.return_value.orders
-    adapter.snapshot.assert_called_once_with(runner.symbols, runner.execution_config)
-    adapter.initial_indicators.assert_called_once_with(
-        runner.symbols, runner.intervals, runner.execution_config.timezone
-    )
-    with pytest.raises(RuntimeError, match="supervisor"):
-        runner.run()
+    from open_binancian_futures import live
+    monkeypatch.setattr(live, "client", Mock(side_effect=AssertionError("global client used")))
+    adapter = SimpleNamespace(snapshot=Mock(), initial_indicators=Mock())
+    runner = live.LiveTrading(adapter=adapter)
+    assert runner.adapter is adapter and runner.client is None
+    adapter.snapshot.assert_not_called()
+    adapter.initial_indicators.assert_not_called()
     runner.close()
+
+
+def test_algo_close_position_string_zero_uses_trigger_and_is_protective():
+    from binance_sdk_derivatives_trading_usds_futures.rest_api.models import CurrentAllAlgoOpenOrdersResponse
+    from open_binancian_futures.exchange import _create_order_from_algo
+    model=CurrentAllAlgoOpenOrdersResponse.model_validate({'algoId':8,'symbol':'BTCUSDT','orderType':'STOP_MARKET','side':'SELL','price':'0','triggerPrice':'90','quantity':'0','closePosition':True,'reduceOnly':False})
+    order=_create_order_from_algo(model,'BTCUSDT')
+    assert order.price==90 and order.reduce_only and order.quantity==0
+
+
+def test_real_sdk_identity_fingerprint_is_account_and_endpoint_bound():
+    from binance_sdk_derivatives_trading_usds_futures import DerivativesTradingUsdsFutures
+    from binance_common.configuration import ConfigurationRestAPI
+    def fingerprint(key,url):
+        client=DerivativesTradingUsdsFutures(config_rest_api=ConfigurationRestAPI(api_key=key,api_secret='secret-never-stored',base_path=url))
+        return BinanceExchangeAdapter(client).identity()
+    first=fingerprint('key-a','https://fapi.binance.com')
+    assert len(first)==64 and 'key-a' not in first and 'secret' not in first
+    assert first!=fingerprint('key-b','https://fapi.binance.com')
+    assert first!=fingerprint('key-a','https://testnet.binancefuture.com')
 
 
 @pytest.mark.parametrize("reduce_only", [False, True])

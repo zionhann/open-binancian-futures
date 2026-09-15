@@ -184,75 +184,23 @@ def test_backtest_config_preserves_existing_positional_field_order() -> None:
 
 
 def test_live_trading_injects_explicit_domain_objects(monkeypatch) -> None:
-    fake_client = object()
-    domain_objects = {
-        "exchange_info": object(),
-        "balance": object(),
-        "orders": object(),
-        "positions": object(),
-        "indicators": object(),
-    }
-    calls = {}
-
-    monkeypatch.setattr(settings, "strategy", "strategy.py")
+    from open_binancian_futures import live
+    from types import SimpleNamespace
+    fake_client = SimpleNamespace(rest_api=object())
     monkeypatch.setattr(settings, "symbols", "ETHUSDT,SOLUSDT")
     monkeypatch.setattr(settings, "intervals", "1m,5m")
     monkeypatch.setattr(settings, "leverage", 7)
     monkeypatch.setattr(settings, "size", 0.2)
     monkeypatch.setattr(settings, "timezone", "Asia/Seoul")
-    monkeypatch.setattr(runners_module, "client", lambda: fake_client)
-
-    for name, value in domain_objects.items():
-
-        def initialize(*args, _name=name, _value=value, **kwargs):
-            del args
-            calls[_name] = kwargs
-            return _value
-
-        monkeypatch.setattr(
-            runners_module.futures,
-            f"init_{name}",
-            initialize,
-        )
-
-    captured = {}
-
-    def build_strategy(name, context):
-        captured["name"] = name
-        captured["context"] = context
-        return object()
-
-    monkeypatch.setattr(
-        runners_module.Strategy,
-        "of",
-        staticmethod(build_strategy),
-    )
-
+    monkeypatch.setattr(live, "client", lambda: fake_client)
     runner = LiveTrading()
-
     assert runner.client is fake_client
-    assert calls["exchange_info"] == {"symbols": ("ETHUSDT", "SOLUSDT"), "sdk_client": fake_client}
-    assert calls["balance"]["execution_config"].leverage == 7
-    assert calls["orders"] == {"symbols": ("ETHUSDT", "SOLUSDT"), "sdk_client": fake_client}
-    assert calls["positions"] == {
-        "sdk_client": fake_client,
-        "symbols": ("ETHUSDT", "SOLUSDT"),
-        "leverage": 7,
-    }
-    assert calls["indicators"] == {
-        "sdk_client": fake_client,
-        "symbols": ("ETHUSDT", "SOLUSDT"),
-        "intervals": ("1m", "5m"),
-        "timezone": "Asia/Seoul",
-    }
-    context = captured["context"]
-    assert captured["name"] == "strategy.py"
-    assert context.client is fake_client
-    assert context.exchange_info is domain_objects["exchange_info"]
-    assert context.balance is domain_objects["balance"]
-    assert context.orders is domain_objects["orders"]
-    assert context.positions is domain_objects["positions"]
-    assert context.indicators is domain_objects["indicators"]
+    assert runner.symbols == ("ETHUSDT", "SOLUSDT")
+    assert runner.intervals == ("1m", "5m")
+    assert runner.execution_config.leverage == 7
+    assert runner.execution_config.position_size == 0.2
+    assert runner.execution_config.timezone == "Asia/Seoul"
+    assert runner.strategy is None  # Factory runs after locked startup synchronization.
 
 
 def test_strategy_initial_indicators_use_injected_timezone(monkeypatch) -> None:

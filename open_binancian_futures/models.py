@@ -109,6 +109,13 @@ class Balance:
         self._reserved_margins[order_id] = amount
         self._balance -= amount
 
+    def restore_margin(self, order_id: Hashable, amount: float) -> None:
+        """Conservatively hold unresolved live margin even if free balance fell."""
+        if order_id in self._reserved_margins:
+            return
+        self._reserved_margins[order_id] = amount
+        self._balance = max(0.0, self._balance - amount)
+
     def release_margin(self, order_id: Hashable) -> float:
         """Release a pending reservation and return the released amount."""
         amount = self._reserved_margins.pop(order_id, 0.0)

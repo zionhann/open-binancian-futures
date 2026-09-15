@@ -95,15 +95,15 @@ def _create_order_from_algo(
     item: CurrentAllAlgoOpenOrdersResponse, symbol: str
 ) -> Order:
     """Create Order from algo order response."""
-    price = item.price or item.trigger_price
+    price = item.price if float(item.price or 0) > 0 else item.trigger_price
     return Order(
         symbol=symbol,
         order_id=get_or_raise(item.algo_id),
         type=OrderType(get_or_raise(item.order_type)),
         side=PositionSide(get_or_raise(item.side)),
         price=float(get_or_raise(price)),
-        quantity=float(get_or_raise(item.quantity)),
-        reduce_only=bool(item.reduce_only),
+        quantity=float(item.quantity or 0),
+        reduce_only=bool(item.reduce_only or item.close_position),
         gtd=item.good_till_date,
     )
 

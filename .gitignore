@@ -19,3 +19,10 @@ gha-creds-*.json
 
 # Preset directory - work in progress, excluded from commits
 open_binancian_futures/preset/
+
+# Local durable live state (account-bound; never commit)
+.obf-runtime/
+*.sqlite3
+*.sqlite3-wal
+*.sqlite3-shm
+*.sqlite3.lock

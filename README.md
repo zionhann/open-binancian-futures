@@ -221,17 +221,19 @@ await self.submit_order(
 )
 ```
 
-`OrderIntent` currently rejects `TRAILING_STOP_MARKET` because the domain
-request does not yet carry activation-price and callback-rate fields. Use the
-existing `set_trailing_stop(...)` live API for trailing stops. A live
-non-reduce-only `MARKET` intent also requires a positive reference price so
-entry margin can be reserved safely; reduce-only market exits may omit it.
+`OrderIntent` supports managed live `TRAILING_STOP_MARKET` orders with
+`activation_price` and `callback_rate`. With a managed gateway, replace
+synchronous `set_trailing_stop(...)` calls with `await submit_order(...)`; see
+[managed helper migration](docs/exchange-adapter.md#managed-strategy-surface).
+The backtest gateway does not implement these extended trailing-stop and
+close-position intents. Managed market orders use an explicit reference price
+or the runtime’s latest indicator close for sizing.
 
 Existing `run_backtest(symbol, interval, index)` implementations and direct
 `OrderList.open_order(...)` calls remain supported. The latter are discovered
 by the runner after each callback; new non-market orders still follow the
-same-candle deferral rule. The SDK-specific `open_order(...)` method remains
-available for live REST execution.
+same-candle deferral rule. `Strategy.open_order(...)` remains available and
+routes through the managed gateway when one is configured.
 
 #### Migration: completed data and next-open execution
 
@@ -292,8 +294,8 @@ open-binancian-futures --backtest \
 
 `--backtest` and `--live` remain the mode switches. In a Vision backtest,
 the first value in `--intervals` is the execution interval and the remaining
-values are loaded as indicator context. Live trading continues to use its
-existing REST/WebSocket path.
+values are loaded as indicator context. Live trading uses the supervised
+managed runtime described below.
 
 ## License
 
@@ -304,3 +306,19 @@ MIT License - see [LICENSE](LICENSE) for details.
 **USE AT YOUR OWN RISK.**
 
 The author and contributors are not responsible for any financial losses or damages arising from the use of this software. Cryptocurrency trading involves significant risk. Always test thoroughly and trade responsibly.
+
+### Managed live recovery
+
+Live trading now starts through a supervised runtime with a durable SQLite order
+journal. Keep `.obf-runtime/orders.sqlite3` across restarts, or set
+`OBF_RUNTIME_PATH` / `LiveTrading(journal_path=...)` to a stable local path. Startup
+adopts existing target-symbol orders and positions; hedge mode is rejected before
+changes. Normal shutdown preserves exchange orders and positions.
+
+Unknown placement outcomes hold the affected symbol and are queried by the original
+client order ID instead of resent. Connection recovery restores account state and
+missing closed candles before strategy decisions resume. Strategy errors require a
+fresh runtime and cannot be cleared by reconnecting.
+
+See [live operations, scope and testnet checklist](docs/live-operations.md) and
+[adapter injection / managed helper migration](docs/exchange-adapter.md).
