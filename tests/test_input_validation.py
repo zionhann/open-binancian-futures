@@ -78,3 +78,33 @@ def test_valid_boundaries_and_positional_order(warmup, size):
     assert config.interval == "1h"
     assert config.timeline_mode == "union"
     assert config.execution_config.position_size == size
+
+
+@pytest.mark.parametrize("field", ["leverage", "indicator_init_size"])
+@pytest.mark.parametrize("value", ["2", " 2 ", "+2"])
+def test_direct_settings_reject_integer_strings(field, value):
+    with pytest.raises(ValueError, match=field):
+        GlobalSettings(_env_file=None, **{field: value})
+
+
+def test_dotenv_integer_parsing_preserves_source_priority(tmp_path, monkeypatch):
+    monkeypatch.delenv("LEVERAGE", raising=False)
+    monkeypatch.delenv("INDICATOR_INIT_SIZE", raising=False)
+    dotenv = tmp_path / "settings.env"
+    dotenv.write_text("LEVERAGE=3\nINDICATOR_INIT_SIZE=0\n")
+    parsed = GlobalSettings(_env_file=dotenv)
+    assert parsed.leverage == 3 and parsed.indicator_init_size == 0
+    monkeypatch.setenv("LEVERAGE", "4")
+    assert GlobalSettings(_env_file=dotenv).leverage == 4
+    assert GlobalSettings(_env_file=dotenv, leverage=5).leverage == 5
+    with pytest.raises(ValueError, match="leverage"):
+        GlobalSettings(_env_file=dotenv, leverage="5")
+
+
+@pytest.mark.parametrize("value", ["1.0", "true", "1e0", "-1"])
+def test_dotenv_rejects_invalid_integer_notation(tmp_path, monkeypatch, value):
+    monkeypatch.delenv("LEVERAGE", raising=False)
+    dotenv = tmp_path / "settings.env"
+    dotenv.write_text(f"LEVERAGE={value}\n")
+    with pytest.raises(ValueError, match="leverage"):
+        GlobalSettings(_env_file=dotenv)
