@@ -482,3 +482,112 @@ async def test_actual_leverage_drives_auto_size_and_stop_distance(tmp_path):
     subject=SimpleNamespace(effective_leverage=managed.effective_leverage,_require_exchange_info=lambda:adapter.state.exchange_info)
     assert Strategy.calculate_stop_price(subject,SYMBOL,100,OrderType.STOP_MARKET,PositionSide.SELL,.1)==99
     journal.close()
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('callback_kind',['run','fill_hook'])
+async def test_pre_disconnect_async_decision_cannot_send_after_recovery(tmp_path,callback_kind):
+    runner,streams=runtime(tmp_path)
+    entered=asyncio.Event();release=asyncio.Event();finished=asyncio.Event()
+    async def old_decision(*args):
+        entered.set()
+        await release.wait()
+        try:
+            await runner.gateway.submit_order(INTENT)
+        finally:
+            finished.set()
+    if callback_kind=='run':
+        runner.strategy.run=old_decision
+        event=candle()
+    else:
+        runner.strategy.on_filled_order=old_decision
+        event={'e':'ORDER_TRADE_UPDATE','T':20,'o':{'s':SYMBOL,'i':7,'t':12,'z':'1','rp':'0','X':'FILLED','o':'LIMIT','S':'BUY','q':'1','p':'100'}}
+    task=asyncio.create_task(runner.run_async());await eventually(lambda:runner.active)
+    streams[-1].emit(event);await entered.wait()
+    runner.recovery.set();await eventually(lambda:len(streams)==2 and runner.active)
+    release.set();await finished.wait();await asyncio.sleep(.01)
+    try:
+        assert not runner.adapter.receipts
+        assert not runner.failed
+        async def new_decision(*args): await runner.gateway.submit_order(INTENT)
+        runner.strategy.run=new_decision
+        streams[-1].emit(candle(120000 if callback_kind=='run' else 60000))
+        await eventually(lambda:bool(runner.adapter.receipts))
+    finally:
+        runner.close();await task
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('failure',['post_submit_snapshot','leverage_change'])
+async def test_gateway_infrastructure_failure_recovers_without_strategy_latch(tmp_path,failure):
+    adapter=Adapter();strategy=TestStrategy();strategy.trade=True
+    runner,streams=runtime(tmp_path,adapter,strategy,config=ExecutionConfig(leverage=20),jitter=lambda delay:.01)
+    task=asyncio.create_task(runner.run_async());await eventually(lambda:runner.active)
+    original_snapshot=adapter.snapshot;original_leverage=adapter.set_leverage
+    broken=True
+    def snapshot(*args):
+        if broken and adapter.receipts: raise ConnectionError('snapshot unavailable after acceptance')
+        return original_snapshot(*args)
+    def leverage(*args):
+        if broken: raise ConnectionError('leverage unavailable')
+        return original_leverage(*args)
+    if failure=='post_submit_snapshot': adapter.snapshot=snapshot
+    else: adapter.set_leverage=leverage
+    streams[-1].emit(candle());await asyncio.sleep(.02)
+    try:
+        assert not runner.failed
+        assert runner.recovery.is_set() or len(streams)>1
+        if failure=='post_submit_snapshot':
+            assert len(adapter.receipts)==1 and runner.journal.pending()
+        broken=False
+        await eventually(lambda:runner.active)
+        assert len(adapter.receipts)==(1 if failure=='post_submit_snapshot' else 0)
+    finally:
+        runner.close();await task
+
+
+@pytest.mark.asyncio
+async def test_malformed_closed_candle_does_not_advance_recovery_cursor(tmp_path):
+    adapter=Adapter();runner,streams=runtime(tmp_path,adapter)
+    task=asyncio.create_task(runner.run_async());await eventually(lambda:runner.active)
+    adapter.cutoff=120000
+    adapter.history=lambda symbol,interval,start,end,limit=1000:[[60000,'100','101','99','100','1',119999,0,0,0,0,0]] if start<=60000 else []
+    malformed=candle();del malformed['k']['o']
+    streams[-1].emit(malformed)
+    await eventually(lambda:len(streams)==2 and runner.active)
+    try:
+        assert len(runner.indicators[SYMBOL]['1m'])==2
+        assert runner.last_bars[(SYMBOL,'1m')]==60000
+        assert not runner.strategy.calls
+    finally:
+        runner.close();await task
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('phase',['startup','recovery'])
+async def test_sync_completion_candles_warm_indicators_without_strategy_replay(tmp_path,phase):
+    adapter=Adapter();runner,streams=runtime(tmp_path,adapter)
+    original_initial=adapter.initial_indicators
+    def completed_during_sync():
+        adapter.cutoff=120000
+        streams[-1].emit(candle(60000))
+    def initial(*args):
+        if phase=='startup': completed_during_sync()
+        return original_initial(*args)
+    adapter.initial_indicators=initial
+    adapter.history=lambda symbol,interval,start,end,limit=1000:[[60000,'100','101','99','100','1',119999,0,0,0,0,0]] if start<=60000 else []
+    task=asyncio.create_task(runner.run_async());await eventually(lambda:runner.active)
+    if phase=='recovery':
+        original_sync=runner._load_backfill
+        once=False
+        def backfill(cutoff):
+            nonlocal once
+            original_sync(cutoff)
+            if not once:
+                once=True;completed_during_sync()
+        runner._load_backfill=backfill
+        runner.recovery.set();await eventually(lambda:len(streams)==2 and runner.active)
+    await asyncio.sleep(.01)
+    try:
+        assert runner.strategy.calls==[]
+        assert len(runner.indicators[SYMBOL]['1m'])==2
+        streams[-1].emit(candle(120000));await eventually(lambda:len(runner.strategy.calls)==1)
+    finally:
+        runner.close();await task

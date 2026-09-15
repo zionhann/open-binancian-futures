@@ -33,6 +33,7 @@ class ManagedOrderGateway:
         self.report = report
         self.active = False
         self.can_send: Callable[[], bool] = lambda: True
+        self.request_recovery: Callable[[], None] = lambda: None
         self.failed = False
         self.blocked: set[str] = set()
         self.state: ExchangeSnapshot | None = None
@@ -112,8 +113,15 @@ class ManagedOrderGateway:
             raise OrderOutcomeUnknown(
                 f"Existing entry orders block leverage transition: {symbol}"
             )
-        self.adapter.set_leverage(symbol, self.config.leverage)
-        confirmed = self.adapter.leverage(symbol)
+        try:
+            self.adapter.set_leverage(symbol, self.config.leverage)
+            confirmed = self.adapter.leverage(symbol)
+        except Exception as error:
+            self.active = False
+            self.request_recovery()
+            raise OrderOutcomeUnknown(
+                f"Leverage synchronization requires recovery: {symbol}"
+            ) from error
         if confirmed != self.config.leverage:
             raise OrderOutcomeUnknown(f"Leverage change not confirmed: {symbol}")
         state.leverage[symbol] = confirmed
@@ -253,9 +261,16 @@ class ManagedOrderGateway:
                     f"Reconcile {identifier}; do not resend"
                 ) from error
             # Keep the reservation until query + snapshot establishes account state.
-            self.journal.update(identifier, "accepted")
             self.blocked.add(intent.symbol)
-            self.reconcile()
+            try:
+                self.journal.update(identifier, "accepted")
+                self.reconcile()
+            except Exception as error:
+                self.active = False
+                self.request_recovery()
+                raise OrderOutcomeUnknown(
+                    f"Accepted order {identifier} requires account reconciliation"
+                ) from error
             return True
 
     async def cancel_order(self, client_order_id: str) -> None:
@@ -287,4 +302,11 @@ class ManagedOrderGateway:
                     f"Cancellation outcome unknown: {record.intent.symbol} {client_order_id}"
                 )
                 raise
-            self.reconcile()
+            try:
+                self.reconcile()
+            except Exception as error:
+                self.active = False
+                self.request_recovery()
+                raise OrderOutcomeUnknown(
+                    f"Cancellation {client_order_id} requires account reconciliation"
+                ) from error

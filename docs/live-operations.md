@@ -61,7 +61,13 @@ owned old receivers/timers and identity-scoped subscriptions are retired first.
 Retries begin at 1 second, increase exponentially, add jitter and cap at 60 seconds.
 They continue until stopped. Reconciliation and continuous closed-candle backfill
 must succeed before resuming. Historical gaps keep the runtime paused. Backfilled
-candles rebuild indicators without replaying trading callbacks.
+candles rebuild indicators without replaying trading callbacks. Synchronization
+checks exchange time again after REST/indicator loading and warms any candles that
+closed through completion before activating decisions. A callback that was awaiting
+work before disconnection retains its old generation: reconnect cannot authorize
+its later managed placement or cancellation. Only a new callback receives the new
+generation. Adapter failures during leverage change or post-send reconciliation
+pause for infrastructure recovery; they do not latch a strategy-code failure.
 
 Strategy `run`, indicator load, and order-hook failures latch the runtime as failed.
 Network recovery cannot clear that latch. Repeated identical retry alerts are suppressed within each incident; each new

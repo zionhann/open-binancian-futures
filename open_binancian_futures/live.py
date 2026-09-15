@@ -7,6 +7,7 @@ import os
 import random
 import time
 from collections.abc import Awaitable, Callable, Sequence
+from contextvars import ContextVar
 from pathlib import Path
 from typing import Any
 
@@ -89,6 +90,9 @@ class LiveTrading:
         self.journal: OrderJournal | None = None
         self.listen_key: str | None = None
         self.generation = 0
+        self._decision_generation: ContextVar[int | None] = ContextVar(
+            "live_decision_generation", default=None
+        )
         self._connecting = False
         self.active = False
         self.failed = False
@@ -120,11 +124,18 @@ class LiveTrading:
             LOGGER.exception("Runtime notification failed")
 
     def _transport_ready(self) -> bool:
+        decision_generation = self._decision_generation.get()
+        if decision_generation is not None and decision_generation != self.generation:
+            return False
         if self.streams is None or self._connecting or self.recovery.is_set():
             return False
         signal = getattr(self.streams, "recovery", None)
         healthy = getattr(self.streams, "healthy", lambda: True)
         return not (signal is not None and signal.is_set()) and healthy()
+
+    def _request_recovery(self) -> None:
+        self._pause()
+        self.recovery.set()
 
     def _pause(self) -> None:
         self.active = False
@@ -246,7 +257,7 @@ class LiveTrading:
                 try:
                     await streams.close()
                 except Exception:
-                    self.report('Stream close failed; owned tasks retired')
+                    self.report("Stream close failed; owned tasks retired")
         finally:
             if key is not None:
                 try:
@@ -313,8 +324,31 @@ class LiveTrading:
                 self._build_strategy()
             except Exception as error:
                 self._strategy_failed(error)
+        # REST and indicator loading may span another candle close. Advance the
+        # warmup watermark through completion, never dispatch those queued bars as
+        # fresh decisions. Each individual history pass retains its fixed cutoff.
+        while not self.stop_event.is_set():
+            completed_at = self.adapter.server_time()
+            missing_closed_bar = any(
+                next_open(next_open(opened, interval), interval) <= completed_at
+                for (_, interval), opened in self.last_bars.items()
+            )
+            if not missing_closed_bar:
+                break
+            self._load_backfill(completed_at)
         # All buffered account events use another authoritative snapshot; candle
         # identities at/before the recovery cutoff are already consumed as history.
+
+    async def _call_strategy(self, callback: Callable[..., Any], *args: Any) -> None:
+        # Preserve the decision's generation across awaits (and tasks the strategy
+        # itself spawns). A recovered transport cannot authorize an old decision.
+        token = self._decision_generation.set(self.generation)
+        try:
+            result = callback(*args)
+            if inspect.isawaitable(result):
+                await result
+        finally:
+            self._decision_generation.reset(token)
 
     async def _market(self, data: dict[str, Any]) -> None:
         candle = data.get("k", {})
@@ -336,7 +370,6 @@ class LiveTrading:
             return
         if not self.active or self.failed or not self._transport_ready():
             return
-        self.last_bars[key] = opened
         timestamp = pd.Timestamp(opened, unit="ms", tz="UTC").tz_convert(
             self.execution_config.timezone
         )
@@ -355,15 +388,15 @@ class LiveTrading:
             index=[timestamp],
         )
         frame = pd.concat([self.indicators[symbol][interval], row])
+        self.indicators[symbol][interval] = frame
+        self.last_bars[key] = opened
         try:
             load = getattr(self.strategy, "load", None)
             self.indicators[symbol][interval] = (
                 load(frame) if load is not None else frame
             )
             self.strategy.indicators = self.indicators
-            result = self.strategy.run(symbol, interval)
-            if inspect.isawaitable(result):
-                await result
+            await self._call_strategy(self.strategy.run, symbol, interval)
         except OrderOutcomeUnknown as error:
             self.report(str(error))
         except Exception as error:
@@ -444,9 +477,7 @@ class LiveTrading:
                         if event == "ORDER_TRADE_UPDATE"
                         else OrderEvent.from_algo_update(model)
                     )
-                    result = method(notification)
-                    if inspect.isawaitable(result):
-                        await result
+                    await self._call_strategy(method, notification)
                 except OrderOutcomeUnknown as error:
                     self.report(str(error))
                 except Exception as error:
@@ -576,6 +607,7 @@ class LiveTrading:
             )
             self.gateway.on_snapshot = self._bind_snapshot
             self.gateway.can_send = self._transport_ready
+            self.gateway.request_recovery = self._request_recovery
             self.gateway.reference_price = lambda symbol: float(
                 self.indicators[symbol][self.intervals[0]]["Close"].iloc[-1]
             )
