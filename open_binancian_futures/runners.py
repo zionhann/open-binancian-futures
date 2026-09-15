@@ -390,6 +390,7 @@ class Backtesting(Runner):
         self._current_candles: dict[str, Candle] = {}
         self._run_backtest_takes_two_args: bool | None = None
         self._pending_fill_hooks: list[tuple[str, Timestamp]] | None = None
+        self._at_candle_close = False
 
         initial_view = self._visible_indicators(self._initial_visibility_time())
         self.strategy: object
@@ -680,7 +681,12 @@ class Backtesting(Runner):
         margin_price = order.price
         if order.type == OrderType.MARKET and margin_price <= 0:
             current_candle = self._current_candles.get(order.symbol)
-            margin_price = current_candle.close if current_candle is not None else 0.0
+            if current_candle is not None:
+                margin_price = (
+                    current_candle.close if self._at_candle_close else current_candle.open
+                )
+            else:
+                margin_price = 0.0
         margin = margin_price * order.quantity / self.config.leverage
         if margin <= 0:
             self._known_order_ids.discard(order_key)
@@ -1016,6 +1022,7 @@ class Backtesting(Runner):
                 if timestamp in eligible_indices[symbol]
             }
             self._current_candles = current_candles
+            self._at_candle_close = False
             for symbol, candle in current_candles.items():
                 self._expire_orders(symbol, candle.time)
             existing_order_keys_by_symbol = {
@@ -1043,6 +1050,7 @@ class Backtesting(Runner):
                 frame = frames[symbol]
                 bar_index = int(cast(int, frame.index.get_loc(timestamp)))
                 decision_time = self._close_times(frame, self.interval)[bar_index]
+                self._at_candle_close = True
                 self._current_time = candle.time
                 self._current_candle = candle
                 self._set_strategy_view(decision_time)

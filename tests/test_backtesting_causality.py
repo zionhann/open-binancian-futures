@@ -306,3 +306,38 @@ def test_fresh_runs_are_deterministic():
     ]
     assert results[0].summary.trades == results[1].summary.trades
     assert results[0].equity_curve == results[1].equity_curve
+
+
+@pytest.mark.parametrize("future_close", [20.0, 200.0])
+@pytest.mark.parametrize("quantity, expected", [(1.0, (0, 0.0)), (0.25, (1, 25.0))])
+def test_fill_hook_market_reservation_uses_known_open(future_close, quantity, expected):
+    observed = []
+
+    class HookOrder(Noop):
+        def run_backtest(self, symbol, interval, index):
+            if symbol == "ETH" and index == 0:
+                self.orders[symbol].add(
+                    Order(symbol, 1, OrderType.MARKET, PositionSide.BUY, 100.0, 0.5)
+                )
+            if symbol == "BTC" and index == 1:
+                observed.append((len(self.orders["BTC"]), self.balance.reserved_margin))
+
+        def on_backtest_entry_filled(self, symbol, timestamp):
+            if symbol == "ETH":
+                self.orders["BTC"].add(
+                    Order("BTC", 2, OrderType.MARKET, PositionSide.BUY, 0.0, quantity)
+                )
+
+    data = {
+        symbol: frame(symbol).assign(
+            Open=100.0, Close=[100.0, future_close if symbol == "BTC" else 100.0, 100.0]
+        )
+        for symbol in ["ETH", "BTC"]
+    }
+    Backtesting(
+        HookOrder(),
+        DataFrameDataSource(data, interval="1h"),
+        BacktestConfig(warmup_bars=0),
+    ).run()
+    # ETH consumed 50; BTC reserves using its known open regardless of future close.
+    assert observed == [expected]
