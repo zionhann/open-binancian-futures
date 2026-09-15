@@ -93,7 +93,7 @@ class Candle:
         )
 
 
-class MarketExecutionPolicy(str, Enum):
+class MarketExecutionPolicy(str, Enum):  # noqa: UP042 - preserve public str/format behavior
     """When a market order is filled relative to a completed candle."""
 
     CLOSE = "close"
@@ -608,7 +608,7 @@ class BinanceVisionDataSource:
         return False
 
     @staticmethod
-    def _as_utc(value: object, name: str) -> pd.Timestamp:
+    def _as_utc(value: str | date | datetime | pd.Timestamp, name: str) -> pd.Timestamp:
         try:
             timestamp = pd.Timestamp(value)
         except (TypeError, ValueError) as error:

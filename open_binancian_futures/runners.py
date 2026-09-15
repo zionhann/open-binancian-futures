@@ -4,8 +4,9 @@ import json
 import logging
 from abc import ABC, abstractmethod
 from collections.abc import Mapping, Sequence
+from datetime import date, datetime
 from pathlib import Path
-from typing import Any, Self, override
+from typing import Any, Self, cast, override
 
 import pandas as pd
 from binance_sdk_derivatives_trading_usds_futures.rest_api.models import (
@@ -456,7 +457,7 @@ class Backtesting(Runner):
     @staticmethod
     def _coerce_data_source(data_source: object) -> HistoricalDataSource:
         if hasattr(data_source, "load"):
-            return data_source  # type: ignore[return-value]
+            return data_source
         if isinstance(data_source, pd.DataFrame):
             default_symbol = (
                 settings.symbols_list[0]
@@ -711,7 +712,7 @@ class Backtesting(Runner):
                 self._remove_order(order)
 
     @staticmethod
-    def _as_timestamp(value: object) -> Timestamp:
+    def _as_timestamp(value: str | date | datetime | Timestamp) -> Timestamp:
         timestamp = pd.Timestamp(value)
         if timestamp.tzinfo is None:
             return timestamp.tz_localize("UTC")
@@ -952,11 +953,12 @@ class Backtesting(Runner):
         for symbol in self.symbols:
             self._sync_orders(symbol)
 
+        # normalize_ohlcv rejects duplicate timestamps, so get_loc returns an int.
         for timestamp in timeline:
             current_candles = {
                 symbol: Candle.from_series(
                     frames[symbol].iloc[
-                        int(frames[symbol].index.get_loc(timestamp))
+                        int(cast(int, frames[symbol].index.get_loc(timestamp)))
                     ]
                 )
                 for symbol in self.symbols
@@ -975,13 +977,13 @@ class Backtesting(Runner):
                 frame = frames[symbol]
                 if timestamp not in eligible_indices[symbol]:
                     continue
-                index = int(frame.index.get_loc(timestamp))
+                bar_index = int(cast(int, frame.index.get_loc(timestamp)))
                 candle = current_candles[symbol]
                 self._current_time = candle.time
                 self._current_candle = candle
                 self.test_results[symbol].record_bars()
                 existing_order_keys = existing_order_keys_by_symbol[symbol]
-                await self._run_strategy(symbol, index)
+                await self._run_strategy(symbol, bar_index)
                 new_order_keys = self._sync_orders(symbol)
                 current_orders = {
                     self._order_key(order): order for order in self.orders[symbol]
