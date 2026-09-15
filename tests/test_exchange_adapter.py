@@ -416,3 +416,88 @@ def test_limit_retains_time_in_force_and_expiry(options, expected_tif):
     kwargs = rest.new_order.call_args.kwargs
     assert kwargs["time_in_force"] == expected_tif
     assert kwargs.get("good_till_date") == options.get("gtd")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "order_type,explicit_tif",
+    [
+        (OrderType.MARKET, None),
+        (OrderType.LIMIT, None),
+        (OrderType.MARKET, "GTC"),
+    ],
+)
+async def test_strategy_open_order_defaults_reach_real_adapter(
+    order_type, explicit_tif
+):
+    from dataclasses import replace
+    from binance_sdk_derivatives_trading_usds_futures.rest_api.models import (
+        NewOrderSideEnum,
+        NewOrderTimeInForceEnum,
+    )
+    from open_binancian_futures.strategy import Strategy
+
+    class Concrete(Strategy):
+        def load(self, df):
+            return df
+
+        async def run(self, symbol, interval):
+            pass
+
+        def run_backtest(self, *args):
+            pass
+
+    rest = Mock()
+    rest.new_order.return_value = NewOrderResponse(orderId=1)
+    adapter = BinanceExchangeAdapter(SimpleNamespace(rest_api=rest))
+
+    class Gateway:
+        async def submit_order(self, intent):
+            adapter.submit(replace(intent, quantity=2), "mine")
+            return True
+
+    strategy = Concrete(None, None, None, None, None, None, None)
+    strategy.order_gateway = Gateway()
+    args = ["BTCUSDT", NewOrderSideEnum.BUY, order_type, 10]
+    if explicit_tif is not None:
+        args.append(NewOrderTimeInForceEnum(explicit_tif))
+    if order_type == OrderType.MARKET and explicit_tif is not None:
+        with pytest.raises(ValueError, match="MARKET"):
+            await strategy.open_order(*args)
+        assert not rest.mock_calls
+    else:
+        assert await strategy.open_order(*args)
+        kwargs = rest.new_order.call_args.kwargs
+        if order_type == OrderType.MARKET:
+            assert "time_in_force" not in kwargs
+        else:
+            assert kwargs["time_in_force"] == "GTC"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("order_type", [OrderType.MARKET, OrderType.LIMIT])
+async def test_unmanaged_open_order_keeps_order_specific_default(order_type):
+    from binance_sdk_derivatives_trading_usds_futures.rest_api.models import (
+        NewOrderSideEnum,
+        NewOrderTimeInForceEnum,
+    )
+    from open_binancian_futures.execution import ExecutionConfig
+    from open_binancian_futures.models import Balance
+    from open_binancian_futures.strategy import Strategy
+
+    rest = Mock()
+    subject = SimpleNamespace(
+        balance=Balance(100),
+        execution_config=ExecutionConfig(),
+        LOGGER=Mock(),
+        _require_exchange_info=lambda: SimpleNamespace(
+            to_entry_quantity=lambda **kw: 2
+        ),
+        _require_client=lambda: SimpleNamespace(rest_api=rest),
+    )
+    assert await Strategy.open_order(
+        subject, "BTCUSDT", NewOrderSideEnum.BUY, order_type, 10
+    )
+    assert rest.new_order.call_args.kwargs["time_in_force"] == (
+        None if order_type == OrderType.MARKET else NewOrderTimeInForceEnum.GTC
+    )

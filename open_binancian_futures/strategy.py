@@ -437,7 +437,7 @@ class Strategy(ABC):
         side: NewOrderSideEnum,
         order_type: OrderType,
         entry_price: float,
-        time_in_force: NewOrderTimeInForceEnum = NewOrderTimeInForceEnum.GTC,
+        time_in_force: NewOrderTimeInForceEnum | None = None,
         good_till_date: int | None = None,
     ) -> bool:
         """
@@ -452,16 +452,23 @@ class Strategy(ABC):
             side: BUY or SELL
             order_type: Order type (LIMIT, MARKET, etc.)
             entry_price: Entry price
-            time_in_force: Order duration (default GTC)
+            time_in_force: Order duration (default GTC for non-market orders)
             good_till_date: Expiration timestamp in ms (for GTD orders)
 
         Returns:
             True if order placed successfully, False if insufficient balance or order failed
         """
+        if order_type == OrderType.MARKET and (
+            time_in_force is not None or good_till_date is not None
+        ):
+            raise ValueError("MARKET orders do not support time_in_force or good till date")
+        effective_tif = time_in_force
+        if effective_tif is None and order_type != OrderType.MARKET:
+            effective_tif = NewOrderTimeInForceEnum.GTC
         if getattr(self, "order_gateway", None) is not None:
             return await self.submit_order(OrderIntent(
                 symbol, PositionSide(side.value), order_type, price=entry_price,
-                gtd=good_till_date, time_in_force=time_in_force.value,
+                gtd=good_till_date, time_in_force=effective_tif.value if effective_tif else None,
             ))
         # Step 1: Acquire lock, calculate quantity, optimistically deduct balance
         exchange_info = self._require_exchange_info()
@@ -491,7 +498,7 @@ class Strategy(ABC):
                 type=order_type.value,
                 price=entry_price,
                 quantity=quantity,
-                time_in_force=time_in_force,
+                time_in_force=effective_tif,
                 good_till_date=good_till_date,
             )
             return True
