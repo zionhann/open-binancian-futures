@@ -341,3 +341,95 @@ def test_fill_hook_market_reservation_uses_known_open(future_close, quantity, ex
     ).run()
     # ETH consumed 50; BTC reserves using its known open regardless of future close.
     assert observed == [expected]
+
+
+@pytest.mark.parametrize("source,target", [("BTC", "ETH"), ("ETH", "BTC")])
+@pytest.mark.parametrize("periods", [1, 3])
+@pytest.mark.parametrize(
+    "policy", [MarketExecutionPolicy.CLOSE, MarketExecutionPolicy.NEXT_OPEN]
+)
+def test_cross_symbol_market_uses_selected_execution_candle(
+    source, target, periods, policy
+):
+    from open_binancian_futures.models import OrderIntent
+
+    class Cross(Noop):
+        async def run_backtest(self, symbol, interval, index):
+            if symbol == source and index == 0:
+                assert await runner.submit_order(
+                    OrderIntent(target, PositionSide.BUY, OrderType.MARKET, 100.0, 0.1)
+                )
+
+    data = {
+        s: frame(s, periods=periods).assign(Close=[101.0, 121.0, 131.0][:periods])
+        for s in ["BTC", "ETH"]
+    }
+    runner = Backtesting(
+        Cross(),
+        DataFrameDataSource(data, interval="1h"),
+        BacktestConfig(warmup_bars=0, market_execution=policy),
+    )
+    result = runner.run()
+    if policy == MarketExecutionPolicy.NEXT_OPEN and periods == 1:
+        assert not result.summary.trades
+    else:
+        (trade,) = result.summary.trades
+        assert trade.symbol == target
+        assert trade.entry_price == (
+            101.0 if policy == MarketExecutionPolicy.CLOSE else 110.0
+        )
+        assert trade.entry_time == pd.Timestamp(
+            "2026-01-01 00:00:00Z"
+            if policy == MarketExecutionPolicy.CLOSE
+            else "2026-01-01 01:00:00Z"
+        )
+    assert runner.pending_margin == 0
+
+
+def test_cross_symbol_close_preserves_callback_priority_for_shared_balance():
+    from open_binancian_futures.models import OrderIntent
+
+    class Compete(Noop):
+        async def run_backtest(self, symbol, interval, index):
+            target = "ETH" if symbol == "BTC" else "BTC"
+            await runner.submit_order(
+                OrderIntent(target, PositionSide.BUY, OrderType.MARKET, 100.0, 0.75)
+            )
+
+    data = {s: frame(s, periods=1).assign(Close=100.0) for s in ["ETH", "BTC"]}
+    runner = Backtesting(
+        Compete(),
+        DataFrameDataSource(data, interval="1h"),
+        BacktestConfig(warmup_bars=0, market_execution=MarketExecutionPolicy.CLOSE),
+    )
+    result = runner.run()
+    assert [trade.symbol for trade in result.summary.trades] == ["ETH"]
+    assert result.final_balance == 100.0
+
+
+def test_cross_symbol_close_fill_hook_market_waits_until_next_candle():
+    from open_binancian_futures.models import OrderIntent
+
+    class Hook(Noop):
+        async def run_backtest(self, symbol, interval, index):
+            if symbol == "ETH" and index == 0:
+                await runner.submit_order(
+                    OrderIntent("BTC", PositionSide.BUY, OrderType.MARKET, 100.0, 0.1)
+                )
+
+        def on_backtest_entry_filled(self, symbol, timestamp):
+            if symbol == "BTC":
+                self.orders["ETH"].add(
+                    Order("ETH", 100, OrderType.MARKET, PositionSide.BUY, 100.0, 0.1)
+                )
+
+    data = {s: frame(s).assign(Close=[101.0, 121.0, 131.0]) for s in ["BTC", "ETH"]}
+    runner = Backtesting(
+        Hook(),
+        DataFrameDataSource(data, interval="1h"),
+        BacktestConfig(warmup_bars=0, market_execution=MarketExecutionPolicy.CLOSE),
+    )
+    trades = {trade.symbol: trade for trade in runner.run().summary.trades}
+    assert trades["BTC"].entry_price == 101.0
+    assert trades["ETH"].entry_price == 121.0
+    assert trades["ETH"].entry_time == pd.Timestamp("2026-01-01 01:00:00Z")
