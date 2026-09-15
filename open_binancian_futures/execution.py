@@ -7,6 +7,13 @@ from dataclasses import dataclass
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 
+def validate_integer(value: object, field: str, minimum: int) -> int:
+    """Reject coercion, including bool and integral floats, for integer settings."""
+    if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
+        raise ValueError(f"{field} must be an integer at least {minimum}")
+    return value
+
+
 @dataclass(frozen=True, slots=True)
 class ExecutionConfig:
     """Execution values that must be supplied to domain components."""
@@ -16,8 +23,7 @@ class ExecutionConfig:
     timezone: str = "UTC"
 
     def __post_init__(self) -> None:
-        if isinstance(self.leverage, bool) or self.leverage < 1:
-            raise ValueError("leverage must be at least one")
+        validate_integer(self.leverage, "leverage", 1)
         if not math.isfinite(self.position_size) or not 0.0 < self.position_size <= 1.0:
             raise ValueError("position_size must be greater than zero and at most one")
         if not isinstance(self.timezone, str) or not self.timezone:

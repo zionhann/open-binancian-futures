@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import io
 import logging
+import math
 import os
 import re
 import tempfile
@@ -24,7 +25,7 @@ from typing import Any, Protocol
 
 import pandas as pd
 
-from .execution import ExecutionConfig
+from .execution import ExecutionConfig, validate_integer
 from .models import Indicator, Order, OrderIntent
 from .types import OrderType, PositionSide
 
@@ -282,16 +283,13 @@ class BacktestConfig:
     position_size: float = 0.05
 
     def __post_init__(self) -> None:
-        if self.initial_balance <= 0:
-            raise ValueError("initial_balance must be positive")
-        if self.leverage < 1:
-            raise ValueError("leverage must be at least one")
+        if not math.isfinite(self.initial_balance) or self.initial_balance <= 0:
+            raise ValueError("initial_balance must be finite and positive")
         ExecutionConfig(
             leverage=self.leverage,
             position_size=self.position_size,
         )
-        if self.warmup_bars < 0:
-            raise ValueError("warmup_bars must not be negative")
+        validate_integer(self.warmup_bars, "warmup_bars", 0)
         if self.timeline_mode not in {"intersection", "union"}:
             raise ValueError("timeline_mode must be 'intersection' or 'union'")
         object.__setattr__(
