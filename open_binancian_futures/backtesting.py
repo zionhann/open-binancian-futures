@@ -143,7 +143,7 @@ class FillPolicy(Protocol):
 class DeterministicFillPolicy:
     """Deterministic OHLC fill policy used by the default engine."""
 
-    market_execution: MarketExecutionPolicy = MarketExecutionPolicy.CLOSE
+    market_execution: MarketExecutionPolicy = MarketExecutionPolicy.NEXT_OPEN
 
     def __post_init__(self) -> None:
         object.__setattr__(
@@ -279,7 +279,7 @@ class BacktestConfig:
     timeline_mode: str = "intersection"
     fill_policy: FillPolicy | None = None
     cost_model: CostModel = field(default_factory=ZeroCostModel)
-    market_execution: MarketExecutionPolicy = MarketExecutionPolicy.CLOSE
+    market_execution: MarketExecutionPolicy = MarketExecutionPolicy.NEXT_OPEN
     position_size: float = 0.05
 
     def __post_init__(self) -> None:
@@ -895,6 +895,7 @@ class Trade:
     quantity: float
     pnl: float
     exit_order_type: OrderType | None = None
+    exit_reason: str | None = None
 
     def __post_init__(self) -> None:
         if isinstance(self.side, str):
@@ -974,6 +975,7 @@ class BacktestResult:
         exit_price: float | None = None,
         quantity: float = 0.0,
         exit_order_type: OrderType | None = None,
+        exit_reason: str | None = None,
     ) -> None:
         self.trades.append(
             Trade(
@@ -986,6 +988,7 @@ class BacktestResult:
                 quantity=float(quantity),
                 pnl=float(pnl),
                 exit_order_type=exit_order_type,
+                exit_reason=exit_reason,
             )
         )
 

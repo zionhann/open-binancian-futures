@@ -112,7 +112,7 @@ def test_hit_rate_uses_actual_evaluated_bars_for_each_symbol() -> None:
             },
             interval="1h",
         ),
-        config=BacktestConfig(warmup_bars=0, interval="1h"),
+        config=BacktestConfig(market_execution="close", warmup_bars=0, interval="1h"),
     )
 
     result = runner.run()

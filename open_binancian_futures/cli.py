@@ -71,3 +71,4 @@ def run(
             runner.run()
     except Exception as e:  # noqa: BLE001 - CLI is the process error boundary
         logger.error(f"Application terminated by {e}: {traceback.format_exc()}")
+        raise typer.Exit(code=1) from e
