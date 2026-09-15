@@ -256,6 +256,18 @@ class BinanceExchangeAdapter:
     def submit(self, intent: OrderIntent, client_order_id: str) -> OrderReceipt:
         if not client_order_id:
             raise ValueError("client_order_id is required")
+        if intent.close_position and (
+            intent.order_type not in {OrderType.STOP_MARKET, OrderType.TAKE_PROFIT_MARKET}
+            or intent.quantity is not None
+            or intent.reduce_only
+        ):
+            raise ValueError(
+                "close_position requires stop/take-profit market without quantity or reduce_only"
+            )
+        if intent.order_type == OrderType.MARKET and (
+            intent.time_in_force is not None or intent.gtd is not None
+        ):
+            raise ValueError("MARKET orders do not support time_in_force or good till date")
         algo = self.is_algo(intent)
         kwargs: dict[str, Any] = dict(
             symbol=intent.symbol,
@@ -273,7 +285,8 @@ class BinanceExchangeAdapter:
         tif = intent.time_in_force or ("GTD" if intent.gtd is not None else "GTC")
         if intent.gtd is not None and tif != "GTD":
             raise ValueError("good till date requires GTD time in force")
-        kwargs["time_in_force"] = tif
+        if intent.order_type != OrderType.MARKET:
+            kwargs["time_in_force"] = tif
         if intent.gtd is not None:
             kwargs["good_till_date"] = intent.gtd
         if algo:
@@ -307,6 +320,18 @@ class BinanceExchangeAdapter:
                 "Placement outcome requires reconciliation"
             ) from error
 
+    @staticmethod
+    def _validate_identity(
+        receipt: OrderReceipt, symbol: str, client_order_id: str
+    ) -> None:
+        if receipt.symbol is not None and receipt.symbol != symbol:
+            raise OrderOutcomeUnknown("Exchange returned another symbol")
+        if (
+            receipt.client_order_id is not None
+            and receipt.client_order_id != client_order_id
+        ):
+            raise OrderOutcomeUnknown("Exchange returned another client order ID")
+
     def query(
         self, symbol: str, client_order_id: str, *, algo: bool = False
     ) -> OrderReceipt:
@@ -319,13 +344,7 @@ class BinanceExchangeAdapter:
                 )
             )
             receipt = normalize_receipt(result)
-            if receipt.symbol is not None and receipt.symbol != symbol:
-                raise OrderOutcomeUnknown("Lookup returned another symbol")
-            if (
-                receipt.client_order_id is not None
-                and receipt.client_order_id != client_order_id
-            ):
-                raise OrderOutcomeUnknown("Lookup returned another client order ID")
+            self._validate_identity(receipt, symbol, client_order_id)
             if receipt.status is None:
                 raise OrderOutcomeUnknown("Lookup has no order status")
             return receipt
@@ -345,7 +364,9 @@ class BinanceExchangeAdapter:
                     symbol=symbol, orig_client_order_id=client_order_id
                 )
             )
-            return normalize_receipt(result)
+            receipt = normalize_receipt(result)
+            self._validate_identity(receipt, symbol, client_order_id)
+            return receipt
         except Exception as error:
             raise OrderOutcomeUnknown(
                 "Cancellation outcome requires reconciliation"

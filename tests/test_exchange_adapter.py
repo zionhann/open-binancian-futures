@@ -267,3 +267,152 @@ def test_runner_accepts_adapter_without_global_client(monkeypatch):
     with pytest.raises(RuntimeError, match="supervisor"):
         runner.run()
     runner.close()
+
+
+@pytest.mark.parametrize("reduce_only", [False, True])
+def test_market_omits_time_in_force_and_expiry(reduce_only):
+    rest = Mock()
+    rest.new_order.return_value = NewOrderResponse(orderId=1)
+    adapter = BinanceExchangeAdapter(SimpleNamespace(rest_api=rest))
+    adapter.submit(
+        OrderIntent(
+            "BTCUSDT",
+            PositionSide.SELL,
+            OrderType.MARKET,
+            quantity=2,
+            reduce_only=reduce_only,
+        ),
+        "mine",
+    )
+    kwargs = rest.new_order.call_args.kwargs
+    assert "time_in_force" not in kwargs
+    assert "good_till_date" not in kwargs
+    assert kwargs["reduce_only"] == str(reduce_only).lower()
+
+
+@pytest.mark.parametrize(
+    "options",
+    [
+        {"time_in_force": "GTC"},
+        {"gtd": 123456},
+        {"time_in_force": "GTD", "gtd": 123456},
+    ],
+)
+def test_market_rejects_explicit_time_constraints_before_rest(options):
+    rest = Mock()
+    adapter = BinanceExchangeAdapter(SimpleNamespace(rest_api=rest))
+    with pytest.raises(ValueError, match="MARKET"):
+        adapter.submit(
+            OrderIntent(
+                "BTCUSDT", PositionSide.BUY, OrderType.MARKET, quantity=2, **options
+            ),
+            "mine",
+        )
+    assert not rest.mock_calls
+
+
+@pytest.mark.parametrize(
+    "order_type,options",
+    [
+        (OrderType.MARKET, {}),
+        (OrderType.LIMIT, {}),
+        (OrderType.STOP_LIMIT, {}),
+        (OrderType.TAKE_PROFIT_LIMIT, {}),
+        (OrderType.TRAILING_STOP_MARKET, {}),
+        (OrderType.STOP_MARKET, {"quantity": 2}),
+        (OrderType.TAKE_PROFIT_MARKET, {"reduce_only": True}),
+    ],
+)
+def test_close_position_rejects_incompatible_semantics_before_rest(order_type, options):
+    rest = Mock()
+    adapter = BinanceExchangeAdapter(SimpleNamespace(rest_api=rest))
+    with pytest.raises(ValueError, match="close_position"):
+        adapter.submit(
+            OrderIntent(
+                "BTCUSDT",
+                PositionSide.SELL,
+                order_type,
+                price=10,
+                close_position=True,
+                **options,
+            ),
+            "mine",
+        )
+    assert not rest.mock_calls
+
+
+@pytest.mark.parametrize("algo", [False, True])
+@pytest.mark.parametrize("field,value", [("symbol", "ETHUSDT"), ("client_id", "other")])
+def test_cancel_rejects_present_identity_mismatch(algo, field, value):
+    from binance_sdk_derivatives_trading_usds_futures.rest_api.models import (
+        CancelAlgoOrderResponse,
+        CancelOrderResponse,
+    )
+
+    payload = {"algoId" if algo else "orderId": 1}
+    payload[
+        ("clientAlgoId" if algo else "clientOrderId") if field == "client_id" else field
+    ] = value
+    model = CancelAlgoOrderResponse if algo else CancelOrderResponse
+    rest = Mock()
+    getattr(rest, "cancel_algo_order" if algo else "cancel_order").return_value = (
+        model.from_dict(payload)
+    )
+    with pytest.raises(OrderOutcomeUnknown):
+        BinanceExchangeAdapter(SimpleNamespace(rest_api=rest)).cancel(
+            "BTCUSDT", "mine", algo=algo
+        )
+
+
+def test_cancel_algo_accepts_real_sdk_response_without_symbol():
+    from binance_sdk_derivatives_trading_usds_futures.rest_api.models import (
+        CancelAlgoOrderResponse,
+    )
+
+    rest = Mock()
+    rest.cancel_algo_order.return_value = CancelAlgoOrderResponse(
+        algoId=1, clientAlgoId="mine"
+    )
+    receipt = BinanceExchangeAdapter(SimpleNamespace(rest_api=rest)).cancel(
+        "BTCUSDT", "mine", algo=True
+    )
+    assert receipt.client_order_id == "mine" and receipt.symbol is None
+
+
+@pytest.mark.parametrize(
+    "order_type", [OrderType.STOP_MARKET, OrderType.TAKE_PROFIT_MARKET]
+)
+def test_close_position_preserves_supported_types(order_type):
+    rest = Mock()
+    rest.new_algo_order.return_value = {"algoId": 1}
+    BinanceExchangeAdapter(SimpleNamespace(rest_api=rest)).submit(
+        OrderIntent(
+            "BTCUSDT", PositionSide.SELL, order_type, price=10, close_position=True
+        ),
+        "mine",
+    )
+    kwargs = rest.new_algo_order.call_args.kwargs
+    assert kwargs["close_position"] == "true"
+    assert "quantity" not in kwargs and "reduce_only" not in kwargs
+
+
+@pytest.mark.parametrize(
+    "options,expected_tif", [({}, "GTC"), ({"gtd": 123456}, "GTD")]
+)
+def test_limit_retains_time_in_force_and_expiry(options, expected_tif):
+    rest = Mock()
+    rest.new_order.return_value = NewOrderResponse(orderId=1)
+    BinanceExchangeAdapter(SimpleNamespace(rest_api=rest)).submit(
+        OrderIntent(
+            "BTCUSDT",
+            PositionSide.BUY,
+            OrderType.LIMIT,
+            price=10,
+            quantity=2,
+            **options,
+        ),
+        "mine",
+    )
+    kwargs = rest.new_order.call_args.kwargs
+    assert kwargs["time_in_force"] == expected_tif
+    assert kwargs.get("good_till_date") == options.get("gtd")
