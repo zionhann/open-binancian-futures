@@ -1,6 +1,6 @@
 import logging
 from collections.abc import Sequence
-from typing import cast
+from typing import Any, cast
 
 import pandas as pd
 from binance_sdk_derivatives_trading_usds_futures.rest_api.models import (
@@ -49,8 +49,8 @@ KLINES_COLUMNS = [
 ]
 
 
-def init_exchange_info(symbols: Sequence[str] | None = None) -> ExchangeInfo:
-    data: ExchangeInformationResponse = fetch(client().rest_api.exchange_information)
+def init_exchange_info(symbols: Sequence[str] | None = None, *, sdk_client: Any = None) -> ExchangeInfo:
+    data: ExchangeInformationResponse = fetch((sdk_client if sdk_client is not None else client()).rest_api.exchange_information)
     exchange_symbols = get_or_raise(data.symbols)
     requested_symbols = set(
         symbols if symbols is not None else settings.symbols_list
@@ -63,10 +63,10 @@ def init_exchange_info(symbols: Sequence[str] | None = None) -> ExchangeInfo:
     return ExchangeInfo(target_symbols)
 
 
-def init_balance(execution_config: ExecutionConfig | None = None) -> Balance:
+def init_balance(execution_config: ExecutionConfig | None = None, *, sdk_client: Any = None) -> Balance:
     LOGGER.info("Fetching available balance...")
     data: list[FuturesAccountBalanceV3Response] = fetch(
-        client().rest_api.futures_account_balance_v3
+        (sdk_client if sdk_client is not None else client()).rest_api.futures_account_balance_v3
     )
     usdt_balance = next((item for item in data if item.asset == "USDT"), None)
     if usdt_balance:
@@ -85,7 +85,8 @@ def _create_order_from_regular(item: AllOrdersResponse, symbol: str) -> Order:
         type=OrderType(get_or_raise(item.orig_type)),
         side=PositionSide(get_or_raise(item.side)),
         price=float(get_or_raise(price)),
-        quantity=float(get_or_raise(item.orig_qty)),
+        quantity=max(0.0, float(get_or_raise(item.orig_qty)) - float(item.executed_qty or 0)),
+        reduce_only=bool(item.reduce_only),
         gtd=item.good_till_date,
     )
 
@@ -102,32 +103,33 @@ def _create_order_from_algo(
         side=PositionSide(get_or_raise(item.side)),
         price=float(get_or_raise(price)),
         quantity=float(get_or_raise(item.quantity)),
+        reduce_only=bool(item.reduce_only),
         gtd=item.good_till_date,
     )
 
 
-def _fetch_regular_orders(symbol: str) -> list[Order]:
+def _fetch_regular_orders(symbol: str, sdk_client: Any = None) -> list[Order]:
     items = cast(
         list[AllOrdersResponse],
-        fetch(client().rest_api.current_all_open_orders, symbol=symbol),
+        fetch((sdk_client if sdk_client is not None else client()).rest_api.current_all_open_orders, symbol=symbol),
     )
     return [_create_order_from_regular(item, symbol) for item in items]
 
 
-def _fetch_algo_orders(symbol: str) -> list[Order]:
+def _fetch_algo_orders(symbol: str, sdk_client: Any = None) -> list[Order]:
     items = cast(
         list[CurrentAllAlgoOpenOrdersResponse],
-        fetch(client().rest_api.current_all_algo_open_orders, symbol=symbol),
+        fetch((sdk_client if sdk_client is not None else client()).rest_api.current_all_algo_open_orders, symbol=symbol),
     )
     return [_create_order_from_algo(item, symbol) for item in items]
 
 
-def init_orders(symbols: Sequence[str] | None = None) -> OrderBook:
+def init_orders(symbols: Sequence[str] | None = None, *, sdk_client: Any = None) -> OrderBook:
     requested_symbols = tuple(
         symbols if symbols is not None else settings.symbols_list
     )
     orders = {
-        symbol: OrderList(_fetch_regular_orders(symbol) + _fetch_algo_orders(symbol))
+        symbol: OrderList(_fetch_regular_orders(symbol, sdk_client) + _fetch_algo_orders(symbol, sdk_client))
         for symbol in requested_symbols
     }
     LOGGER.info(f"Loaded open orders: {orders}")
@@ -157,7 +159,7 @@ def _create_position_from_response(
 
 
 def init_positions(
-    leverage: int = 1, *, symbols: Sequence[str] | None = None
+    leverage: int = 1, *, symbols: Sequence[str] | None = None, sdk_client: Any = None
 ) -> PositionBook:
     requested_symbols = tuple(
         symbols if symbols is not None else settings.symbols_list
@@ -166,7 +168,7 @@ def init_positions(
     for symbol in requested_symbols:
         items = cast(
             list[PositionInformationV3Response],
-            fetch(client().rest_api.position_information_v3, symbol=symbol),
+            fetch((sdk_client if sdk_client is not None else client()).rest_api.position_information_v3, symbol=symbol),
         )
         position_list = [
             pos
@@ -184,6 +186,7 @@ def init_indicators(
     symbols: Sequence[str] | None = None,
     intervals: Sequence[str] | None = None,
     timezone: str | None = None,
+    sdk_client: Any = None,
 ) -> Indicator:
     """Fetch completed candles for the configured or requested dimensions."""
     indicators = Indicator()
@@ -194,7 +197,7 @@ def init_indicators(
         for interval in requested_intervals:
             LOGGER.info(f"Fetching {symbol} klines by {interval}...")
             klines_data: KlineCandlestickDataResponse = fetch(
-                client().rest_api.kline_candlestick_data,
+                (sdk_client if sdk_client is not None else client()).rest_api.kline_candlestick_data,
                 symbol=symbol,
                 interval=interval,
                 limit=limit,

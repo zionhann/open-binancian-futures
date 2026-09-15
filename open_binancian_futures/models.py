@@ -154,6 +154,11 @@ class OrderIntent:
     reduce_only: bool = False
     gtd: int | None = None
 
+    close_position: bool = False
+    activation_price: float | None = None
+    callback_rate: float | None = None
+    time_in_force: str | None = None
+
     def __post_init__(self) -> None:
         object.__setattr__(self, "side", PositionSide(self.side))
         object.__setattr__(self, "order_type", OrderType(self.order_type))

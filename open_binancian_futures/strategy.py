@@ -9,6 +9,7 @@ import textwrap
 import traceback
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from typing import Any
 
 import pandas as pd
 from binance_sdk_derivatives_trading_usds_futures.derivatives_trading_usds_futures import (
@@ -28,6 +29,7 @@ from binance_sdk_derivatives_trading_usds_futures.websocket_streams.models impor
 from pandas import DataFrame
 
 from . import exchange as futures
+from .exchange_adapter import OrderGateway
 from .execution import ExecutionConfig
 from .models import (
     Balance,
@@ -77,6 +79,8 @@ class StrategyContext:
     webhook: Webhook | None = None
     indicators: Indicator | None = None
     execution_config: ExecutionConfig | None = None
+    order_gateway: OrderGateway | None = None
+    preserve_position_leverage: bool = False
 
 
 class Strategy(ABC):
@@ -104,6 +108,7 @@ class Strategy(ABC):
         try:
             strategy_class = Strategy._import_strategy(name)
             parameters = inspect.signature(strategy_class).parameters
+            gateway_kwargs: dict[str, Any] = ({"order_gateway": context.order_gateway} if ("order_gateway" in parameters or any(parameter.kind is inspect.Parameter.VAR_KEYWORD for parameter in parameters.values())) else {})
             if context.execution_config is not None and (
                 "execution_config" in parameters
                 or any(
@@ -112,6 +117,7 @@ class Strategy(ABC):
                 )
             ):
                 strategy = strategy_class(
+                    **gateway_kwargs,
                     client=context.client,
                     exchange_info=context.exchange_info,
                     balance=context.balance,
@@ -123,6 +129,7 @@ class Strategy(ABC):
                 )
             else:
                 strategy = strategy_class(
+                    **gateway_kwargs,
                     client=context.client,
                     exchange_info=context.exchange_info,
                     balance=context.balance,
@@ -131,6 +138,8 @@ class Strategy(ABC):
                     webhook=context.webhook,
                     indicators=context.indicators,
                 )
+            strategy.order_gateway = context.order_gateway
+            strategy._preserve_position_leverage = context.preserve_position_leverage
             if context.execution_config is not None:
                 strategy.configure_execution(context.execution_config)
             return strategy
@@ -227,21 +236,24 @@ class Strategy(ABC):
         webhook: Webhook | None,
         indicators: Indicator | None,
         execution_config: ExecutionConfig | None = None,
+        order_gateway: OrderGateway | None = None,
     ) -> None:
         self.client = client
+        self.order_gateway = order_gateway
+        self._preserve_position_leverage = False
         self.execution_config = execution_config or (
             balance.execution_config if balance is not None else ExecutionConfig()
         )
         self.exchange_info = (
             exchange_info
             if exchange_info is not None
-            else (futures.init_exchange_info() if client is not None else None)
+            else (futures.init_exchange_info(sdk_client=client) if client is not None else None)
         )
         self.balance = (
             balance
             if balance is not None
             else (
-                futures.init_balance(execution_config=self.execution_config)
+                futures.init_balance(execution_config=self.execution_config, sdk_client=client)
                 if client is not None
                 else Balance(100.0, execution_config=self.execution_config)
             )
@@ -250,13 +262,13 @@ class Strategy(ABC):
         self.orders = (
             orders
             if orders is not None
-            else (futures.init_orders() if client is not None else OrderBook())
+            else (futures.init_orders(sdk_client=client) if client is not None else OrderBook())
         )
         self.positions = (
             positions
             if positions is not None
             else (
-                futures.init_positions(leverage=self.execution_config.leverage)
+                futures.init_positions(leverage=self.execution_config.leverage, sdk_client=client)
                 if client is not None
                 else PositionBook()
             )
@@ -268,6 +280,7 @@ class Strategy(ABC):
             else (
                 futures.init_indicators(
                     timezone=self.execution_config.timezone,
+                    sdk_client=client,
                 )
                 if client is not None
                 else Indicator()
@@ -281,7 +294,7 @@ class Strategy(ABC):
         self.execution_config = execution_config
         if self.balance is not None:
             self.balance.configure_execution(execution_config)
-        if self.positions is not None:
+        if self.positions is not None and getattr(self, "order_gateway", None) is None and not getattr(self, "_preserve_position_leverage", False):
             for position_list in self.positions.values():
                 for position in position_list:
                     position.leverage = execution_config.leverage
@@ -353,6 +366,8 @@ class Strategy(ABC):
         close_position: bool | None = None,
         quantity: float | None = None,
     ) -> None:
+        if getattr(self, "order_gateway", None) is not None:
+            raise RuntimeError("Managed set_tpsl requires await submit_order(OrderIntent(..., close_position=..., time_in_force='GTE_GTC'))")
         reduce_only = None if close_position else True
         _quantity = quantity if reduce_only else None
         _stop_price = stop_price or self.calculate_stop_price(
@@ -391,6 +406,8 @@ class Strategy(ABC):
         callback_ratio: float,
         activation_price: float | None = None,
     ) -> None:
+        if getattr(self, "order_gateway", None) is not None:
+            raise RuntimeError("Managed trailing stop requires await submit_order(OrderIntent(..., activation_price=..., callback_rate=..., time_in_force='GTE_GTC'))")
         exchange_info = self._require_exchange_info()
         _activation_price = (
             exchange_info.to_entry_price(symbol, activation_price)
@@ -420,7 +437,7 @@ class Strategy(ABC):
         side: NewOrderSideEnum,
         order_type: OrderType,
         entry_price: float,
-        time_in_force: NewOrderTimeInForceEnum = NewOrderTimeInForceEnum.GTC,
+        time_in_force: NewOrderTimeInForceEnum | None = None,
         good_till_date: int | None = None,
     ) -> bool:
         """
@@ -435,12 +452,24 @@ class Strategy(ABC):
             side: BUY or SELL
             order_type: Order type (LIMIT, MARKET, etc.)
             entry_price: Entry price
-            time_in_force: Order duration (default GTC)
+            time_in_force: Order duration (default GTC for non-market orders)
             good_till_date: Expiration timestamp in ms (for GTD orders)
 
         Returns:
             True if order placed successfully, False if insufficient balance or order failed
         """
+        if order_type == OrderType.MARKET and (
+            time_in_force is not None or good_till_date is not None
+        ):
+            raise ValueError("MARKET orders do not support time_in_force or good till date")
+        effective_tif = time_in_force
+        if effective_tif is None and order_type != OrderType.MARKET:
+            effective_tif = NewOrderTimeInForceEnum.GTC
+        if getattr(self, "order_gateway", None) is not None:
+            return await self.submit_order(OrderIntent(
+                symbol, PositionSide(side.value), order_type, price=entry_price,
+                gtd=good_till_date, time_in_force=effective_tif.value if effective_tif else None,
+            ))
         # Step 1: Acquire lock, calculate quantity, optimistically deduct balance
         exchange_info = self._require_exchange_info()
         async with self.balance.lock:
@@ -469,7 +498,7 @@ class Strategy(ABC):
                 type=order_type.value,
                 price=entry_price,
                 quantity=quantity,
-                time_in_force=time_in_force,
+                time_in_force=effective_tif,
                 good_till_date=good_till_date,
             )
             return True
@@ -513,6 +542,10 @@ class Strategy(ABC):
         endpoint; their single domain price is used as the trigger price and,
         for conditional limit orders, as the limit price as well.
         """
+        managed_gateway = getattr(self, "order_gateway", None)
+        if managed_gateway is not None:
+            return await managed_gateway.submit_order(intent)
+
         if intent.order_type == OrderType.TRAILING_STOP_MARKET:
             self.LOGGER.warning(
                 "TRAILING_STOP_MARKET intents are not supported by the domain "
