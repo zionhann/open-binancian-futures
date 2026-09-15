@@ -93,7 +93,7 @@ Interfaces: `LiveTrading` accepts injected adapter and policy. Runtime states ar
 ## Delivery verification
 
 - [x] Independently review each task's spec compliance and patch.
-- [ ] CI checks all five current heads. Record exact SHA and links.
+- [x] CI checks all five current heads. Record exact SHA and links.
 - [x] No PR merge or deployment. Report any unmet AC explicitly.
 
 Final evidence and AC mapping: [reliability-verification.md](../../reliability-verification.md). Task 5 source passed independent re-review at `b45b1e9` with 253 full tests passing.

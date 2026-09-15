@@ -59,7 +59,7 @@
 - `python -m mypy --config-file pyproject.toml open_binancian_futures`: 22개 소스 파일 통과.
 - `python -m pip check`: 의존성 충돌 없음.
 
-후속 문서 커밋과 PR CI의 최종 상태는 전달 시 다시 확인한다. 전체 테스트 통과가 실제 거래소 운영 검증을 의미하지는 않는다. [수동 테스트넷 체크리스트](live-operations.md#manual-testnet-checklist-not-executed-by-automated-tests)는 아직 실행하지 않았다.
+PR #14–18의 Python 3.12·3.13 CI가 모두 통과했다. 마지막 구현을 포함한 문서 커밋 `2d7613fbbb32faafbc8e036aed509eb39d831b34`의 [CI 결과](https://github.com/zionhann/open-binancian-futures/actions/runs/34943155432)까지 확인했다. 이 완료 기록 이후의 변경은 문서 표시 정리뿐이다. 전체 테스트 통과가 실제 거래소 운영 검증을 의미하지는 않는다. [수동 테스트넷 체크리스트](live-operations.md#manual-testnet-checklist-not-executed-by-automated-tests)는 아직 실행하지 않았다.
 
 ## 남는 운영 경계
 
