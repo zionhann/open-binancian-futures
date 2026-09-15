@@ -322,6 +322,17 @@ class Strategy(ABC):
                     f"{intervals[interval].tail().to_string(index=False)}"
                 )
 
+    def effective_leverage(self, symbol: str) -> int:
+        """Use adopted exchange leverage for managed sizing and stop distances."""
+        gateway = getattr(self, 'order_gateway', None)
+        lookup = getattr(gateway, 'effective_leverage', None)
+        if lookup is not None:
+            return lookup(symbol)
+        position = self.positions[symbol].find_first()
+        if getattr(self, '_preserve_position_leverage', False) and position is not None:
+            return position.leverage
+        return self.execution_config.leverage
+
     def calculate_stop_price(
         self,
         symbol: str,
@@ -340,7 +351,7 @@ class Strategy(ABC):
         tp_orders = {OrderType.TAKE_PROFIT_MARKET, OrderType.TAKE_PROFIT_LIMIT}
 
         # Normalize ratios by leverage
-        _ratio = ratio / self.execution_config.leverage
+        _ratio = ratio / self.effective_leverage(symbol)
 
         # Calculate price movement direction
         # SL SELL (close long) or TP BUY (close short) → price decreases (1 - ratio)
@@ -414,8 +425,8 @@ class Strategy(ABC):
             if activation_price
             else None
         )
-        _callback_ratio = callback_ratio / self.execution_config.leverage * 100
-        max_cb_ratio = min(100 // self.execution_config.leverage, 10)
+        _callback_ratio = callback_ratio / self.effective_leverage(symbol) * 100
+        max_cb_ratio = min(100 // self.effective_leverage(symbol), 10)
         safe_cb_ratio = round(min(max(0.1, _callback_ratio), max_cb_ratio), 2)
 
         fetch(
@@ -707,7 +718,7 @@ class Strategy(ABC):
                     price=price,
                     amount=amount,
                     side=(PositionSide.BUY if amount > 0 else PositionSide.SELL),
-                    leverage=self.execution_config.leverage,
+                    leverage=self.effective_leverage(symbol),
                     break_even_price=bep,
                 )
             ]
@@ -724,7 +735,7 @@ class Strategy(ABC):
         self._realized_profit[symbol] = self._realized_profit.get(symbol, 0.0) + profit
 
     def on_new_order(self, event: OrderEvent) -> None:
-        if event.can_convert_to_order():
+        if getattr(self, 'order_gateway', None) is None and event.can_convert_to_order():
             self.orders[event.symbol].add(event.to_order())
 
         valid_price = event.price or event.stop_price
@@ -742,7 +753,8 @@ class Strategy(ABC):
         )
 
     def on_triggered_algo(self, event: OrderEvent) -> None:
-        self.orders[event.symbol].remove_by_id(event.order_id)
+        if getattr(self, 'order_gateway', None) is None:
+            self.orders[event.symbol].remove_by_id(event.order_id)
         self.LOGGER.info(
             f"{event.display_order_type} order for {event.symbol} has been triggered."
         )
@@ -777,7 +789,8 @@ class Strategy(ABC):
                 """
             )
         )
-        self.orders[event.symbol].remove_by_id(event.order_id)
+        if getattr(self, 'order_gateway', None) is None:
+            self.orders[event.symbol].remove_by_id(event.order_id)
         self._realized_profit[event.symbol] = 0.0
 
     def _handle_order_removal(self, event: OrderEvent, reason: str) -> None:
@@ -788,7 +801,8 @@ class Strategy(ABC):
             event: OrderEvent containing order details
             reason: Human-readable reason (e.g., "cancelled", "expired")
         """
-        self.orders[event.symbol].remove_by_id(event.order_id)
+        if getattr(self, 'order_gateway', None) is None:
+            self.orders[event.symbol].remove_by_id(event.order_id)
         side_str = event.side.value if event.side else "N/A"
         self.LOGGER.info(
             f"{event.display_order_type} order for {event.symbol} has been {reason}. (Side: {side_str})"

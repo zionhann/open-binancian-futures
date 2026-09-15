@@ -1,5 +1,6 @@
 """Injected, synchronous REST boundary. Placement is never automatically retried."""
 
+import hashlib
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Any, Protocol
@@ -126,6 +127,11 @@ class ExchangeAdapter(Protocol):
     def initial_indicators(
         self, symbols: Sequence[str], intervals: Sequence[str], timezone: str
     ) -> Indicator: ...
+    def identity(self) -> str: ...
+    def server_time(self) -> int: ...
+    def start_listen_key(self) -> str: ...
+    def keepalive_listen_key(self, listen_key: str) -> None: ...
+    def close_listen_key(self, listen_key: str) -> None: ...
     def account_mode(self) -> bool: ...
     def leverage(self, symbol: str) -> int: ...
     def set_leverage(self, symbol: str, leverage: int) -> None: ...
@@ -189,6 +195,29 @@ class BinanceExchangeAdapter:
             timezone=timezone,
             sdk_client=self.client,
         )
+
+    def identity(self) -> str:
+        configuration = self.rest.configuration
+        endpoint = str(configuration.base_path).rstrip('/')
+        key = configuration.api_key
+        if not key:
+            raise ValueError('API key is required for account identity')
+        return hashlib.sha256((endpoint + '\0' + str(key)).encode()).hexdigest()
+
+    def server_time(self) -> int:
+        return int(response_data(self.rest.check_server_time())['serverTime'])
+
+    def start_listen_key(self) -> str:
+        key = response_data(self.rest.start_user_data_stream()).get('listenKey')
+        if not isinstance(key, str) or not key:
+            raise ValueError('Missing listen key')
+        return key
+
+    def keepalive_listen_key(self, listen_key: str) -> None:
+        self.rest.keepalive_user_data_stream().data()
+
+    def close_listen_key(self, listen_key: str) -> None:
+        self.rest.close_user_data_stream().data()
 
     def account_mode(self) -> bool:
         data = response_data(self.rest.get_current_position_mode())

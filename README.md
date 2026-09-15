@@ -304,3 +304,19 @@ MIT License - see [LICENSE](LICENSE) for details.
 **USE AT YOUR OWN RISK.**
 
 The author and contributors are not responsible for any financial losses or damages arising from the use of this software. Cryptocurrency trading involves significant risk. Always test thoroughly and trade responsibly.
+
+### Managed live recovery
+
+Live trading now starts through a supervised runtime with a durable SQLite order
+journal. Keep `.obf-runtime/orders.sqlite3` across restarts, or set
+`OBF_RUNTIME_PATH` / `LiveTrading(journal_path=...)` to a stable local path. Startup
+adopts existing target-symbol orders and positions; hedge mode is rejected before
+changes. Normal shutdown preserves exchange orders and positions.
+
+Unknown placement outcomes hold the affected symbol and are queried by the original
+client order ID instead of resent. Connection recovery restores account state and
+missing closed candles before strategy decisions resume. Strategy errors require a
+fresh runtime and cannot be cleared by reconnecting.
+
+See [live operations, scope and testnet checklist](docs/live-operations.md) and
+[adapter injection / managed helper migration](docs/exchange-adapter.md).

@@ -1,6 +1,5 @@
 import asyncio
 import inspect
-import json
 import logging
 from abc import ABC, abstractmethod
 from collections.abc import Mapping, Sequence
@@ -9,22 +8,8 @@ from pathlib import Path
 from typing import Any, Self, cast, override
 
 import pandas as pd
-from binance_sdk_derivatives_trading_usds_futures.rest_api.models import (
-    StartUserDataStreamResponse,
-)
-from binance_sdk_derivatives_trading_usds_futures.websocket_streams.models import (
-    AccountUpdate,
-    AccountUpdateA,
-    AlgoUpdate,
-    AlgoUpdateO,
-    KlineCandlestickStreamsResponse,
-    Listenkeyexpired,
-    OrderTradeUpdate,
-    OrderTradeUpdateO,
-)
 from pandas import Timestamp
 
-from . import exchange as futures
 from .backtesting import (
     BacktestConfig,
     BacktestResult,
@@ -41,16 +26,14 @@ from .backtesting import (
     build_timeline,
     normalize_ohlcv_frame,
 )
-from .client import client
+from .client import client as client
 from .constants import settings
-from .exchange_adapter import ExchangeAdapter, OrderGateway
-from .execution import ExecutionConfig
+from .live import LiveTrading as LiveTrading
 from .models import (
     Balance,
     Indicator,
     Order,
     OrderBook,
-    OrderEvent,
     OrderIntent,
     OrderList,
     Position,
@@ -59,14 +42,9 @@ from .models import (
 )
 from .strategy import Strategy, StrategyContext
 from .types import (
-    AlgoStatus,
-    EventType,
-    OrderStatus,
     OrderType,
     PositionSide,
 )
-from .utils import fetch, get_or_raise
-from .webhook import Webhook
 
 LOGGER = logging.getLogger(__name__)
 MESSAGE = "message"
@@ -92,218 +70,6 @@ class Runner(ABC):
     def __exit__(self, exc_type, exc_val, exc_tb) -> None:
         self.close()
 
-
-class LiveTrading(Runner):
-    def __init__(self, adapter: ExchangeAdapter | None = None, *, order_gateway: OrderGateway | None = None) -> None:
-        self.adapter = adapter
-        self.client: Any = client() if adapter is None else getattr(adapter, "client", None)
-        self.symbols = tuple(settings.symbols_list)
-        self.intervals = tuple(settings.intervals_list)
-        self.execution_config = ExecutionConfig(
-            leverage=settings.leverage,
-            position_size=settings.size,
-            timezone=settings.timezone,
-        )
-        self.webhook = Webhook.of(settings.webhook_url)
-        if adapter is not None:
-            snapshot = adapter.snapshot(self.symbols, self.execution_config)
-            self.exchange_info = snapshot.exchange_info
-            self.balance = snapshot.balance
-            self.orders = snapshot.orders
-            self.positions = snapshot.positions
-            self.indicators = adapter.initial_indicators(self.symbols, self.intervals, self.execution_config.timezone)
-        else:
-            self.exchange_info = futures.init_exchange_info(symbols=self.symbols, sdk_client=self.client)
-            self.balance = futures.init_balance(
-                sdk_client=self.client,
-                execution_config=self.execution_config,
-            )
-            self.orders = futures.init_orders(symbols=self.symbols, sdk_client=self.client)
-            self.positions = futures.init_positions(
-                sdk_client=self.client,
-                leverage=self.execution_config.leverage,
-                symbols=self.symbols,
-            )
-            self.indicators = futures.init_indicators(
-                sdk_client=self.client,
-                symbols=self.symbols,
-                intervals=self.intervals,
-                timezone=self.execution_config.timezone,
-            )
-        context = StrategyContext(
-            client=self.client,
-            order_gateway=order_gateway,
-            preserve_position_leverage=adapter is not None,
-            exchange_info=self.exchange_info,
-            balance=self.balance,
-            orders=self.orders,
-            positions=self.positions,
-            webhook=self.webhook,
-            indicators=self.indicators,
-            execution_config=self.execution_config,
-        )
-        self.strategy = Strategy.of(name=settings.strategy, context=context)
-
-    def _market_stream_handler(self, stream: KlineCandlestickStreamsResponse) -> None:
-        try:
-            if stream.e == EventType.KLINE.value:
-                data = get_or_raise(stream.k)
-                asyncio.create_task(self.strategy.on_new_candlestick(data))
-
-        except Exception as e:  # noqa: BLE001 - stream handlers are error boundaries
-            LOGGER.error(f"An error occurred in the market stream handler: {e}")
-            self.webhook.send_message(
-                f"[ALERT] An error occurred in the market stream handler:\n{e}"
-            )
-
-    def _user_stream_handler(self, stream: dict) -> None:
-        try:
-            if event := stream.get("e"):
-                LOGGER.debug(f"Received {event} event:\n{json.dumps(stream, indent=2)}")
-                if event == EventType.ORDER_TRADE_UPDATE.value:
-                    order_trade_update = get_or_raise(
-                        OrderTradeUpdate.from_dict(stream)
-                    )
-                    self._handle_order_trade_update(get_or_raise(order_trade_update.o))
-
-                elif event == EventType.ALGO_UPDATE.value:
-                    algo_update = get_or_raise(AlgoUpdate.from_dict(stream))
-                    self._handle_algo_update(get_or_raise(algo_update.o))
-
-                elif event == EventType.ACCOUNT_UPDATE.value:
-                    account_update = get_or_raise(AccountUpdate.from_dict(stream))
-                    asyncio.create_task(
-                        self._handle_account_update(get_or_raise(account_update.a))
-                    )
-
-                elif event == EventType.LISTEN_KEY_EXPIRED.value:
-                    LOGGER.info("Listen key has expired. Opening a new one...")
-                    expired_key = get_or_raise(
-                        Listenkeyexpired.from_dict(stream)
-                    ).listen_key
-                    asyncio.create_task(
-                        self._subscribe_to_user_stream(expired_listen_key=expired_key)
-                    )
-
-        except Exception as e:  # noqa: BLE001 - stream handlers are error boundaries
-            LOGGER.error(f"An error occurred in the user data handler: {e}")
-            self.webhook.send_message(
-                f"[ALERT] An error occurred in the user data handler: {e}"
-            )
-
-    def _handle_order_trade_update(self, data: OrderTradeUpdateO):
-        event = OrderEvent.from_order_trade_update(data)
-        curr_order_type = OrderType(get_or_raise(data.o))
-
-        if event.symbol in self.symbols:
-            if event.status == OrderStatus.NEW and event.order_type == curr_order_type:
-                self.strategy.on_new_order(event)
-
-            elif event.status in [OrderStatus.PARTIALLY_FILLED, OrderStatus.FILLED]:
-                self.strategy.accumulate_realized_profit(
-                    event.symbol, event.realized_profit or 0.0
-                )
-                if event.status == OrderStatus.FILLED:
-                    self.strategy.on_filled_order(event)
-
-            elif event.status == OrderStatus.CANCELED:
-                self.strategy.on_cancelled_order(event)
-
-            elif event.status == OrderStatus.EXPIRED:
-                self.strategy.on_expired_order(event)
-
-    def _handle_algo_update(self, data: AlgoUpdateO):
-        event = OrderEvent.from_algo_update(data)
-
-        if event.symbol not in self.symbols:
-            return
-
-        if event.status == AlgoStatus.NEW:
-            self.strategy.on_new_order(event)
-
-        if event.status == AlgoStatus.TRIGGERED:
-            self.strategy.on_triggered_algo(event)
-
-        elif event.status == AlgoStatus.CANCELED:
-            self.strategy.on_cancelled_order(event)
-
-        elif event.status == AlgoStatus.EXPIRED:
-            self.strategy.on_expired_order(event)
-
-    async def _handle_account_update(self, data: AccountUpdateA):
-        if data.P:
-            for position_data in data.P:
-                self.strategy.on_position_update(position_data)
-        if data.B:
-            for balance_data in data.B:
-                await self.strategy.on_balance_update(balance_data)
-
-    @override
-    def run(self) -> None:
-        if self.adapter is not None:
-            raise RuntimeError("Injected live adapters require the managed stream supervisor (task 5)")
-        LOGGER.info("Starting to run...")
-        for s in self.symbols:
-            self._set_leverage(symbol=s)
-        asyncio.run(self._run_async())
-
-    async def _run_async(self) -> None:
-        await self.client.websocket_streams.create_connection()
-        await self._subscribe_to_user_stream()
-
-        for s in self.symbols:
-            for i in self.intervals:
-                await self._subscribe_to_kline_stream(symbol=s, interval=i)
-                await asyncio.sleep(1 / KLINE_SUBSCRIBE_RATE_PER_SECOND)
-
-        asyncio.create_task(self._keepalive_user_stream())
-        await asyncio.Event().wait()
-
-    def _set_leverage(self, symbol: str):
-        fetch(
-            self.client.rest_api.change_initial_leverage,
-            symbol=symbol,
-            leverage=self.execution_config.leverage,
-        )
-        LOGGER.info(f"Set leverage for {symbol} to {self.execution_config.leverage}.")
-
-    async def _subscribe_to_kline_stream(self, symbol: str, interval: str):
-        stream = await self.client.websocket_streams.kline_candlestick_streams(
-            symbol=symbol, interval=interval
-        )
-        stream.on(event=MESSAGE, callback=self._market_stream_handler)
-        LOGGER.info(f"Subscribed to {symbol} klines by {interval}...")
-
-    async def _subscribe_to_user_stream(self, expired_listen_key: str | None = None):
-        if expired_listen_key:
-            await self.client.websocket_streams.unsubscribe([expired_listen_key])
-            await asyncio.sleep(1)
-        data: StartUserDataStreamResponse = fetch(
-            self.client.rest_api.start_user_data_stream
-        )
-        listen_key = get_or_raise(data.listen_key)
-        stream = await self.client.websocket_streams.user_data(listen_key)
-        stream.on(event=MESSAGE, callback=self._user_stream_handler)
-        LOGGER.info("Subscribed to user data stream...")
-
-    async def _keepalive_user_stream(self):
-        while True:
-            await asyncio.sleep(KEEPALIVE_USER_STREAM_INTERVAL)
-            fetch(self.client.rest_api.keepalive_user_data_stream)
-            LOGGER.info("Successfully sent keepalive for user data stream.")
-
-    @override
-    def close(self) -> None:
-        if self.adapter is not None:
-            return
-        LOGGER.info("Initiating shutdown process...")
-        asyncio.run(self._close_async())
-        self.client.rest_api.close_user_data_stream()
-        LOGGER.info("Shutdown process completed successfully.")
-
-    async def _close_async(self) -> None:
-        await self.client.websocket_streams.close_connection()
-        await self.client.websocket_api.close_connection()
 
 # Backward-compatible names retained for imports from runners.py.
 BacktestingResult = BacktestResult
