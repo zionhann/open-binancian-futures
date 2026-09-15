@@ -399,7 +399,7 @@ def test_last_close_realizes_open_position_and_equity_curve() -> None:
     runner = Backtesting(
         strategy=LeaveLongOpenStrategy(),
         data_source=DataFrameDataSource(frame, interval="1h"),
-        config=BacktestConfig(initial_balance=100.0, warmup_bars=0, interval="1h"),
+        config=BacktestConfig(market_execution="close", initial_balance=100.0, warmup_bars=0, interval="1h"),
     )
 
     result = runner.run()

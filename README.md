@@ -147,7 +147,7 @@ runner = Backtesting(
         leverage=1,
         warmup_bars=0,
         interval="1h",
-        market_execution=MarketExecutionPolicy.CLOSE,
+        market_execution=MarketExecutionPolicy.NEXT_OPEN,
     ),
 )
 result = runner.run()
@@ -164,9 +164,9 @@ only use the side effects can continue to ignore the return value.
 `ParquetDataSource(...)` provide the file-backed equivalents. Injected data
 does not create a Binance client or make a network request. The default
 `Backtesting()` path requires `BACKTEST_START_DATE` and `BACKTEST_END_DATE`
-and loads candles from Binance Vision. The default path still initializes the
-configured Binance client for the existing strategy/exchange metadata API;
-Vision candle files themselves are public archives. When
+and loads candles from Binance Vision public archives without creating an
+authenticated Binance client. Backtest strategies should use the framework
+order helpers; live REST operations require an explicitly supplied client. When
 `BacktestConfig.interval` is omitted, a direct DataFrame/CSV/Parquet source
 uses its declared interval; otherwise the configured interval takes
 precedence. Every symbol must expose that selected interval; inconsistent
@@ -188,15 +188,19 @@ the wrong label.
 The default engine evaluates completed candles in UTC chronological order.
 Existing orders are eligible on the current candle, while newly created
 `LIMIT`, `STOP`, `TAKE_PROFIT`, and `TAKE_PROFIT_MARKET` orders wait until the
-next candle. A newly created `MARKET` order fills at the completed candle close
-by default; `MarketExecutionPolicy.NEXT_OPEN` explicitly defers it to the next
-candle open. Limit and `STOP_MARKET` gaps fill at the candle open; a
+next candle. A newly created `MARKET` order fills at the next available
+evaluation candle open by default (`MarketExecutionPolicy.NEXT_OPEN`).
+`MarketExecutionPolicy.CLOSE` explicitly enables same-close market fills. Limit and `STOP_MARKET` gaps fill at the candle open; a
 `STOP_LIMIT` gaps remain pending until their limit can execute, while the
 triggered limit remains active across later candles. Intrabar triggers fill at
 the configured price, and Stop Loss wins over Take Profit when both are
 reached. Multiple crossed partial exits are processed in that same
 deterministic priority order. Costs, slippage, and funding are zero by
-default. Open positions are realized at each symbol's final evaluated close.
+default. OHLC data cannot reveal the order of prices within a candle, so
+these priority and gap rules are modeling assumptions, not tick-level fills.
+Open positions are realized at each symbol's final evaluated close with
+`Trade.exit_reason == "end_of_backtest"`. Last-bar next-open market orders
+remain unfilled and are canceled with their reserved margin released.
 Partial exit orders close only their requested quantity. A custom `CostModel`
 is applied to both entry and exit fills.
 
@@ -228,6 +232,47 @@ Existing `run_backtest(symbol, interval, index)` implementations and direct
 by the runner after each callback; new non-market orders still follow the
 same-candle deferral rule. The SDK-specific `open_order(...)` method remains
 available for live REST execution.
+
+#### Migration: completed data and next-open execution
+
+The market default changed from CLOSE to NEXT_OPEN. A signal at a close of
+100 followed by an open of 110 now enters at 110. To reproduce the former
+market-price assumption, pass `BacktestConfig(market_execution=MarketExecutionPolicy.CLOSE)`.
+This setting does not restore the former callback-before-fill ordering.
+
+Existing orders expire and fill for **all symbols** before close callbacks
+start. Close-time cancellation cannot undo a fill earlier in that candle.
+Callbacks run in sorted symbol order, giving reproducible shared-balance
+priority. Entry-fill hooks run after this accounting phase, see only data
+completed before that candle, and their new orders wait for a later candle.
+
+Every strategy data view is a fresh copy containing only completed candles
+across all symbols and intervals. The engine uses `Close_time` when supplied;
+otherwise it infers completion from the interval, including calendar months
+for `1M`. Constructors receive only the warm-up prefix. Custom `load()` is
+recomputed on each bounded view; it must handle empty frames and should be
+free of order submissions and other side effects. This correctness-first
+approach can cost more time than computing indicators once over all data.
+Keep timestamps and rows intact when adding indicator columns.
+
+Replace full-history preprocessing or indexing beyond the current bar with
+calculations over the supplied prefix:
+
+```python
+def load(self, df):
+    return df.assign(mean_close=df["Close"].rolling(20).mean())
+
+async def run_backtest(self, symbol, interval, index):
+    visible = self.indicators[symbol][interval]
+    current = visible.iloc[index]  # index == len(visible) - 1
+    hourly = self.indicators[symbol]["1h"]
+    if hourly.empty:  # no completed hourly candle yet
+        return
+    # Make decisions from current and hourly.iloc[-1].
+```
+
+Plain `run_backtest(symbol, index)` callbacks remain supported. Strategy or
+indicator exceptions fail the run; the CLI exits with a nonzero status.
 
 ### 5. Running
 

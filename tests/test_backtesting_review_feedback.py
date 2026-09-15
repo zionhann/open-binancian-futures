@@ -516,6 +516,7 @@ def test_cost_model_is_applied_to_entry_and_exit() -> None:
         strategy=EntryStrategy(),
         data_source=DataFrameDataSource(frame, interval="1h"),
         config=BacktestConfig(
+            market_execution="close",
             initial_balance=100.0,
             leverage=10,
             interval="1h",

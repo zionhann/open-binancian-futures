@@ -296,8 +296,7 @@ class Backtesting(Runner):
 
     Supplying both ``strategy`` and ``data_source`` keeps construction fully
     offline.  The default CLI/programmatic path loads a fixed period from
-    Binance Vision and uses the configured Binance client only for strategy
-    and exchange metadata compatibility.
+    Binance Vision public archives without creating an authenticated client.
     """
 
     def __init__(
@@ -329,7 +328,6 @@ class Backtesting(Runner):
                 ),
             )
             source_interval = self._source_interval(source)
-            self.client = client()
             requested_symbols = settings.symbols_list
         else:
             source = self._coerce_data_source(data_source)
@@ -391,7 +389,10 @@ class Backtesting(Runner):
         self._current_candle: Candle | None = None
         self._current_candles: dict[str, Candle] = {}
         self._run_backtest_takes_two_args: bool | None = None
+        self._pending_fill_hooks: list[tuple[str, Timestamp]] | None = None
+        self._at_candle_close = False
 
+        initial_view = self._visible_indicators(self._initial_visibility_time())
         self.strategy: object
         if strategy is None:
             if not default_source:
@@ -403,16 +404,64 @@ class Backtesting(Runner):
                 balance=self.balance,
                 orders=self.orders,
                 positions=self.positions,
-                indicators=self.indicators,
+                indicators=initial_view,
                 execution_config=self.config.execution_config,
             )
             self.strategy = Strategy.of(settings.strategy, context=context)
             self._bind_strategy()
+            self.strategy.indicators = initial_view
         else:
             self.strategy = strategy
             self._bind_strategy()
-            if isinstance(self.strategy, Strategy):
-                self.strategy.add_indicators(self.indicators)
+            self._set_strategy_view(self._initial_visibility_time())
+
+    def _initial_visibility_time(self) -> Timestamp:
+        starts = []
+        for intervals in self.indicators.values():
+            frame = intervals[self.interval]
+            eligible = frame.index
+            if self._evaluation_start is not None:
+                eligible = eligible[eligible >= self._evaluation_start]
+            else:
+                eligible = eligible[self.config.warmup_bars:]
+            if len(eligible):
+                starts.append(self._as_timestamp(eligible[0]))
+        if not starts:
+            return pd.Timestamp.min.tz_localize("UTC")
+        return min(starts) - pd.Timedelta(nanoseconds=1)
+
+    @staticmethod
+    def _close_times(frame: pd.DataFrame, interval: str) -> pd.DatetimeIndex:
+        if "Close_time" in frame:
+            values = frame["Close_time"]
+            return pd.DatetimeIndex(
+                pd.to_datetime(
+                    values, utc=True,
+                    unit="ms" if pd.api.types.is_numeric_dtype(values) else None,
+                )
+            )
+        opens = pd.DatetimeIndex(frame.index)
+        if interval.endswith("M"):
+            ends = opens + pd.DateOffset(months=int(interval[:-1]))
+        else:
+            units = {"m": "min", "h": "h", "d": "D", "w": "W", "s": "s"}
+            ends = opens + pd.Timedelta(f"{int(interval[:-1])}{units[interval[-1]]}")
+        return ends - pd.Timedelta(milliseconds=1)
+
+    def _visible_indicators(self, time_value: Timestamp) -> Indicator:
+        visible = Indicator()
+        for symbol, intervals in self.indicators.items():
+            for interval, frame in intervals.items():
+                visible[symbol][interval] = frame.loc[
+                    self._close_times(frame, interval) <= time_value
+                ].copy(deep=True)
+        return visible
+
+    def _set_strategy_view(self, time_value: Timestamp) -> None:
+        visible = self._visible_indicators(time_value)
+        if isinstance(self.strategy, Strategy):
+            self.strategy.add_indicators(visible)
+        setattr(self.strategy, "indicators", visible)
 
     @property
     def pending_margin(self) -> float:
@@ -545,7 +594,6 @@ class Backtesting(Runner):
             ("balance", self.balance),
             ("orders", self.orders),
             ("positions", self.positions),
-            ("indicators", self.indicators),
         ):
             try:
                 setattr(self.strategy, name, value)
@@ -633,7 +681,12 @@ class Backtesting(Runner):
         margin_price = order.price
         if order.type == OrderType.MARKET and margin_price <= 0:
             current_candle = self._current_candles.get(order.symbol)
-            margin_price = current_candle.close if current_candle is not None else 0.0
+            if current_candle is not None:
+                margin_price = (
+                    current_candle.close if self._at_candle_close else current_candle.open
+                )
+            else:
+                margin_price = 0.0
         margin = margin_price * order.quantity / self.config.leverage
         if margin <= 0:
             self._known_order_ids.discard(order_key)
@@ -760,7 +813,10 @@ class Backtesting(Runner):
             if not self._open_position(order, float(fill), candle.time):
                 return
             self.test_results[symbol].record_entry(order.side)
-            self._run_hook("on_backtest_entry_filled", symbol, candle.time)
+            if self._pending_fill_hooks is not None:
+                self._pending_fill_hooks.append((symbol, candle.time))
+            else:
+                self._run_hook("on_backtest_entry_filled", symbol, candle.time)
             self._sync_orders(symbol)
             return
 
@@ -893,6 +949,7 @@ class Backtesting(Runner):
             exit_price=fill,
             quantity=close_quantity,
             exit_order_type=exit_order.type if exit_order else None,
+            exit_reason="end_of_backtest" if exit_order is None else None,
         )
 
     def _mark_to_market(
@@ -965,6 +1022,7 @@ class Backtesting(Runner):
                 if timestamp in eligible_indices[symbol]
             }
             self._current_candles = current_candles
+            self._at_candle_close = False
             for symbol, candle in current_candles.items():
                 self._expire_orders(symbol, candle.time)
             existing_order_keys_by_symbol = {
@@ -973,40 +1031,57 @@ class Backtesting(Runner):
                 }
                 for symbol in self.symbols
             }
-            for symbol in self.symbols:
-                frame = frames[symbol]
-                if timestamp not in eligible_indices[symbol]:
-                    continue
-                bar_index = int(cast(int, frame.index.get_loc(timestamp)))
-                candle = current_candles[symbol]
+            # Snapshot every symbol before any fill hook can create orders.
+            self._pending_fill_hooks = []
+            for symbol, candle in current_candles.items():
                 self._current_time = candle.time
                 self._current_candle = candle
+                self._eval_orders(symbol, candle, existing_order_keys_by_symbol[symbol])
+            pending_hooks = self._pending_fill_hooks
+            self._pending_fill_hooks = None
+            for symbol, hook_time in pending_hooks:
+                self._current_time = hook_time
+                self._current_candle = current_candles[symbol]
+                self._set_strategy_view(hook_time - pd.Timedelta(nanoseconds=1))
+                self._run_hook("on_backtest_entry_filled", symbol, hook_time)
+            for target in self.symbols:
+                self._sync_orders(target)
+            for symbol, candle in current_candles.items():
+                frame = frames[symbol]
+                bar_index = int(cast(int, frame.index.get_loc(timestamp)))
+                decision_time = self._close_times(frame, self.interval)[bar_index]
+                self._at_candle_close = True
+                self._current_time = candle.time
+                self._current_candle = candle
+                self._set_strategy_view(decision_time)
+                visible = getattr(self.strategy, "indicators")[symbol][self.interval]
                 self.test_results[symbol].record_bars()
-                existing_order_keys = existing_order_keys_by_symbol[symbol]
-                await self._run_strategy(symbol, bar_index)
-                new_order_keys = self._sync_orders(symbol)
-                current_orders = {
-                    self._order_key(order): order for order in self.orders[symbol]
+                before_callback = {
+                    target: {self._order_key(order) for order in self.orders[target]}
+                    for target in current_candles
                 }
-                new_order_keys.update(
-                    order_key
-                    for order_key in current_orders
-                    if order_key not in existing_order_keys
-                )
-                deferred = {
-                    order_key
-                    for order_key in new_order_keys
-                    if current_orders[order_key].type != OrderType.MARKET
-                    or self._effective_market_execution()
-                    == MarketExecutionPolicy.NEXT_OPEN
-                }
-                eligible = {
-                    self._order_key(order)
-                    for order in self.orders[symbol]
-                    if self._order_key(order) in existing_order_keys
-                    or self._order_key(order) not in deferred
-                }
-                self._eval_orders(symbol, candle, eligible)
+                await self._run_strategy(symbol, len(visible) - 1)
+                # Reconcile cross-symbol submissions and cancellation immediately.
+                for target in self.symbols:
+                    self._sync_orders(target)
+                if self._effective_market_execution() == MarketExecutionPolicy.CLOSE:
+                    # Snapshot every target before any close-fill hook runs.
+                    # Cross-symbol decisions share this close; orders created by
+                    # the resulting hooks still wait for the next candle.
+                    eligible_by_symbol = {
+                        target: {
+                            self._order_key(order) for order in self.orders[target]
+                            if self._order_key(order) not in before_callback[target]
+                            and order.type == OrderType.MARKET
+                        }
+                        for target in current_candles
+                    }
+                    for target, target_candle in current_candles.items():
+                        self._current_time = target_candle.time
+                        self._current_candle = target_candle
+                        self._eval_orders(
+                            target, target_candle, eligible_by_symbol[target]
+                        )
             self._mark_to_market(frames, self._as_timestamp(timestamp))
 
         for symbol in self.symbols:

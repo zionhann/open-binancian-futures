@@ -167,7 +167,7 @@ def test_stop_loss_wins_when_stop_and_take_profit_both_trigger() -> None:
     assert selected[1] == 95.0
 
 
-def test_market_policy_defaults_to_completed_candle_close() -> None:
+def test_market_policy_defaults_to_next_open_and_supports_explicit_close() -> None:
     candle = Candle(
         pd.Timestamp("2026-01-01", tz="UTC"),
         open=100.0,
@@ -177,7 +177,8 @@ def test_market_policy_defaults_to_completed_candle_close() -> None:
     )
     market = make_order(OrderType.MARKET, PositionSide.SELL, 0.0)
 
-    assert DeterministicFillPolicy().fill_price(market, candle) == 105.0
+    assert DeterministicFillPolicy().fill_price(market, candle) == 100.0
+    assert DeterministicFillPolicy(MarketExecutionPolicy.CLOSE).fill_price(market, candle) == 105.0
     assert (
         DeterministicFillPolicy(market_execution=MarketExecutionPolicy.NEXT_OPEN)
         .market_execution
