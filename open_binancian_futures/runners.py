@@ -43,6 +43,7 @@ from .backtesting import (
 )
 from .client import client
 from .constants import settings
+from .exchange_adapter import ExchangeAdapter, OrderGateway
 from .execution import ExecutionConfig
 from .models import (
     Balance,
@@ -93,8 +94,9 @@ class Runner(ABC):
 
 
 class LiveTrading(Runner):
-    def __init__(self) -> None:
-        self.client = client()
+    def __init__(self, adapter: ExchangeAdapter | None = None, *, order_gateway: OrderGateway | None = None) -> None:
+        self.adapter = adapter
+        self.client: Any = client() if adapter is None else getattr(adapter, "client", None)
         self.symbols = tuple(settings.symbols_list)
         self.intervals = tuple(settings.intervals_list)
         self.execution_config = ExecutionConfig(
@@ -103,22 +105,35 @@ class LiveTrading(Runner):
             timezone=settings.timezone,
         )
         self.webhook = Webhook.of(settings.webhook_url)
-        self.exchange_info = futures.init_exchange_info(symbols=self.symbols)
-        self.balance = futures.init_balance(
-            execution_config=self.execution_config,
-        )
-        self.orders = futures.init_orders(symbols=self.symbols)
-        self.positions = futures.init_positions(
-            leverage=self.execution_config.leverage,
-            symbols=self.symbols,
-        )
-        self.indicators = futures.init_indicators(
-            symbols=self.symbols,
-            intervals=self.intervals,
-            timezone=self.execution_config.timezone,
-        )
+        if adapter is not None:
+            snapshot = adapter.snapshot(self.symbols, self.execution_config)
+            self.exchange_info = snapshot.exchange_info
+            self.balance = snapshot.balance
+            self.orders = snapshot.orders
+            self.positions = snapshot.positions
+            self.indicators = adapter.initial_indicators(self.symbols, self.intervals, self.execution_config.timezone)
+        else:
+            self.exchange_info = futures.init_exchange_info(symbols=self.symbols, sdk_client=self.client)
+            self.balance = futures.init_balance(
+                sdk_client=self.client,
+                execution_config=self.execution_config,
+            )
+            self.orders = futures.init_orders(symbols=self.symbols, sdk_client=self.client)
+            self.positions = futures.init_positions(
+                sdk_client=self.client,
+                leverage=self.execution_config.leverage,
+                symbols=self.symbols,
+            )
+            self.indicators = futures.init_indicators(
+                sdk_client=self.client,
+                symbols=self.symbols,
+                intervals=self.intervals,
+                timezone=self.execution_config.timezone,
+            )
         context = StrategyContext(
             client=self.client,
+            order_gateway=order_gateway,
+            preserve_position_leverage=adapter is not None,
             exchange_info=self.exchange_info,
             balance=self.balance,
             orders=self.orders,
@@ -225,6 +240,8 @@ class LiveTrading(Runner):
 
     @override
     def run(self) -> None:
+        if self.adapter is not None:
+            raise RuntimeError("Injected live adapters require the managed stream supervisor (task 5)")
         LOGGER.info("Starting to run...")
         for s in self.symbols:
             self._set_leverage(symbol=s)
@@ -277,6 +294,8 @@ class LiveTrading(Runner):
 
     @override
     def close(self) -> None:
+        if self.adapter is not None:
+            return
         LOGGER.info("Initiating shutdown process...")
         asyncio.run(self._close_async())
         self.client.rest_api.close_user_data_stream()

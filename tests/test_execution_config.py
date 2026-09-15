@@ -231,14 +231,16 @@ def test_live_trading_injects_explicit_domain_objects(monkeypatch) -> None:
     runner = LiveTrading()
 
     assert runner.client is fake_client
-    assert calls["exchange_info"] == {"symbols": ("ETHUSDT", "SOLUSDT")}
+    assert calls["exchange_info"] == {"symbols": ("ETHUSDT", "SOLUSDT"), "sdk_client": fake_client}
     assert calls["balance"]["execution_config"].leverage == 7
-    assert calls["orders"] == {"symbols": ("ETHUSDT", "SOLUSDT")}
+    assert calls["orders"] == {"symbols": ("ETHUSDT", "SOLUSDT"), "sdk_client": fake_client}
     assert calls["positions"] == {
+        "sdk_client": fake_client,
         "symbols": ("ETHUSDT", "SOLUSDT"),
         "leverage": 7,
     }
     assert calls["indicators"] == {
+        "sdk_client": fake_client,
         "symbols": ("ETHUSDT", "SOLUSDT"),
         "intervals": ("1m", "5m"),
         "timezone": "Asia/Seoul",
