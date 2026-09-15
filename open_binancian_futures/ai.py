@@ -1,8 +1,9 @@
 import logging
 import os
-from typing import Iterable, Optional
+from collections.abc import Iterable
+
 from anthropic import AsyncAnthropic
-from anthropic.types import MessageParam, Message
+from anthropic.types import Message, MessageParam
 from openai import AsyncOpenAI
 
 LOGGER = logging.getLogger(__name__)
@@ -10,7 +11,7 @@ LOGGER = logging.getLogger(__name__)
 
 async def ask_anthropic(
     messages: Iterable[MessageParam], model: str, max_tokens: int, **kwargs
-) -> Optional[Message]:
+) -> Message | None:
     try:
         api_key = os.getenv("ANTHROPIC_API_KEY")
         if not api_key:
@@ -25,7 +26,7 @@ async def ask_anthropic(
         return None
 
 
-async def ask_openai(input: str, model: str, **kwargs) -> Optional[str]:
+async def ask_openai(input: str, model: str, **kwargs) -> str | None:
     try:
         api_key = os.getenv("OPENAI_API_KEY")
         if not api_key:

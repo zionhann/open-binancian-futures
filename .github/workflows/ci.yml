@@ -34,3 +34,9 @@ jobs:
 
       - name: Run tests
         run: python -m pytest -q
+
+      - name: Check package lint
+        run: python -m ruff check --config pyproject.toml open_binancian_futures
+
+      - name: Check package types
+        run: python -m mypy --config-file pyproject.toml open_binancian_futures

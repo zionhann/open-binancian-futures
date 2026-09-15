@@ -1,22 +1,32 @@
 import logging
-from typing import Optional
 
-from binance_sdk_derivatives_trading_usds_futures import DerivativesTradingUsdsFutures
-from binance_sdk_derivatives_trading_usds_futures.derivatives_trading_usds_futures import (
-    ConfigurationRestAPI,
-    DERIVATIVES_TRADING_USDS_FUTURES_REST_API_PROD_URL as MAINNET_REST,
-    DERIVATIVES_TRADING_USDS_FUTURES_WS_STREAMS_PROD_URL as MAINNET_WS_STREAMS,
-    DERIVATIVES_TRADING_USDS_FUTURES_WS_API_PROD_URL as MAINNET_WS_API,
+from binance_common.configuration import (
+    ConfigurationWebSocketAPI,
+    ConfigurationWebSocketStreams,
 )
 from binance_common.constants import (
     DERIVATIVES_TRADING_USDS_FUTURES_REST_API_TESTNET_URL as TESTNET_REST,
-    DERIVATIVES_TRADING_USDS_FUTURES_WS_STREAMS_TESTNET_URL as TESTNET_WS_STREAMS,
+)
+from binance_common.constants import (
     DERIVATIVES_TRADING_USDS_FUTURES_WS_API_TESTNET_URL as TESTNET_WS_API,
 )
-from binance_common.configuration import (
-    ConfigurationWebSocketStreams,
-    ConfigurationWebSocketAPI,
+from binance_common.constants import (
+    DERIVATIVES_TRADING_USDS_FUTURES_WS_STREAMS_TESTNET_URL as TESTNET_WS_STREAMS,
 )
+from binance_sdk_derivatives_trading_usds_futures import DerivativesTradingUsdsFutures
+from binance_sdk_derivatives_trading_usds_futures.derivatives_trading_usds_futures import (
+    DERIVATIVES_TRADING_USDS_FUTURES_REST_API_PROD_URL as MAINNET_REST,
+)
+from binance_sdk_derivatives_trading_usds_futures.derivatives_trading_usds_futures import (
+    DERIVATIVES_TRADING_USDS_FUTURES_WS_API_PROD_URL as MAINNET_WS_API,
+)
+from binance_sdk_derivatives_trading_usds_futures.derivatives_trading_usds_futures import (
+    DERIVATIVES_TRADING_USDS_FUTURES_WS_STREAMS_PROD_URL as MAINNET_WS_STREAMS,
+)
+from binance_sdk_derivatives_trading_usds_futures.derivatives_trading_usds_futures import (
+    ConfigurationRestAPI,
+)
+
 from .constants import settings
 
 LOGGER = logging.getLogger(__name__)
@@ -24,7 +34,7 @@ LOGGER = logging.getLogger(__name__)
 
 class BinanceClient:
     def __init__(self) -> None:
-        self._client: Optional[DerivativesTradingUsdsFutures] = None
+        self._client: DerivativesTradingUsdsFutures | None = None
 
     def get_client(self) -> DerivativesTradingUsdsFutures:
         """Get the Binance Futures client (lazily initialized)."""

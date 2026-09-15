@@ -1,6 +1,6 @@
 import logging
+from collections.abc import Callable
 from decimal import Decimal
-from typing import Callable, Optional, TypeVar
 
 from binance_common.models import ApiResponse
 from pandas import Series
@@ -41,11 +41,8 @@ def decimal_places(num: float) -> int:
     return max(0, -int(exponent))
 
 
-T = TypeVar("T")
-
-
-def get_or_raise(
-    value: Optional[T],
+def get_or_raise[T](
+    value: T | None,
     raisable: Callable[[], Exception] = lambda: ValueError("Value is None"),
 ) -> T:
     if value is None:

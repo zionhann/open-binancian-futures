@@ -55,6 +55,7 @@ dev = [
     "black",
     "isort",
     "mypy",
+    "pandas-stubs",
     "ruff",
 ]
 
@@ -74,3 +75,21 @@ version = {attr = "open_binancian_futures.__version__"}
 
 [tool.setuptools.package-data]
 open_binancian_futures = ["py.typed"]
+
+[tool.ruff]
+target-version = "py312"
+include = ["open_binancian_futures/**/*.py"]
+
+[tool.ruff.lint]
+select = ["F", "E4", "E7", "E9", "I", "UP"]
+
+[tool.mypy]
+python_version = "3.12"
+files = ["open_binancian_futures"]
+warn_unused_ignores = true
+
+# These installed Binance distributions do not ship stubs or a py.typed marker.
+# Keep missing-import exceptions scoped to the external SDK boundary.
+[[tool.mypy.overrides]]
+module = ["binance_sdk_derivatives_trading_usds_futures.*", "binance_common.*"]
+ignore_missing_imports = true
