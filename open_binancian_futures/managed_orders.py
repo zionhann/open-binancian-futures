@@ -249,13 +249,55 @@ class ManagedOrderGateway:
         prepared, reference = self._prepare_intent(intent)
         return self._size_intent(prepared, reference, leverage)
 
+    def _refresh_for_protection(self, intent: OrderIntent) -> None:
+        """Only risk-reducing requests may bypass an uncertain entry hold."""
+        if not (intent.reduce_only or intent.close_position):
+            raise OrderOutcomeUnknown(f"Unresolved order blocks {intent.symbol}")
+        try:
+            self.reconcile()
+        except Exception as error:
+            self.active = False
+            self.request_recovery()
+            raise OrderOutcomeUnknown(
+                "Protection requires a fresh account snapshot"
+            ) from error
+        # Keep existing protection (including a lost placement/cancel response)
+        # from being duplicated while an entry is still uncertain.
+        if any(
+            record.intent.symbol == intent.symbol
+            and (record.intent.reduce_only or record.intent.close_position)
+            for record in self.journal.pending()
+        ):
+            raise OrderOutcomeUnknown(
+                f"Pending protection must be reconciled before another: {intent.symbol}"
+            )
+
+    def _validate_protection_position(self, intent: OrderIntent) -> None:
+        position = self.snapshot().positions[intent.symbol].find_first()
+        if (
+            position is None
+            or not math.isfinite(position.amount)
+            or position.amount <= 0
+            or intent.side == position.side
+        ):
+            raise OrderOutcomeUnknown(
+                f"Protection requires a confirmed opposite position: {intent.symbol}"
+            )
+        if not intent.close_position and (
+            intent.quantity is None or intent.quantity > position.amount
+        ):
+            raise ValueError("Protection requires explicit quantity within the position")
+
     async def submit_order(self, intent: OrderIntent) -> bool:
         async with self._mutex:
             if not self.active or self.failed or not self.can_send():
                 raise OrderOutcomeUnknown("Managed runtime is paused")
-            if intent.symbol in self.blocked:
-                raise OrderOutcomeUnknown(f"Unresolved order blocks {intent.symbol}")
+            protecting_blocked = intent.symbol in self.blocked
+            if protecting_blocked:
+                self._refresh_for_protection(intent)
             intent, reference = self._prepare_intent(intent)
+            if protecting_blocked:
+                self._validate_protection_position(intent)
             leverage = (
                 self.effective_leverage(intent.symbol)
                 if intent.reduce_only or intent.close_position
@@ -267,6 +309,7 @@ class ManagedOrderGateway:
                 return False
             identifier = self.journal.prepare(intent, margin)
             state.balance.reserve_margin(identifier, margin)
+            already_blocked = intent.symbol in self.blocked
             self.blocked.add(intent.symbol)
             try:
                 receipt = self.adapter.submit(intent, identifier)
@@ -275,7 +318,8 @@ class ManagedOrderGateway:
             except OrderRejected:
                 self.journal.update(identifier, "rejected")
                 state.balance.release_margin(identifier)
-                self.blocked.discard(intent.symbol)
+                if not already_blocked:
+                    self.blocked.discard(intent.symbol)
                 return False
             except BaseException as error:
                 self.blocked.add(intent.symbol)
