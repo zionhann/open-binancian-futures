@@ -263,7 +263,7 @@ class ManagedOrderGateway:
             ) from error
         # Keep existing protection (including a lost placement/cancel response)
         # from being duplicated while an entry is still uncertain.
-        if any(
+        if intent.symbol in self.blocked and any(
             record.intent.symbol == intent.symbol
             and (record.intent.reduce_only or record.intent.close_position)
             for record in self.journal.pending()
@@ -292,9 +292,9 @@ class ManagedOrderGateway:
         async with self._mutex:
             if not self.active or self.failed or not self.can_send():
                 raise OrderOutcomeUnknown("Managed runtime is paused")
-            protecting_blocked = intent.symbol in self.blocked
-            if protecting_blocked:
+            if intent.symbol in self.blocked:
                 self._refresh_for_protection(intent)
+            protecting_blocked = intent.symbol in self.blocked
             intent, reference = self._prepare_intent(intent)
             if protecting_blocked:
                 self._validate_protection_position(intent)

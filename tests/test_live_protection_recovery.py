@@ -190,3 +190,31 @@ async def test_concurrent_protection_sends_only_once(tmp_path):
         assert len(sends(adapter)) == 1
     finally:
         journal.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("existing_protection", [False, True])
+async def test_resolved_entry_restores_normal_protection_rules(
+    tmp_path, existing_protection
+):
+    from open_binancian_futures.exchange_adapter import OrderReceipt
+
+    adapter, managed, journal = uncertain_entry(tmp_path)
+    identifier = journal.pending()[0].client_order_id
+    adapter.receipts[identifier] = OrderReceipt(
+        1, identifier, SYMBOL, "CANCELED", 0, None, {}
+    )
+    if existing_protection:
+        protection_id = journal.prepare(STOP, 0)
+        journal.update(protection_id, "accepted")
+        adapter.receipts[protection_id] = OrderReceipt(
+            2, protection_id, SYMBOL, "NEW", 0, None, {}
+        )
+    try:
+        # Automatic sizing is permitted by the normal gateway, but not by the
+        # exception for entries which remain uncertain after reconciliation.
+        assert await managed.submit_order(replace(REDUCE, quantity=None))
+        assert SYMBOL not in managed.blocked
+        assert len(sends(adapter)) == 1
+    finally:
+        journal.close()
