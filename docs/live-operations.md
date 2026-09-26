@@ -46,6 +46,20 @@ are queried again on account activity and the periodic 15-second reconciliation.
 A cancellation timeout similarly remains held while the order is still open; the
 runtime does not blindly repeat cancellation. Definitive rejection rolls back once.
 
+An unresolved entry continues to block new or additional exposure in that symbol.
+Protection is an exception: the gateway first repeats reconciliation and requires
+a fresh snapshot containing an opposite-side position. It permits a close-position
+stop/take-profit market order, or an explicit reduce-only quantity no larger than
+that position after exchange-step normalization. Automatic quantity sizing is not
+available for this exception. Snapshot failure pauses the gateway for recovery.
+Any pending managed protection record (including accepted orders and uncertain
+placement/cancellation) blocks another protection request through this exception,
+even of a different type. Existing accepted protection is kept until resolved;
+this conservative path does not replace or layer protection. Rejection of the new
+protection does not release the original entry hold. Recording, original-ID lookup,
+and periodic reconciliation remain unchanged. This does not automatically install
+stops or guarantee protection of additional fills after the snapshot.
+
 Unknown reservations are conservatively deducted from fresh free balance even if
 the exchange may already reserve that money. This can temporarily understate free
 balance, deliberately preventing reuse while the outcome remains unresolved.
