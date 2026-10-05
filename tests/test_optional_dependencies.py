@@ -7,6 +7,7 @@ from pathlib import Path
 def test_core_import_and_helpers_without_optional_sdks(tmp_path):
     source = '''
 import asyncio
+import typing
 import importlib.abc
 import sys
 class BlockOptional(importlib.abc.MetaPathFinder):
@@ -17,6 +18,7 @@ sys.meta_path.insert(0, BlockOptional())
 import open_binancian_futures
 from open_binancian_futures.ai import ask_openai, ask_anthropic
 from open_binancian_futures.webhook import Webhook
+assert typing.get_type_hints(ask_anthropic)['return'] is not None
 assert asyncio.run(ask_openai('test', 'unused')) is None
 assert asyncio.run(ask_anthropic([], 'unused', 1)) is None
 try:
@@ -29,3 +31,9 @@ else:
     environment = dict(os.environ, PYTHONPATH=str(Path(__file__).resolve().parents[1]),
                        OPENAI_API_KEY='test-only', ANTHROPIC_API_KEY='test-only')
     subprocess.run([sys.executable, '-c', source], cwd=tmp_path, env=environment, check=True)
+
+
+def test_anthropic_annotations_resolve_with_ai_extra_installed():
+    from typing import get_type_hints
+    from open_binancian_futures.ai import ask_anthropic
+    assert get_type_hints(ask_anthropic)['return'] is not None
