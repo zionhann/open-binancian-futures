@@ -126,7 +126,7 @@ def test_forming_bars_update_only_target_heartbeat_without_queueing(tmp_path):
     runner._enqueue(runner.generation, closed)
     runner._enqueue(runner.generation, user)
     assert runner.queue.get_nowait()[1] is closed
-    assert runner.queue.get_nowait()[1] is user
+    assert runner.user_queue.get_nowait()[1] is user
 
 
 @pytest.mark.asyncio

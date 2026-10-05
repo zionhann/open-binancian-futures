@@ -89,6 +89,22 @@ connection identities from SDK global subscription maps. Injected streams can
 expose a `recovery: asyncio.Event` and `healthy() -> bool` to signal failures.
 Callbacks enqueue events; they never launch strategy tasks.
 
+Market and account events have separate owned consumers. Closed-candle strategy
+callbacks remain sequential, while account snapshots and order hooks can progress
+when a market callback awaits external work. Arrival order is preserved within
+each queue, not across both queues. Account hooks and `run` can overlap across
+awaits; custom callbacks should reread synchronized state after waiting.
+
+An external account refresh invalidates an in-flight callback's entry decision.
+The gateway rejects new/additional exposure from that callback until a new decision
+starts; its own submission refreshes keep the callback and its child tasks current.
+Retiring a connection discards its queued events before the next generation starts.
+New exposure also waits for
+queued account events to be processed. Reduce-only/close-position
+requests still use the existing protection checks, and connection generations
+continue to block all submissions from a pre-disconnection callback. REST calls
+and synchronous callback work still execute on the single event loop.
+
 The REST adapter also supplies `identity`, `server_time`, `start_listen_key`,
 `keepalive_listen_key`, and `close_listen_key`. Identity is an endpoint/API-key
 fingerprint, never a raw credential. A fake adapter supplies a stable test identity.
@@ -108,6 +124,9 @@ Async hook results are awaited inside the owned event worker; protective orders
 can therefore use `await submit_order(...)` in an async fill hook.
 Custom hooks should use the provided synchronized state rather than replay event
 quantities. Hook/load/run errors latch failure until a fresh runtime is started.
+After a strategy failure, account reconciliation continues to observe orders and
+positions already on the exchange, while all strategy hooks and submissions remain
+disabled. Stop the runtime explicitly if account monitoring is no longer needed.
 
 A trailing or market intent without an explicit reference `price` uses the latest
 closed candle of the first configured interval for sizing/filter checks. This is
