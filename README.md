@@ -322,3 +322,12 @@ fresh runtime and cannot be cleared by reconnecting.
 
 See [live operations, scope and testnet checklist](docs/live-operations.md) and
 [adapter injection / managed helper migration](docs/exchange-adapter.md).
+
+### Backtest order support
+
+Backtests support market, limit, stop and take-profit orders with explicit
+quantities or entry sizing, and GTC/GTD expiry. Unsupported intents raise
+`ValueError` before registering an order or reserving margin: `close_position`,
+trailing stops, liquidation, IOC/FOK and trailing-stop fields. For backtest exits,
+submit `reduce_only=True` with an explicit quantity. Live `close_position` and
+trailing-stop support remains available through the managed gateway.
