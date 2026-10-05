@@ -144,3 +144,20 @@ def test_different_close_times_preserve_default_and_cached_views():
     assert actual.equity_curve == expected.equity_curve
     assert actual.final_balance == expected.final_balance
     assert ordinary.observations == cached.observations
+
+
+def test_close_time_source_mode_changes_invalidate_equal_values():
+    instance = runner(CachedStrategy(False))
+    frame = instance.indicators['BTC']['5m']
+    cutoff = frame.index[0]
+    assert instance._visible_indicators(cutoff)['BTC']['5m'].empty
+    frame['Close_time'] = frame.index
+    assert len(instance._visible_indicators(cutoff)['BTC']['5m']) == 1
+    frame.drop(columns='Close_time', inplace=True)
+    assert instance._visible_indicators(cutoff)['BTC']['5m'].empty
+
+
+def test_nat_cutoff_never_exposes_future_rows():
+    instance = runner(CachedStrategy(False))
+    visible = instance._visible_indicators(pd.NaT)
+    assert all(frame.empty for intervals in visible.values() for frame in intervals.values())

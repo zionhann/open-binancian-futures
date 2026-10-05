@@ -175,7 +175,7 @@ class Backtesting(Runner):
         self._at_candle_close = False
 
         self._close_time_cache: dict[
-            tuple[str, str], tuple[pd.Index, pd.DatetimeIndex]
+            tuple[str, str], tuple[bool, pd.Index, pd.DatetimeIndex]
         ] = {}
         initial_view = self._visible_indicators(self._initial_visibility_time())
         self.strategy: object
@@ -236,12 +236,13 @@ class Backtesting(Runner):
     def _cached_close_times(
         self, symbol: str, interval: str, frame: pd.DataFrame
     ) -> pd.DatetimeIndex:
-        source = pd.Index(frame["Close_time"]) if "Close_time" in frame else frame.index
+        explicit = "Close_time" in frame
+        source = pd.Index(frame["Close_time"]) if explicit else frame.index
         cached = self._close_time_cache.get((symbol, interval))
-        if cached is None or not source.equals(cached[0]):
-            cached = (source.copy(deep=True), self._close_times(frame, interval))
+        if cached is None or explicit != cached[0] or not source.equals(cached[1]):
+            cached = (explicit, source.copy(deep=True), self._close_times(frame, interval))
             self._close_time_cache[symbol, interval] = cached
-        return cached[1]
+        return cached[2]
 
     def _visible_indicators(self, time_value: Timestamp) -> Indicator:
         visible = Indicator()
@@ -252,7 +253,7 @@ class Backtesting(Runner):
                     frame.iloc[:closes.searchsorted(
                         time_value.as_unit(closes.unit, round_ok=True), side="right"
                     )]
-                    if closes.is_monotonic_increasing
+                    if closes.is_monotonic_increasing and not pd.isna(time_value)
                     else frame.loc[closes <= time_value]
                 )
                 visible[symbol][interval] = selected.copy(deep=True)
