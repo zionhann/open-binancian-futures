@@ -88,12 +88,18 @@ class AsyncWebhook(Webhook):
 
     def __init__(self, webhook: Any) -> None:
         self.webhook = webhook
+        self._loop = asyncio.get_running_loop()
+        self._closed = False
         # ponytail: bounded notification backlog; add persistence if delivery must be durable.
         self.queue: asyncio.Queue[tuple[str, dict[str, Any]]] = asyncio.Queue(maxsize=128)
         self.task = asyncio.create_task(self._send())
 
     @override
     def send_message(self, message: str, **kwargs) -> None:
+        if not self._closed:
+            self._loop.call_soon_threadsafe(self._put_message, message, kwargs)
+
+    def _put_message(self, message: str, kwargs: dict[str, Any]) -> None:
         try:
             self.queue.put_nowait((message, kwargs))
         except asyncio.QueueFull:
@@ -111,6 +117,11 @@ class AsyncWebhook(Webhook):
                 self.queue.task_done()
 
     async def close(self) -> None:
-        await self.queue.join()
-        self.task.cancel()
-        await asyncio.gather(self.task, return_exceptions=True)
+        self._closed = True
+        drain = asyncio.create_task(self.queue.join())
+        try:
+            await asyncio.wait({drain, self.task}, return_when=asyncio.FIRST_COMPLETED)
+        finally:
+            drain.cancel()
+            self.task.cancel()
+            await asyncio.gather(drain, self.task, return_exceptions=True)
