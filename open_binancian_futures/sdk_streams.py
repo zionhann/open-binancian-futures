@@ -1,11 +1,15 @@
 """SDK 7.1.1 compatibility boundary owning its otherwise detached tasks."""
 
 import asyncio
+import json
 from collections.abc import Callable
 from copy import copy
 from typing import Any
+from urllib.parse import urlsplit
 
+import aiohttp
 from binance_common.configuration import ConfigurationWebSocketStreams
+from binance_common.utils import parse_proxies
 from binance_common.websocket import (
     global_stream_connections,
     global_user_stream_connections,
@@ -90,8 +94,18 @@ class OwnedSDKStreams(DerivativesTradingUsdsFuturesWebSocketStreams):
 
 class BinanceStreams:
     def __init__(self, configuration: ConfigurationWebSocketStreams) -> None:
+        configuration = copy(configuration)
+        endpoint = urlsplit(configuration.stream_url)
+        self._private_url = None
+        if endpoint.hostname == "fstream.binance.com":
+            configuration.stream_url = "wss://fstream.binance.com/market/stream"
+            self._private_url = "wss://fstream.binance.com/private/ws/"
         self.sdk = OwnedSDKStreams(configuration)
         self.recovery = self.sdk.recovery
+        self._user_socket: aiohttp.ClientWebSocketResponse | None = None
+        self._user_task: asyncio.Task[None] | None = None
+        self._closing = False
+        self._listen_key: str | None = None
 
     async def connect(self) -> None:
         await self.sdk.create_connection()
@@ -102,6 +116,14 @@ class BinanceStreams:
         return (
             bool(self.sdk.connections)
             and not self.recovery.is_set()
+            and (
+                self._user_task is None
+                or (
+                    not self._user_task.done()
+                    and self._user_socket is not None
+                    and not self._user_socket.closed
+                )
+            )
             and all(
                 connection.websocket is not None
                 and not connection.websocket.closed
@@ -116,7 +138,7 @@ class BinanceStreams:
             if existing is not None and not any(
                 existing is connection for connection in self.sdk.owned_connections
             ):
-                raise RuntimeError(f"Stream already owned by another runtime: {name}")
+                raise RuntimeError("Stream already owned by another runtime")
 
     async def subscribe_klines(
         self, symbol: str, interval: str, callback: Callable[[Any], None]
@@ -131,8 +153,67 @@ class BinanceStreams:
         self, listen_key: str, callback: Callable[[Any], None]
     ) -> None:
         self._check_owner(listen_key)
-        handle = await self.sdk.user_data(listen_key)
-        handle.on("message", callback)
+        if self._private_url is None:
+            handle = await self.sdk.user_data(listen_key)
+            handle.on("message", callback)
+            return
+        if self._user_task is not None:
+            raise RuntimeError("User stream already subscribed")
+        try:
+            configuration = self.sdk.configuration
+            proxy = (
+                parse_proxies(configuration.proxy)[configuration.proxy["protocol"]]
+                if configuration.proxy is not None
+                else None
+            )
+            self._user_socket = await self.sdk.session.ws_connect(
+                self._private_url + listen_key,
+                compress=configuration.compression,
+                headers={"User-Agent": configuration.user_agent},
+                max_msg_size=20 * 1024 * 1024,
+                proxy=proxy,
+                ssl=configuration.https_agent,
+            )
+        except Exception:
+            self.recovery.set()
+            raise ConnectionError("Private stream connection failed") from None
+        self._check_owner(listen_key)
+        global_user_stream_connections.stream_connections_map[listen_key] = self
+        self._listen_key = listen_key
+        self._user_task = asyncio.create_task(self._receive_user(callback))
+
+    async def _receive_user(self, callback: Callable[[Any], None]) -> None:
+        try:
+            assert self._user_socket is not None
+            async for message in self._user_socket:
+                if message.type != aiohttp.WSMsgType.TEXT:
+                    raise ConnectionError("Private stream receive failed")
+                payload = json.loads(message.data)
+                event = payload.get("data", payload) if isinstance(payload, dict) else None
+                if not isinstance(event, dict) or not isinstance(event.get("e"), str):
+                    raise ValueError("Invalid private stream event")
+                callback(payload)
+                if event["e"] == "listenKeyExpired":
+                    break
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            # Exceptions can contain the listen-key URL or raw account data.
+            self.recovery.set()
+        finally:
+            if not self._closing:
+                self.recovery.set()
 
     async def close(self) -> None:
-        await self.sdk.retire()
+        self._closing = True
+        try:
+            if self._user_task is not None:
+                self._user_task.cancel()
+                await asyncio.gather(self._user_task, return_exceptions=True)
+            if self._user_socket is not None:
+                await self._user_socket.close()
+        finally:
+            mapping = global_user_stream_connections.stream_connections_map
+            if self._listen_key is not None and mapping.get(self._listen_key) is self:
+                mapping.pop(self._listen_key, None)
+            await self.sdk.retire()

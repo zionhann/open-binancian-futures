@@ -76,6 +76,22 @@ No past trade notification is fabricated for fills missed entirely during downti
 Sync/async notification hooks observe fresh state and are deduplicated by status;
 base hooks do not overwrite it. Strategy trading remains driven by new closed bars.
 
+### WebSocket routing
+
+Mainnet Klines use `wss://fstream.binance.com/market/stream`. Account events use
+`wss://fstream.binance.com/private/ws/<listenKey>` on a separate socket sharing
+the SDK's aiohttp session and transport settings. The private socket delivers raw
+events to the existing generation-bound runtime callback; it does not use the
+SDK's market subscription protocol or log listen keys, private URLs or payloads.
+Receiver exit, malformed events, expiry and socket errors signal the same recovery
+supervisor. Shutdown cancels and awaits the private receiver and closes its socket
+before retiring the SDK receivers, timers and session.
+
+See Binance's [migration notice](https://developers.binance.com/en/docs/products/derivatives-trading-usds-futures/websocket-market-streams/Important-WebSocket-Change-Notice)
+and [user-stream connection contract](https://developers.binance.com/en/docs/products/derivatives-trading-usds-futures/user-data-streams).
+Testnet and custom endpoints retain their existing SDK routing. This migration has
+not been validated against authenticated mainnet events or a testnet account.
+
 Required symbol/interval subscriptions each track their own last update, including
 forming-candle heartbeats. A new subscription generation gets a fresh first-update
 grace period. Forming candles update freshness but never enter the strategy event
