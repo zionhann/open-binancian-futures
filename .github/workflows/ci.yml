@@ -27,7 +27,14 @@ jobs:
           cache: pip
 
       - name: Install package and development dependencies
-        run: python -m pip install ".[dev]"
+        run: python -m pip install ".[dev,ai,indicators,slack]"
+
+      - name: Verify core installation without optional dependencies
+        run: |
+          python -m venv /tmp/obf-core
+          /tmp/obf-core/bin/python -m pip install .
+          /tmp/obf-core/bin/python -m pip check
+          /tmp/obf-core/bin/python -c 'import open_binancian_futures; import open_binancian_futures.ai'
 
       - name: Verify installed dependency set
         run: python -m pip check

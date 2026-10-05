@@ -30,30 +30,22 @@ dependencies = [
     # The generated model names used by runners.py match this SDK release.
     "binance-sdk-derivatives-trading-usds-futures==7.1.1",
     "binance-common",
-    "numpy<2.4",
     "pandas",
-    "pandas-ta",
     "python-dotenv",
     "pydantic-settings>=2.0.0",
-    "setuptools",
-    "TA-Lib",
     "typer",
-    # AI dependencies (formerly optional)
-    "openai",
-    "anthropic",
-    "toon-format>=0.9.0b1",
-    "tiktoken",
-    # Webhook dependencies (formerly optional)
-    "slack-sdk",
+    "requests",
+    "aiohttp",
 ]
 
 [project.optional-dependencies]
+ai = ["openai", "anthropic", "toon-format>=0.9.0b1", "tiktoken"]
+indicators = ["numpy<2.4", "pandas-ta", "TA-Lib"]
+slack = ["slack-sdk"]
 dev = [
     "pytest>=7.0",
     "pytest-asyncio",
     "pytest-cov",
-    "black",
-    "isort",
     "mypy",
     "pandas-stubs",
     "ruff",

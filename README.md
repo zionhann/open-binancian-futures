@@ -24,6 +24,19 @@ A Python framework for creating, backtesting, and deploying automated trading bo
 pip install open-binancian-futures
 ```
 
+The core install supports live trading, backtesting and Discord notifications.
+Install extras for the features your strategy uses:
+
+```bash
+pip install 'open-binancian-futures[ai]'         # AI helpers, TOON and token utilities
+pip install 'open-binancian-futures[indicators]' # pandas-ta and TA-Lib
+pip install 'open-binancian-futures[slack]'       # Slack notifications
+pip install 'open-binancian-futures[ai,indicators,slack]' # previous full dependency set
+```
+
+Existing strategies importing these libraries must install the corresponding
+extras after upgrading. The example strategy below requires `[indicators]`.
+
 ### 2. Create a `.env` file (see [.env.example](./.env.example))
 
 | Variable     | Required | Default   | Description                                         |

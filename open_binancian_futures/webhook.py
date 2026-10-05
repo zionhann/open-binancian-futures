@@ -5,7 +5,6 @@ from typing import Any, override
 
 import requests
 from requests.exceptions import RequestException, Timeout
-from slack_sdk.webhook import WebhookClient
 
 LOGGER = logging.getLogger(__name__)
 
@@ -40,6 +39,10 @@ class DefaultWebhook(Webhook):
 
 class SlackWebhook(Webhook):
     def __init__(self, url: str):
+        try:
+            from slack_sdk.webhook import WebhookClient
+        except ImportError as error:
+            raise RuntimeError("Install open-binancian-futures[slack] to use Slack webhooks") from error
         self.client = WebhookClient(url)
         LOGGER.info("Slack webhook initialized.")
 
