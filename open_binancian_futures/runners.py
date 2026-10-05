@@ -429,6 +429,10 @@ class Backtesting(Runner):
             raise ValueError("GTD requires gtd")
         if intent.gtd is not None and intent.time_in_force not in {None, "GTD"}:
             raise ValueError("gtd requires GTD time_in_force")
+        if intent.gtd is not None and intent.gtd <= 0:
+            raise ValueError("gtd must be a positive timestamp")
+        if intent.reduce_only and intent.quantity is None:
+            raise ValueError("Backtesting reduce-only orders require an explicit quantity")
         quantity = intent.quantity
         if quantity is None:
             if intent.price is None or intent.price <= 0:
