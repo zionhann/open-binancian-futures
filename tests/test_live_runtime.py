@@ -469,6 +469,7 @@ async def test_notifications_repeat_for_distinct_recovery_incidents(tmp_path):
     for count in (2,3):
         runner.recovery.set()
         await eventually(lambda:len(streams)==count and runner.active)
+    await eventually(lambda: messages.count('Connection recovered; state synchronized')==2)
     assert messages.count('Connection interrupted; strategy paused')==2
     assert messages.count('Connection recovered; state synchronized')==2
     runner.close();await task

@@ -36,7 +36,7 @@ from .models import Indicator, OrderEvent
 from .sdk_streams import BinanceStreams
 from .strategy import Strategy, StrategyContext
 from .types import OrderType
-from .webhook import Webhook
+from .webhook import AsyncWebhook, Webhook
 
 LOGGER = logging.getLogger(__name__)
 
@@ -118,6 +118,7 @@ class LiveTrading:
             for interval in self.intervals
         }
         self._loop: asyncio.AbstractEventLoop | None = None
+        self._notifications: AsyncWebhook | None = None
 
     def _default_streams(self) -> ExchangeStreams:
         if self.client is None:
@@ -682,6 +683,8 @@ class LiveTrading:
         if owner is not None:
             self.tasks.add(owner)
         try:
+            self._notifications = AsyncWebhook(self.webhook)
+            self.webhook = self._notifications
             self.journal = OrderJournal(self.journal_path, self.adapter.identity())
             self.journal.open()
             self.report(f"Live journal: {self.journal.path}")
@@ -770,7 +773,12 @@ class LiveTrading:
             if self.journal is not None:
                 self.journal.close()
             self.running = False
-            self.report("Live runtime stopped; exchange orders and positions preserved")
+            message = "Live runtime stopped; exchange orders and positions preserved"
+            if self._notifications is not None:
+                LOGGER.warning(message)
+                await self._notifications.close(message)
+            else:
+                self.report(message)
 
     def __enter__(self) -> "LiveTrading":
         return self

@@ -213,3 +213,10 @@ before/after each step. Do not use a real-money account for this checklist.
 Offline tests do not constitute completed exchange/testnet validation. Direct SDK
 calls, distributed ownership, exact fills, downtime PNL reconstruction and market
 microstructure/cost modeling are outside this runtime's guarantees.
+
+Managed live runtime wraps the configured synchronous webhook in an asynchronous
+sender. Strategy hook signatures remain unchanged. Notifications are sent in order
+from a bounded queue (128 messages); overflow logs a warning and skips the new
+notification. Transport failures are logged without failing the strategy. Shutdown
+drains queued notifications, including the shutdown notice. Injected webhooks must
+provide bounded synchronous calls; production HTTP sends use transport timeouts.
