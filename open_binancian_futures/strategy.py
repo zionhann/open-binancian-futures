@@ -108,36 +108,26 @@ class Strategy(ABC):
         try:
             strategy_class = Strategy._import_strategy(name)
             parameters = inspect.signature(strategy_class).parameters
-            gateway_kwargs: dict[str, Any] = ({"order_gateway": context.order_gateway} if ("order_gateway" in parameters or any(parameter.kind is inspect.Parameter.VAR_KEYWORD for parameter in parameters.values())) else {})
+            accepts_kwargs = any(
+                parameter.kind is inspect.Parameter.VAR_KEYWORD
+                for parameter in parameters.values()
+            )
+            kwargs: dict[str, Any] = dict(
+                client=context.client,
+                exchange_info=context.exchange_info,
+                balance=context.balance,
+                orders=context.orders,
+                positions=context.positions,
+                webhook=context.webhook,
+                indicators=context.indicators,
+            )
+            if "order_gateway" in parameters or accepts_kwargs:
+                kwargs["order_gateway"] = context.order_gateway
             if context.execution_config is not None and (
-                "execution_config" in parameters
-                or any(
-                    parameter.kind is inspect.Parameter.VAR_KEYWORD
-                    for parameter in parameters.values()
-                )
+                "execution_config" in parameters or accepts_kwargs
             ):
-                strategy = strategy_class(
-                    **gateway_kwargs,
-                    client=context.client,
-                    exchange_info=context.exchange_info,
-                    balance=context.balance,
-                    orders=context.orders,
-                    positions=context.positions,
-                    webhook=context.webhook,
-                    indicators=context.indicators,
-                    execution_config=context.execution_config,
-                )
-            else:
-                strategy = strategy_class(
-                    **gateway_kwargs,
-                    client=context.client,
-                    exchange_info=context.exchange_info,
-                    balance=context.balance,
-                    orders=context.orders,
-                    positions=context.positions,
-                    webhook=context.webhook,
-                    indicators=context.indicators,
-                )
+                kwargs["execution_config"] = context.execution_config
+            strategy = strategy_class(**kwargs)
             strategy.order_gateway = context.order_gateway
             strategy._preserve_position_leverage = context.preserve_position_leverage
             if context.execution_config is not None:

@@ -47,9 +47,6 @@ from .types import (
 )
 
 LOGGER = logging.getLogger(__name__)
-MESSAGE = "message"
-KEEPALIVE_USER_STREAM_INTERVAL = 60 * 50
-KLINE_SUBSCRIBE_RATE_PER_SECOND = 8
 OrderKey = tuple[str, int]
 
 

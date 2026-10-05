@@ -8,8 +8,6 @@ from slack_sdk.webhook import WebhookClient
 
 LOGGER = logging.getLogger(__name__)
 
-HOOKS_SLACK_PREFIX = "https://hooks.slack.com/services/"
-HOOKS_DISCORD_PREFIX = "https://discord.com/api/webhooks/"
 DEFAULT_TIMEOUT = 10  # seconds
 
 
