@@ -5,6 +5,7 @@ import os
 import subprocess
 import sys
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -17,7 +18,7 @@ from open_binancian_futures.types import OrderType, PositionSide
 @pytest.mark.asyncio
 async def test_regular_fill_does_not_suppress_algo_with_same_id(tmp_path):
     runner, _ = runtime(tmp_path)
-    runner.gateway = SimpleNamespace(reconcile=lambda **kwargs: None)
+    runner.gateway = SimpleNamespace(reconcile_async=AsyncMock())
     runner.orders = runner.adapter.state.orders
     hooks = []
     runner.strategy.on_triggered_algo = lambda event: hooks.append(event.source.value)
@@ -56,7 +57,7 @@ async def test_new_hooks_require_matching_order_domain_and_deduplicate_separatel
     tmp_path,
 ):
     runner, _ = runtime(tmp_path)
-    runner.gateway = SimpleNamespace(reconcile=lambda **kwargs: None)
+    runner.gateway = SimpleNamespace(reconcile_async=AsyncMock())
     runner.orders = runner.adapter.state.orders
     runner.orders[SYMBOL].add(
         Order(SYMBOL, 7, OrderType.LIMIT, PositionSide.BUY, 100, 1)
@@ -126,7 +127,7 @@ def test_forming_bars_update_only_target_heartbeat_without_queueing(tmp_path):
     runner._enqueue(runner.generation, closed)
     runner._enqueue(runner.generation, user)
     assert runner.queue.get_nowait()[1] is closed
-    assert runner.queue.get_nowait()[1] is user
+    assert runner.user_queue.get_nowait()[1] is user
 
 
 @pytest.mark.asyncio

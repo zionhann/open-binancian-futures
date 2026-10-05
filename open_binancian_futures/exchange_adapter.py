@@ -1,9 +1,10 @@
 """Injected, synchronous REST boundary. Placement is never automatically retried."""
 
+import asyncio
 import hashlib
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from typing import Any, Protocol
+from typing import Any, Protocol, TypeVar
 
 from binance_sdk_derivatives_trading_usds_futures.rest_api.models import (
     NewAlgoOrderSideEnum,
@@ -21,6 +22,40 @@ from .models import (
     PositionBook,
 )
 from .types import OrderType
+
+T = TypeVar("T")
+
+
+class RestCalls:
+    """Serialize synchronous adapter calls and drain in-flight work on cancellation."""
+
+    def __init__(self) -> None:
+        self._mutex = asyncio.Lock()
+
+    async def call(
+        self, function: Callable[..., T], *args: Any,
+        check: Callable[[], None] | None = None, **kwargs: Any,
+    ) -> T:
+        # ponytail: one REST call at a time; separate public reads if latency warrants it.
+        async with self._mutex:
+            if check is not None:
+                check()
+            work = asyncio.create_task(asyncio.to_thread(function, *args, **kwargs))
+            try:
+                return await asyncio.shield(work)
+            except asyncio.CancelledError:
+                # Python cannot stop an executing request. Keep ownership until it
+                # returns, including repeated shutdown cancellation, then propagate.
+                while not work.done():
+                    try:
+                        await asyncio.shield(work)
+                    except asyncio.CancelledError:
+                        continue
+                    except Exception:
+                        break
+                if not work.cancelled():
+                    work.exception()
+                raise
 
 
 class OrderOutcomeUnknown(RuntimeError):

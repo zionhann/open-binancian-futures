@@ -13,9 +13,10 @@ from .exchange_adapter import (
     OrderOutcomeUnknown,
     OrderReceipt,
     OrderRejected,
+    RestCalls,
 )
 from .execution import ExecutionConfig
-from .live_journal import OrderJournal
+from .live_journal import JournalOrder, OrderJournal
 from .models import OrderIntent
 from .types import OrderType
 
@@ -38,6 +39,7 @@ class ManagedOrderGateway:
         self._account_updated_at = float("-inf")
         self.active = False
         self.can_send: Callable[[], bool] = lambda: True
+        self.can_enter: Callable[[], bool] = lambda: True
         self.request_recovery: Callable[[], None] = lambda: None
         self.failed = False
         self.blocked: set[str] = set()
@@ -45,6 +47,8 @@ class ManagedOrderGateway:
         self.reference_price: Callable[[str], float] | None = None
         self.on_snapshot: Callable[[ExchangeSnapshot], None] = lambda state: None
         self._mutex = asyncio.Lock()
+        self._refresh_waiters = 0
+        self.rest = RestCalls()
 
     def snapshot(self) -> ExchangeSnapshot:
         if self.state is None:
@@ -58,9 +62,9 @@ class ManagedOrderGateway:
     def is_algo(intent: OrderIntent) -> bool:
         return intent.order_type not in {OrderType.MARKET, OrderType.LIMIT}
 
-    def reconcile(self, *, event: str | None = None) -> None:
-        """Queries precede a fresh snapshot; unknown reservations survive both."""
-        records = self.journal.pending()
+    def _query_pending(
+        self, records: list[JournalOrder]
+    ) -> tuple[dict[str, OrderReceipt], set[str]]:
         outcomes: dict[str, OrderReceipt] = {}
         blocked = set()
         for record in records:
@@ -75,6 +79,13 @@ class ManagedOrderGateway:
                 outcomes[record.client_order_id] = receipt
             except OrderOutcomeUnknown:
                 blocked.add(record.intent.symbol)
+        return outcomes, blocked
+
+    def _record_unknown(
+        self, records: list[JournalOrder], outcomes: dict[str, OrderReceipt]
+    ) -> None:
+        for record in records:
+            if record.client_order_id not in outcomes:
                 self.journal.update(
                     record.client_order_id,
                     "cancel_unknown" if record.state == "cancel_unknown" else "unknown",
@@ -82,8 +93,11 @@ class ManagedOrderGateway:
                 self.report(
                     f"Order outcome unknown: {record.intent.symbol} {record.client_order_id}"
                 )
+
+    def _read_snapshot(
+        self, records: list[JournalOrder], blocked: set[str], event: str | None
+    ) -> ExchangeSnapshot:
         refresh = getattr(self.adapter, "refresh_snapshot", None)
-        observed_at = self.clock()
         if (
             refresh is not None
             and self.state is not None
@@ -101,6 +115,12 @@ class ManagedOrderGateway:
         else:
             # Legacy adapters and uncertain outcomes retain full reconciliation.
             state = self.adapter.snapshot(self.symbols, self.config)
+        return state
+
+    def _apply_reconciliation(
+        self, records: list[JournalOrder], outcomes: dict[str, OrderReceipt],
+        blocked: set[str], state: ExchangeSnapshot, observed_at: float,
+    ) -> None:
         # A successful lookup is insufficient without an authoritative account snapshot.
         for record in records:
             outcome = outcomes.get(record.client_order_id)
@@ -125,7 +145,37 @@ class ManagedOrderGateway:
         self._account_updated_at = observed_at
         self.on_snapshot(state)
 
-    def _leverage_for_entry(self, symbol: str) -> int:
+    def reconcile(self, *, event: str | None = None) -> None:
+        """Synchronous initialization for standalone gateways; live uses reconcile_async."""
+        records = self.journal.pending()
+        outcomes, blocked = self._query_pending(records)
+        self._record_unknown(records, outcomes)
+        observed_at = self.clock()
+        state = self._read_snapshot(records, blocked, event)
+        self._apply_reconciliation(records, outcomes, blocked, state, observed_at)
+
+    async def _reconcile(self, *, event: str | None = None) -> None:
+        records = self.journal.pending()
+        outcomes, blocked = await self.rest.call(self._query_pending, records)
+        self._record_unknown(records, outcomes)
+        observed_at = self.clock()
+        state = await self.rest.call(self._read_snapshot, records, blocked, event)
+        self._apply_reconciliation(records, outcomes, blocked, state, observed_at)
+
+    async def reconcile_async(self, *, event: str | None = None) -> None:
+        self._refresh_waiters += 1
+        try:
+            async with self._mutex:
+                await self._reconcile(event=event)
+        finally:
+            self._refresh_waiters -= 1
+
+    async def wait_idle(self) -> None:
+        """Drain submissions from strategy-created tasks before closing the journal."""
+        async with self._mutex:
+            pass
+
+    async def _leverage_for_entry(self, symbol: str) -> int:
         state = self.snapshot()
         actual = state.leverage[symbol]
         if state.positions[symbol].find_first() is not None:
@@ -138,8 +188,11 @@ class ManagedOrderGateway:
                 f"Existing entry orders block leverage transition: {symbol}"
             )
         try:
-            self.adapter.set_leverage(symbol, self.config.leverage)
-            confirmed = self.adapter.leverage(symbol)
+            await self.rest.call(
+                self.adapter.set_leverage, symbol, self.config.leverage,
+                check=self._check_transport,
+            )
+            confirmed = await self.rest.call(self.adapter.leverage, symbol)
         except Exception as error:
             self.active = False
             self.request_recovery()
@@ -279,12 +332,12 @@ class ManagedOrderGateway:
         prepared, reference = self._prepare_intent(intent)
         return self._size_intent(prepared, reference, leverage)
 
-    def _refresh_for_protection(self, intent: OrderIntent) -> None:
+    async def _refresh_for_protection(self, intent: OrderIntent) -> None:
         """Only risk-reducing requests may bypass an uncertain entry hold."""
         if not (intent.reduce_only or intent.close_position):
             raise OrderOutcomeUnknown(f"Unresolved order blocks {intent.symbol}")
         try:
-            self.reconcile()
+            await self._reconcile()
         except Exception as error:
             self.active = False
             self.request_recovery()
@@ -318,18 +371,30 @@ class ManagedOrderGateway:
         ):
             raise ValueError("Protection requires explicit quantity within the position")
 
+    def _check_transport(self) -> None:
+        if not self.active or self.failed or not self.can_send():
+            raise OrderOutcomeUnknown("Managed runtime is paused")
+
+    def _check_submission(self, intent: OrderIntent) -> None:
+        self._check_transport()
+        if not (intent.reduce_only or intent.close_position) and (
+            self._refresh_waiters or not self.can_enter()
+        ):
+            raise OrderOutcomeUnknown(
+                "Account update pending or decision stale; wait for a new entry decision"
+            )
+
     async def submit_order(self, intent: OrderIntent) -> bool:
         async with self._mutex:
-            if not self.active or self.failed or not self.can_send():
-                raise OrderOutcomeUnknown("Managed runtime is paused")
+            self._check_submission(intent)
             if intent.symbol in self.blocked:
-                self._refresh_for_protection(intent)
+                await self._refresh_for_protection(intent)
             if (
                 not (intent.reduce_only or intent.close_position)
                 and self.clock() - self._account_updated_at >= 15
             ):
                 try:
-                    self.reconcile(event="ACCOUNT_UPDATE")
+                    await self._reconcile(event="ACCOUNT_UPDATE")
                 except Exception as error:
                     self.active = False
                     self.request_recovery()
@@ -345,8 +410,9 @@ class ManagedOrderGateway:
             leverage = (
                 self.effective_leverage(intent.symbol)
                 if intent.reduce_only or intent.close_position
-                else self._leverage_for_entry(intent.symbol)
+                else await self._leverage_for_entry(intent.symbol)
             )
+            self._check_submission(intent)
             sized = self._size_intent(intent, reference, leverage)
             if sized is None:
                 return False
@@ -358,8 +424,18 @@ class ManagedOrderGateway:
             state.balance.reserve_margin(identifier, margin)
             already_blocked = intent.symbol in self.blocked
             self.blocked.add(intent.symbol)
+            dispatched = False
+
+            def authorize() -> None:
+                nonlocal dispatched
+                self._check_submission(intent)
+                dispatched = True
+
             try:
-                receipt = self.adapter.submit(intent, identifier)
+                receipt = await self.rest.call(
+                    self.adapter.submit, intent, identifier,
+                    check=authorize,
+                )
                 if receipt.status == "REJECTED":
                     raise OrderRejected("Exchange receipt reports REJECTED")
             except OrderRejected:
@@ -369,6 +445,12 @@ class ManagedOrderGateway:
                     self.blocked.discard(intent.symbol)
                 return False
             except BaseException as error:
+                if not dispatched:
+                    self.journal.update(identifier, "rejected")
+                    state.balance.release_margin(identifier)
+                    if not already_blocked:
+                        self.blocked.discard(intent.symbol)
+                    raise
                 self.blocked.add(intent.symbol)
                 self.report(f"Order outcome unknown: {intent.symbol} {identifier}")
                 self.journal.update(identifier, "unknown")
@@ -383,7 +465,7 @@ class ManagedOrderGateway:
             self.blocked.add(intent.symbol)
             try:
                 self.journal.update(identifier, "accepted")
-                self.reconcile()
+                await self._reconcile()
             except Exception as error:
                 self.active = False
                 self.request_recovery()
@@ -409,20 +491,35 @@ class ManagedOrderGateway:
             if record.state == "cancel_unknown":
                 raise OrderOutcomeUnknown("Cancellation requires lookup; do not resend")
             self.journal.update(client_order_id, "cancel_unknown")
+            already_blocked = record.intent.symbol in self.blocked
             self.blocked.add(record.intent.symbol)
+            dispatched = False
+
+            def authorize() -> None:
+                nonlocal dispatched
+                self._check_transport()
+                dispatched = True
+
             try:
-                self.adapter.cancel(
+                await self.rest.call(
+                    self.adapter.cancel,
                     record.intent.symbol,
                     client_order_id,
                     algo=self.is_algo(record.intent),
+                    check=authorize,
                 )
             except BaseException:
+                if not dispatched:
+                    self.journal.update(client_order_id, record.state)
+                    if not already_blocked:
+                        self.blocked.discard(record.intent.symbol)
+                    raise
                 self.report(
                     f"Cancellation outcome unknown: {record.intent.symbol} {client_order_id}"
                 )
                 raise
             try:
-                self.reconcile()
+                await self._reconcile()
             except Exception as error:
                 self.active = False
                 self.request_recovery()

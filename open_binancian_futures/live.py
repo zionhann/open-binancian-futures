@@ -25,6 +25,7 @@ from .exchange_adapter import (
     ExchangeSnapshot,
     ExchangeStreams,
     OrderOutcomeUnknown,
+    RestCalls,
     response_data,
 )
 from .execution import ExecutionConfig
@@ -80,18 +81,21 @@ class LiveTrading:
         self.streams_factory = streams_factory or self._default_streams
         self.strategy = strategy
         self.gateway = order_gateway
+        self.rest = order_gateway.rest if order_gateway is not None else RestCalls()
         self.webhook = webhook or Webhook.of(settings.webhook_url)
         self.clock, self.sleep, self.jitter = clock, sleep, jitter
         self.stop_event = asyncio.Event()
         self.recovery = asyncio.Event()
         self._ready = asyncio.Event()
         self.queue: asyncio.Queue[tuple[int, dict[str, Any]]] = asyncio.Queue()
+        self.user_queue: asyncio.Queue[tuple[int, dict[str, Any]]] = asyncio.Queue()
         self.tasks: set[asyncio.Task[Any]] = set()
         self.streams: ExchangeStreams | None = None
         self.journal: OrderJournal | None = None
         self.listen_key: str | None = None
         self.generation = 0
-        self._decision_generation: ContextVar[int | None] = ContextVar(
+        self._snapshot_revision = 0
+        self._decision_generation: ContextVar[list[int] | None] = ContextVar(
             "live_decision_generation", default=None
         )
         self._connecting = False
@@ -132,13 +136,20 @@ class LiveTrading:
 
     def _transport_ready(self) -> bool:
         decision_generation = self._decision_generation.get()
-        if decision_generation is not None and decision_generation != self.generation:
+        if decision_generation is not None and decision_generation[0] != self.generation:
             return False
         if self.streams is None or self._connecting or self.recovery.is_set():
             return False
         signal = getattr(self.streams, "recovery", None)
         healthy = getattr(self.streams, "healthy", lambda: True)
         return not (signal is not None and signal.is_set()) and healthy()
+
+    def _entry_ready(self) -> bool:
+        # ponytail: every external refresh invalidates entries; compare state if skips matter.
+        decision = self._decision_generation.get()
+        return self.user_queue.empty() and (
+            decision is None or decision[1] == self._snapshot_revision
+        )
 
     def _request_recovery(self) -> None:
         self._pause()
@@ -151,6 +162,12 @@ class LiveTrading:
             self.gateway.active = False
 
     def _bind_snapshot(self, snapshot: ExchangeSnapshot) -> None:
+        previous = self._snapshot_revision
+        self._snapshot_revision += 1
+        decision = self._decision_generation.get()
+        # Child tasks inherit this decision's shared revision, not a tuple copy.
+        if decision is not None and decision[1] == previous:
+            decision[1] = self._snapshot_revision
         self.exchange_info, self.balance = snapshot.exchange_info, snapshot.balance
         self.orders, self.positions = snapshot.orders, snapshot.positions
         if self.strategy is not None:
@@ -216,6 +233,14 @@ class LiveTrading:
     def _enqueue(self, generation: int, payload: Any) -> None:
         if generation != self.generation or self.closed:
             return
+        if self._loop is not None:
+            try:
+                current = asyncio.get_running_loop()
+            except RuntimeError:
+                current = None
+            if current is not self._loop:
+                self._loop.call_soon_threadsafe(self._enqueue, generation, payload)
+                return
         try:
             payload = getattr(payload, "actual_instance", payload)
             data = response_data(payload)
@@ -238,7 +263,8 @@ class LiveTrading:
                 self._last_market[key] = self.clock()
                 if not candle["x"]:
                     return
-            self.queue.put_nowait((generation, data))
+            queue = self.queue if data.get("e") == "kline" else self.user_queue
+            queue.put_nowait((generation, data))
         except Exception:
             self._pause()
             self.recovery.set()
@@ -252,7 +278,7 @@ class LiveTrading:
             self._last_market = {}
             self.streams = self.streams_factory()
             await self.streams.connect()
-            self.listen_key = self.adapter.start_listen_key()
+            self.listen_key = await self.rest.call(self.adapter.start_listen_key)
 
             def callback(payload: Any) -> None:
                 self._enqueue(generation, payload)
@@ -268,6 +294,9 @@ class LiveTrading:
     async def _retire(self) -> None:
         self._pause()
         self.generation += 1
+        for queue in (self.queue, self.user_queue):
+            while not queue.empty():
+                queue.get_nowait()
         streams, self.streams = self.streams, None
         key, self.listen_key = self.listen_key, None
         try:
@@ -279,11 +308,11 @@ class LiveTrading:
         finally:
             if key is not None:
                 try:
-                    self.adapter.close_listen_key(key)
+                    await self.rest.call(self.adapter.close_listen_key, key)
                 except Exception:
                     self.report("Listen key close failed; local runtime stopped")
 
-    def _load_backfill(self, cutoff: int) -> None:
+    async def _load_backfill(self, cutoff: int) -> None:
         for symbol in self.symbols:
             for interval in self.intervals:
                 key = (symbol, interval)
@@ -303,8 +332,8 @@ class LiveTrading:
                     self.last_bars[key] = int(
                         pd.Timestamp(frame.index[-1]).timestamp() * 1000
                     )
-                rows = recover_history(
-                    self.adapter, symbol, interval, self.last_bars[key], cutoff
+                rows = await self.rest.call(
+                    recover_history, self.adapter, symbol, interval, self.last_bars[key], cutoff
                 )
                 if rows:
                     records = [
@@ -328,15 +357,16 @@ class LiveTrading:
                 self.indicators[symbol][interval] = frame
         self._reload_indicators()
 
-    def _synchronize(self, *, initial: bool = False) -> None:
+    async def _synchronize(self, *, initial: bool = False) -> None:
         assert self.gateway is not None
-        self.gateway.reconcile()
-        cutoff = self.adapter.server_time()
+        await self.gateway.reconcile_async()
+        cutoff = await self.rest.call(self.adapter.server_time)
         if initial:
-            self.indicators = self.adapter.initial_indicators(
+            self.indicators = await self.rest.call(
+                self.adapter.initial_indicators,
                 self.symbols, self.intervals, self.execution_config.timezone
             )
-        self._load_backfill(cutoff)
+        await self._load_backfill(cutoff)
         if initial and not self.failed:
             try:
                 self._build_strategy()
@@ -346,21 +376,21 @@ class LiveTrading:
         # warmup watermark through completion, never dispatch those queued bars as
         # fresh decisions. Each individual history pass retains its fixed cutoff.
         while not self.stop_event.is_set():
-            completed_at = self.adapter.server_time()
+            completed_at = await self.rest.call(self.adapter.server_time)
             missing_closed_bar = any(
                 next_open(next_open(opened, interval), interval) <= completed_at
                 for (_, interval), opened in self.last_bars.items()
             )
             if not missing_closed_bar:
                 break
-            self._load_backfill(completed_at)
+            await self._load_backfill(completed_at)
         # All buffered account events use another authoritative snapshot; candle
         # identities at/before the recovery cutoff are already consumed as history.
 
     async def _call_strategy(self, callback: Callable[..., Any], *args: Any) -> None:
-        # Preserve the decision's generation across awaits (and tasks the strategy
-        # itself spawns). A recovered transport cannot authorize an old decision.
-        token = self._decision_generation.set(self.generation)
+        # Preserve connection generation and account revision across awaits and
+        # child tasks. Recovery cannot authorize a pre-disconnection decision.
+        token = self._decision_generation.set([self.generation, self._snapshot_revision])
         try:
             result = callback(*args)
             if inspect.isawaitable(result):
@@ -422,6 +452,7 @@ class LiveTrading:
 
     async def _user(self, data: dict[str, Any]) -> None:
         assert self.gateway is not None
+        generation = self.generation
         event = data.get("e")
         hook_data: tuple[str, dict[str, Any], str, int] | None = None
         if event not in {
@@ -434,7 +465,7 @@ class LiveTrading:
             if symbol not in self.symbols:
                 if isinstance(symbol, str):
                     # Free margin is account-wide, even for untracked symbols.
-                    self.gateway.reconcile(event="ACCOUNT_UPDATE")
+                    await self.gateway.reconcile_async(event="ACCOUNT_UPDATE")
                 return
             identifier = int(order.get("i", order.get("aid", 0)))
             key = (event, symbol, identifier)
@@ -471,7 +502,12 @@ class LiveTrading:
             return
         # cw is cross-wallet balance, NOT available balance. Never apply it or
         # stale event quantities over an account snapshot. No side-effect hooks.
-        self.gateway.reconcile(event=event)
+        await self.gateway.reconcile_async(event=event)
+        if (
+            generation != self.generation
+            or self.recovery.is_set() or self.stop_event.is_set()
+        ):
+            return
         if hook_data is not None and not self.failed:
             symbol, order, status, identifier = hook_data
             hook_key = (event, symbol, identifier, status)
@@ -517,9 +553,9 @@ class LiveTrading:
                 except Exception as error:
                     self._strategy_failed(error)
 
-    async def _events(self) -> None:
+    async def _events(self, queue: asyncio.Queue[tuple[int, dict[str, Any]]]) -> None:
         while not self.stop_event.is_set():
-            generation, data = await self.queue.get()
+            generation, data = await queue.get()
             if not self.active and not self.failed:
                 await self._ready.wait()
             if generation != self.generation:
@@ -565,13 +601,13 @@ class LiveTrading:
                     if full or any(
                         record.state != "accepted" for record in self.journal.pending()
                     ):
-                        self.gateway.reconcile()
+                        await self.gateway.reconcile_async()
                         if full:
                             last_full_reconcile = self.clock()
                     last_reconcile = self.clock()
                 if self.clock() - last_keepalive >= 50 * 60:
                     assert self.listen_key is not None
-                    self.adapter.keepalive_listen_key(self.listen_key)
+                    await self.rest.call(self.adapter.keepalive_listen_key, self.listen_key)
                     last_keepalive = self.clock()
             except Exception:
                 self._pause()
@@ -610,7 +646,9 @@ class LiveTrading:
                     await self._retire()
                     self.recovery.clear()
                     await self._connect()
-                    self._synchronize()
+                    await self._synchronize()
+                    if self.stop_event.is_set():
+                        return
                     if self.recovery.is_set():
                         raise ConnectionError("Disconnected during reconciliation")
                     self.active = not self.failed
@@ -640,11 +678,14 @@ class LiveTrading:
             raise RuntimeError("Runtime can only be run once")
         self.running = True
         self._loop = asyncio.get_running_loop()
+        owner = asyncio.current_task()
+        if owner is not None:
+            self.tasks.add(owner)
         try:
             self.journal = OrderJournal(self.journal_path, self.adapter.identity())
             self.journal.open()
             self.report(f"Live journal: {self.journal.path}")
-            if self.adapter.account_mode():
+            if await self.rest.call(self.adapter.account_mode):
                 raise ValueError("Hedge mode is unsupported; use one-way account mode")
             self.gateway = self.gateway or ManagedOrderGateway(
                 self.adapter,
@@ -654,8 +695,10 @@ class LiveTrading:
                 self.report,
                 clock=self.clock,
             )
+            self.gateway.rest = self.rest
             self.gateway.on_snapshot = self._bind_snapshot
             self.gateway.can_send = self._transport_ready
+            self.gateway.can_enter = self._entry_ready
             self.gateway.request_recovery = self._request_recovery
             self.gateway.reference_price = lambda symbol: float(
                 self.indicators[symbol][self.intervals[0]]["Close"].iloc[-1]
@@ -665,7 +708,9 @@ class LiveTrading:
             while not self.stop_event.is_set():
                 try:
                     await self._connect()
-                    self._synchronize(initial=True)
+                    await self._synchronize(initial=True)
+                    if self.stop_event.is_set():
+                        return
                     if self.recovery.is_set():
                         raise ConnectionError("Disconnected during startup")
                     self.active = self.gateway.active = not self.failed
@@ -682,7 +727,10 @@ class LiveTrading:
                     delay = min(60.0, delay * 2)
             if self.stop_event.is_set():
                 return
-            for coroutine in (self._events(), self._watch(), self._supervise()):
+            for coroutine in (
+                self._events(self.queue), self._events(self.user_queue),
+                self._watch(), self._supervise(),
+            ):
                 task = asyncio.create_task(coroutine)
                 self.tasks.add(task)
                 task.add_done_callback(self._task_finished)
@@ -715,6 +763,8 @@ class LiveTrading:
         await asyncio.gather(*tasks, return_exceptions=True)
         self.tasks.clear()
         try:
+            if self.gateway is not None:
+                await self.gateway.wait_idle()
             await self._retire()
         finally:
             if self.journal is not None:

@@ -413,10 +413,12 @@ def test_invalid_download_is_not_written_to_the_vision_cache(tmp_path) -> None:
 def test_corrupt_cached_vision_archive_is_removed_and_refreshed(tmp_path) -> None:
     timestamp = pd.Timestamp("2026-01-01", tz="UTC")
     calls: list[str] = []
+    downloaded: dict[str, bytes] = {}
 
     def download(url: str) -> bytes:
         calls.append(url)
-        return vision_archive(url)
+        downloaded[url] = vision_archive(url)
+        return downloaded[url]
 
     source = BinanceVisionDataSource(
         start_date="2026-01-01",
@@ -432,7 +434,7 @@ def test_corrupt_cached_vision_archive_is_removed_and_refreshed(tmp_path) -> Non
 
     assert len(loaded) == 1
     assert calls == [source._archive_url("monthly", "ETHUSDT", "1h", timestamp)]
-    assert path.read_bytes() == vision_archive(calls[0])
+    assert path.read_bytes() == downloaded[calls[0]]
 
 
 def test_order_event_prefers_stop_price_when_order_price_is_zero() -> None:

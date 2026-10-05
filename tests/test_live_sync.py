@@ -3,7 +3,7 @@
 import asyncio
 import copy
 from types import SimpleNamespace
-from unittest.mock import Mock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
@@ -40,7 +40,7 @@ async def test_watch_only_reconciles_uncertain_orders_every_15_seconds(tmp_path,
     calls = []
     runner.streams = Streams()
     runner.active = True
-    runner.gateway = SimpleNamespace(reconcile=lambda: calls.append(now[0]))
+    runner.gateway = SimpleNamespace(reconcile_async=AsyncMock(side_effect=lambda: calls.append(now[0])))
     runner.journal = SimpleNamespace(pending=lambda: [SimpleNamespace(state='unknown' if uncertain else 'accepted')])
 
     async def tick(delay):
@@ -84,7 +84,7 @@ async def test_duplicate_order_event_does_not_repeat_rest_or_hook(tmp_path):
         before = runner.adapter.calls.count('snapshot')
         streams[-1].emit(event)
         streams[-1].emit(event)
-        await eventually(lambda: runner.queue.empty())
+        await eventually(lambda: runner.user_queue.empty())
         assert runner.adapter.calls.count('snapshot') == before + 1
         assert runner.strategy.pnl == 3
     finally:

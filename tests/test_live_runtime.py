@@ -134,7 +134,7 @@ async def test_strategy_failure_latched_across_two_recoveries(tmp_path):
     for count in (2,3):
         runner.recovery.set()
         await eventually(lambda:len(streams)==count)
-        await eventually(lambda:not runner.recovery.is_set())
+        await eventually(lambda:runner._ready.is_set() and not runner.recovery.is_set())
         assert not runner.active and runner.gateway.failed
     streams[-1].emit(candle(120000)); await asyncio.sleep(.01)
     assert len(strategy.calls)==1
@@ -153,6 +153,7 @@ async def test_snapshot_authority_duplicate_partial_fills_and_stale_new(tmp_path
     streams[-1].emit(filled)
     streams[-1].emit({'e':'ORDER_TRADE_UPDATE','T':5,'o':{'s':SYMBOL,'i':7,'t':-1,'z':'0','rp':'0','X':'NEW'}})
     await eventually(lambda:strategy.pnl==5)
+    await eventually(lambda:runner.user_queue.empty() and not runner.gateway._mutex.locked())
     assert runner.balance.available==100 and not list(runner.orders[SYMBOL])
     calls=len(adapter.calls)
     streams[-1].emit({'e':'ORDER_TRADE_UPDATE','o':{'s':'ETHUSDT','i':1}})
@@ -455,6 +456,7 @@ async def test_constructor_exception_not_retried_on_network_recovery(tmp_path,mo
     monkeypatch.setattr(Strategy,'of',staticmethod(broken))
     runner,streams=runtime(tmp_path);runner.strategy=None
     task=asyncio.create_task(runner.run_async());await eventually(lambda:runner.failed)
+    await eventually(lambda:runner._ready.is_set())
     runner.recovery.set();await eventually(lambda:len(streams)==2)
     assert len(attempts)==1 and not runner.active
     runner.close();await task
@@ -577,9 +579,9 @@ async def test_sync_completion_candles_warm_indicators_without_strategy_replay(t
     if phase=='recovery':
         original_sync=runner._load_backfill
         once=False
-        def backfill(cutoff):
+        async def backfill(cutoff):
             nonlocal once
-            original_sync(cutoff)
+            await original_sync(cutoff)
             if not once:
                 once=True;completed_during_sync()
         runner._load_backfill=backfill
