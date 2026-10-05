@@ -207,33 +207,19 @@ class DeterministicFillPolicy:
             return order.price if candle.high >= order.price else None
         return order.price
 
-    @staticmethod
-    def _fill_take_profit(order: Order, candle: Candle) -> float | None:
-        if order.side == PositionSide.BUY:
-            if candle.open <= order.price:
-                return candle.open
-            return order.price if candle.low <= order.price else None
-        if candle.open >= order.price:
-            return candle.open
-        return order.price if candle.high >= order.price else None
-
     def fill_price(self, order: Order, candle: Candle) -> float | None:
         if order.type == OrderType.MARKET:
             if self.market_execution == MarketExecutionPolicy.NEXT_OPEN:
                 return candle.open
             return candle.close
-        if order.type in {OrderType.LIMIT, OrderType.TAKE_PROFIT_LIMIT}:
-            return (
-                self._fill_take_profit(order, candle)
-                if order.type == OrderType.TAKE_PROFIT_LIMIT
-                else self._fill_limit(order, candle)
-            )
+        if order.type in {
+            OrderType.LIMIT, OrderType.TAKE_PROFIT_LIMIT, OrderType.TAKE_PROFIT_MARKET
+        }:
+            return self._fill_limit(order, candle)
         if order.type == OrderType.STOP_LIMIT:
             return self._fill_stop_limit(order, candle)
         if order.type == OrderType.STOP_MARKET:
             return self._fill_stop(order, candle)
-        if order.type == OrderType.TAKE_PROFIT_MARKET:
-            return self._fill_take_profit(order, candle)
         return None
 
     def select_exit(

@@ -326,12 +326,6 @@ class ManagedOrderGateway:
         )
         return normalized, margin
 
-    def _normalize(
-        self, intent: OrderIntent, leverage: int
-    ) -> tuple[OrderIntent, float] | None:
-        prepared, reference = self._prepare_intent(intent)
-        return self._size_intent(prepared, reference, leverage)
-
     async def _refresh_for_protection(self, intent: OrderIntent) -> None:
         """Only risk-reducing requests may bypass an uncertain entry hold."""
         if not (intent.reduce_only or intent.close_position):
