@@ -8,6 +8,7 @@ import sys
 import textwrap
 import traceback
 from abc import ABC, abstractmethod
+from collections.abc import Hashable
 from dataclasses import dataclass
 from typing import Any
 
@@ -277,6 +278,9 @@ class Strategy(ABC):
             )
         )
         self._realized_profit: dict[str, float] = {}
+        self._backtest_indicator_cache: dict[
+            tuple[str, str], tuple[Hashable, DataFrame, DataFrame]
+        ] | None = None
         self.add_indicators(self.indicators)
 
     def configure_execution(self, execution_config: ExecutionConfig) -> None:
@@ -301,16 +305,37 @@ class Strategy(ABC):
             raise RuntimeError("A Binance client is required for this live operation")
         return self.client
 
+    def backtest_indicator_cache_key(self) -> Hashable | None:
+        """Opt in only for pure load(); include every indicator setting in the key."""
+        return None
+
     def add_indicators(self, indicator: Indicator) -> None:
-        """Load custom indicators for all symbols and intervals."""
+        """Load custom indicators, optionally reusing identical backtest inputs."""
+        cache = self._backtest_indicator_cache
+        token = self.backtest_indicator_cache_key() if cache is not None else None
+        if cache is not None and token is None:
+            cache.clear()
         for symbol, intervals in indicator.items():
             self._realized_profit.setdefault(symbol, 0.0)
             for interval, frame in list(intervals.items()):
-                indicator[symbol][interval] = self.load(frame[BASIC_COLUMNS])
-                self.LOGGER.info(
-                    f"Loaded indicators for {symbol} [{interval}]:\n"
-                    f"{intervals[interval].tail().to_string(index=False)}"
-                )
+                raw = frame[BASIC_COLUMNS]
+                cached = cache.get((symbol, interval)) if cache is not None else None
+                if token is not None and cached is not None and (
+                    token == cached[0] and raw.equals(cached[1])
+                ):
+                    result = cached[2].copy(deep=True)
+                else:
+                    original = raw.copy(deep=True) if token is not None else raw
+                    result = self.load(raw)
+                    if cache is not None and token is not None:
+                        # ponytail: one input/output per frame; no historical cache growth.
+                        cache[symbol, interval] = (token, original, result.copy(deep=True))
+                indicator[symbol][interval] = result
+                if self.LOGGER.isEnabledFor(logging.INFO):
+                    self.LOGGER.info(
+                        "Loaded indicators for %s [%s]:\n%s",
+                        symbol, interval, result.tail().to_string(index=False),
+                    )
 
     def effective_leverage(self, symbol: str) -> int:
         """Use adopted exchange leverage for managed sizing and stop distances."""
@@ -690,10 +715,12 @@ class Strategy(ABC):
         df = pd.concat([self.indicators[symbol][interval], new_df])
         self.indicators[symbol][interval] = self.load(df)
 
-        self.LOGGER.info(
-            f"Updated indicators for {symbol} [{interval}]:\n"
-            f"{self.indicators[symbol][interval].tail().to_string(index=False)}"
-        )
+        if self.LOGGER.isEnabledFor(logging.INFO):
+            self.LOGGER.info(
+                "Updated indicators for %s [%s]:\n%s",
+                symbol, interval,
+                self.indicators[symbol][interval].tail().to_string(index=False),
+            )
         await self.run(symbol, interval)
 
     def on_position_update(self, data: AccountUpdateAPInner) -> None:

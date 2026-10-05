@@ -30,7 +30,7 @@ dependencies = [
     # The generated model names used by runners.py match this SDK release.
     "binance-sdk-derivatives-trading-usds-futures==7.1.1",
     "binance-common",
-    "pandas",
+    "pandas>=2.2.3",
     "python-dotenv",
     "pydantic-settings>=2.0.0",
     "typer",
