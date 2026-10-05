@@ -310,6 +310,33 @@ the first value in `--intervals` is the execution interval and the remaining
 values are loaded as indicator context. Live trading uses the supervised
 managed runtime described below.
 
+### Opt-in backtest indicator reuse
+
+By default `load()` is called for every prepared strategy view, preserving
+strategies that depend on account state or side effects. If `load()` is a pure
+function of its input and indicator settings, override:
+
+```python
+def backtest_indicator_cache_key(self):
+    return (self.period, self.multiplier)
+```
+
+Return an immutable hashable key containing every setting that affects `load()`;
+return `None` to disable reuse. Include a revision in the key when other required
+calculation state changes. Do not opt in for account-dependent or side-effecting
+loads. Inputs are compared by content, index and dtype, so an equal row count or
+last timestamp alone never establishes reuse. One raw input and computed output
+per symbol/interval are retained, and caches reset for each runner/run. Each
+callback receives an independent DataFrame copy so mutations cannot poison cached
+numeric indicator columns. Opted-in outputs must not contain mutable nested Python
+objects, which pandas deep copies do not recursively isolate.
+
+Completed-candle boundaries, callback/fill ordering and hook-time visibility remain
+unchanged. No indicators are computed on future rows. Tables are formatted only
+when INFO logging is enabled. Run `python benchmarks/backtest_indicator_cache.py`
+for a fixed four-symbol, 120-bar, three-repeat comparison with load counts, elapsed
+time, traced memory peaks and exact ledger/equity/final-balance equality checks.
+
 ## License
 
 MIT License - see [LICENSE](LICENSE) for details.

@@ -174,6 +174,9 @@ class Backtesting(Runner):
         self._pending_fill_hooks: list[tuple[str, Timestamp]] | None = None
         self._at_candle_close = False
 
+        self._close_time_cache: dict[
+            tuple[str, str], tuple[pd.Index, pd.DatetimeIndex]
+        ] = {}
         initial_view = self._visible_indicators(self._initial_visibility_time())
         self.strategy: object
         if strategy is None:
@@ -230,13 +233,29 @@ class Backtesting(Runner):
             ends = opens + pd.Timedelta(f"{int(interval[:-1])}{units[interval[-1]]}")
         return ends - pd.Timedelta(milliseconds=1)
 
+    def _cached_close_times(
+        self, symbol: str, interval: str, frame: pd.DataFrame
+    ) -> pd.DatetimeIndex:
+        source = pd.Index(frame["Close_time"]) if "Close_time" in frame else frame.index
+        cached = self._close_time_cache.get((symbol, interval))
+        if cached is None or not source.equals(cached[0]):
+            cached = (source.copy(deep=True), self._close_times(frame, interval))
+            self._close_time_cache[symbol, interval] = cached
+        return cached[1]
+
     def _visible_indicators(self, time_value: Timestamp) -> Indicator:
         visible = Indicator()
         for symbol, intervals in self.indicators.items():
             for interval, frame in intervals.items():
-                visible[symbol][interval] = frame.loc[
-                    self._close_times(frame, interval) <= time_value
-                ].copy(deep=True)
+                closes = self._cached_close_times(symbol, interval, frame)
+                selected = (
+                    frame.iloc[:closes.searchsorted(
+                        time_value.as_unit(closes.unit, round_ok=True), side="right"
+                    )]
+                    if closes.is_monotonic_increasing
+                    else frame.loc[closes <= time_value]
+                )
+                visible[symbol][interval] = selected.copy(deep=True)
         return visible
 
     def _set_strategy_view(self, time_value: Timestamp) -> None:
@@ -383,6 +402,7 @@ class Backtesting(Runner):
                 pass
         if isinstance(self.strategy, Strategy):
             self.strategy.configure_execution(self.config.execution_config)
+            self.strategy._backtest_indicator_cache = {}
         else:
             try:
                 setattr(  # noqa: B010 - support plain strategy objects
@@ -788,6 +808,9 @@ class Backtesting(Runner):
             self._clear_orders(symbol)
 
     async def _run_backtest_loop(self) -> BacktestRunResult:
+        self._close_time_cache.clear()
+        if isinstance(self.strategy, Strategy):
+            self.strategy._backtest_indicator_cache = {}
         frames = {
             symbol: self.indicators[symbol][self.interval]
             for symbol in self.symbols
@@ -851,7 +874,7 @@ class Backtesting(Runner):
             for symbol, candle in current_candles.items():
                 frame = frames[symbol]
                 bar_index = int(cast(int, frame.index.get_loc(timestamp)))
-                decision_time = self._close_times(frame, self.interval)[bar_index]
+                decision_time = self._cached_close_times(symbol, self.interval, frame)[bar_index]
                 self._at_candle_close = True
                 self._current_time = candle.time
                 self._current_candle = candle
