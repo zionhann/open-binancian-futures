@@ -73,6 +73,8 @@ Adapters may additionally implement
 `refresh_snapshot(state, symbols, execution_config, *, account_only=False)` for
 event-triggered reads. The Binance adapter retains snapshot filters and leverage,
 refreshes balance/positions, and refreshes orders unless `account_only=True`.
+The gateway requests order refreshes whenever managed journal records are pending,
+including on account events, to keep lookup results and remaining quantities aligned.
 Adapters without this optional method continue to use full `snapshot()` reads.
 Startup, reconnect, configuration changes and uncertain outcomes always use full
 snapshots; active runtimes also perform a full safety read every five minutes.

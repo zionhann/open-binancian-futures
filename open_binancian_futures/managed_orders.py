@@ -95,7 +95,8 @@ class ManagedOrderGateway:
                 self.state,
                 self.symbols,
                 self.config,
-                account_only=event == "ACCOUNT_UPDATE",
+                # A lookup may discover fills/cancels before their order event.
+                account_only=event == "ACCOUNT_UPDATE" and not records,
             )
         else:
             # Legacy adapters and uncertain outcomes retain full reconciliation.

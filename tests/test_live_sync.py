@@ -159,3 +159,36 @@ async def test_configuration_event_refreshes_actual_leverage(tmp_path):
     finally:
         runner.close()
         await task
+
+
+@pytest.mark.parametrize('status,remaining', [('FILLED', 0), ('CANCELED', 0), ('EXPIRED', 0), ('PARTIALLY_FILLED', 0.5)])
+def test_account_lookup_refreshes_changed_pending_orders(tmp_path, status, remaining):
+    from open_binancian_futures.exchange_adapter import OrderReceipt
+
+    adapter = Adapter()
+    managed, journal = gateway(tmp_path, adapter)
+    try:
+        identifier = journal.prepare(INTENT, 10)
+        adapter.submit(INTENT, identifier)
+        journal.update(identifier, 'accepted')
+        managed.reconcile()
+        assert next(iter(managed.snapshot().orders[SYMBOL])).quantity == 1
+        adapter.receipts[identifier] = OrderReceipt(1, identifier, SYMBOL, status, 1 - remaining, None, {})
+        if remaining:
+            next(iter(adapter.state.orders[SYMBOL])).quantity = remaining
+        else:
+            adapter.state.orders[SYMBOL].clear()
+
+        def refresh(state, symbols, config, *, account_only=False):
+            fresh = copy.deepcopy(adapter.state)
+            if account_only:
+                fresh.orders = state.orders
+            return fresh
+
+        adapter.refresh_snapshot = refresh
+        managed.reconcile(event='ACCOUNT_UPDATE')
+        actual = list(managed.snapshot().orders[SYMBOL])
+        assert ([order.quantity for order in actual] if remaining else actual) == ([remaining] if remaining else [])
+        assert bool(journal.pending()) == bool(remaining)
+    finally:
+        journal.close()
