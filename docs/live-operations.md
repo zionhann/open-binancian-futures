@@ -114,8 +114,10 @@ strategy awaiting external work does not delay account synchronization or fill
 hooks. An external snapshot invalidates the suspended callback's entry decision;
 new/additional exposure requires a new decision. Its own order refreshes preserve
 eligibility, and risk-reducing requests retain the existing protection path.
-Ordering is preserved within each queue. Synchronous REST and callback work can
-still delay both consumers.
+Ordering is preserved within each queue. REST waits run in serialized worker-thread
+calls; socket reception and timers continue while requests wait. Account updates
+and orders share a lock to preserve snapshot/reservation consistency. Synchronous
+callback and indicator work can still delay both consumers.
 
 On receiver exit/error, stale market transport, listen-key expiry/keepalive failure,
 or scheduled rotation, decisions pause. A fresh SDK stream instance is created;
@@ -143,8 +145,11 @@ Use `runner.run()` for the CLI/synchronous entry point. Ctrl-C completes cleanup
 Inside an existing loop, run `await runner.run_async()` and stop with `close()` or
 `await runner.aclose()`. Cleanup is idempotent: it cancels/awaits owned tasks, closes
 streams/listen key, and releases the journal lock. It never cancels exchange orders
-or closes positions. Stop interrupts asynchronous backoff. A synchronous REST call
-already executing must finish before cleanup can continue; production defaults to
+or closes positions. Stop interrupts asynchronous backoff and prevents queued
+requests from dispatching orders. A REST call already dispatched must finish before
+cleanup releases the journal, including requests from strategy-created tasks.
+Cancellation does not stop the underlying thread or authorize a retry; dispatched
+placements/cancellations retain uncertain outcomes for reconciliation. Production defaults to
 a 2-second per-request timeout, and a snapshot has multiple requests/read retries.
 
 For offline execution inject an adapter, fresh `streams_factory`, a strategy object,
