@@ -413,6 +413,26 @@ class Backtesting(Runner):
         """Submit a domain ``OrderIntent`` during a backtest."""
         if intent.symbol not in self.symbols:
             raise KeyError(f"Unknown backtest symbol: {intent.symbol}")
+        if intent.close_position:
+            raise ValueError("Backtesting does not support close_position; submit an explicit reduce-only quantity")
+        if intent.order_type in {OrderType.TRAILING_STOP_MARKET, OrderType.LIQUIDATION}:
+            raise ValueError(f"Backtesting does not support {intent.order_type.value} intents")
+        if intent.activation_price is not None or intent.callback_rate is not None:
+            raise ValueError("Backtesting does not support trailing-stop fields")
+        if intent.order_type == OrderType.MARKET and (
+            intent.time_in_force is not None or intent.gtd is not None
+        ):
+            raise ValueError("MARKET orders do not support time_in_force or gtd")
+        if intent.time_in_force not in {None, "GTC", "GTD"}:
+            raise ValueError("Backtesting supports only GTC and GTD time_in_force")
+        if intent.time_in_force == "GTD" and intent.gtd is None:
+            raise ValueError("GTD requires gtd")
+        if intent.gtd is not None and intent.time_in_force not in {None, "GTD"}:
+            raise ValueError("gtd requires GTD time_in_force")
+        if intent.gtd is not None and intent.gtd <= 0:
+            raise ValueError("gtd must be a positive timestamp")
+        if intent.reduce_only and intent.quantity is None:
+            raise ValueError("Backtesting reduce-only orders require an explicit quantity")
         quantity = intent.quantity
         if quantity is None:
             if intent.price is None or intent.price <= 0:

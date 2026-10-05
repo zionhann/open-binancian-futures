@@ -557,19 +557,19 @@ class Strategy(ABC):
         if managed_gateway is not None:
             return await managed_gateway.submit_order(intent)
 
-        if intent.order_type == OrderType.TRAILING_STOP_MARKET:
-            self.LOGGER.warning(
-                "TRAILING_STOP_MARKET intents are not supported by the domain "
-                "adapter; use set_trailing_stop()"
-            )
-            return False
-
         gateway = getattr(self, "_backtest_gateway", None)
         if gateway is not None:
             outcome = gateway.submit_order(intent)
             if inspect.isawaitable(outcome):
                 outcome = await outcome
             return bool(outcome)
+
+        if intent.order_type == OrderType.TRAILING_STOP_MARKET:
+            self.LOGGER.warning(
+                "TRAILING_STOP_MARKET intents are not supported by the domain "
+                "adapter; use set_trailing_stop()"
+            )
+            return False
 
         balance = self.balance
         if balance is None:
