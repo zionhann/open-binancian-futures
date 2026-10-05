@@ -21,13 +21,12 @@ from binance_sdk_derivatives_trading_usds_futures.derivatives_trading_usds_futur
     DERIVATIVES_TRADING_USDS_FUTURES_WS_API_PROD_URL as MAINNET_WS_API,
 )
 from binance_sdk_derivatives_trading_usds_futures.derivatives_trading_usds_futures import (
-    DERIVATIVES_TRADING_USDS_FUTURES_WS_STREAMS_PROD_URL as MAINNET_WS_STREAMS,
-)
-from binance_sdk_derivatives_trading_usds_futures.derivatives_trading_usds_futures import (
     ConfigurationRestAPI,
 )
 
 from .constants import settings
+
+MAINNET_WS_STREAMS = "wss://fstream.binance.com/market/stream"
 
 LOGGER = logging.getLogger(__name__)
 
