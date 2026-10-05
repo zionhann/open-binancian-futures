@@ -312,6 +312,8 @@ managed runtime described below.
 
 ### Opt-in backtest indicator reuse
 
+This optimization requires pandas 2.2.3 or newer.
+
 By default `load()` is called for every prepared strategy view, preserving
 strategies that depend on account state or side effects. If `load()` is a pure
 function of its input and indicator settings, override:
