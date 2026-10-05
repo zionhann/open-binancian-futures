@@ -1,6 +1,7 @@
+import asyncio
 import logging
 from abc import ABC, abstractmethod
-from typing import override
+from typing import Any, override
 
 import requests
 from requests.exceptions import RequestException, Timeout
@@ -80,3 +81,36 @@ class DiscordWebhook(Webhook):
         except RequestException as e:
             LOGGER.error(f"Discord webhook request failed: {e}")
             return False
+
+
+class AsyncWebhook(Webhook):
+    """Keep synchronous strategy hooks compatible while sending off the live loop."""
+
+    def __init__(self, webhook: Any) -> None:
+        self.webhook = webhook
+        # ponytail: bounded notification backlog; add persistence if delivery must be durable.
+        self.queue: asyncio.Queue[tuple[str, dict[str, Any]]] = asyncio.Queue(maxsize=128)
+        self.task = asyncio.create_task(self._send())
+
+    @override
+    def send_message(self, message: str, **kwargs) -> None:
+        try:
+            self.queue.put_nowait((message, kwargs))
+        except asyncio.QueueFull:
+            LOGGER.warning("Webhook backlog full; notification skipped")
+
+    async def _send(self) -> None:
+        while True:
+            message, kwargs = await self.queue.get()
+            try:
+                await asyncio.to_thread(self.webhook.send_message, message, **kwargs)
+            except Exception:
+                # Transport exceptions may contain the secret webhook URL.
+                LOGGER.warning("Webhook notification failed")
+            finally:
+                self.queue.task_done()
+
+    async def close(self) -> None:
+        await self.queue.join()
+        self.task.cancel()
+        await asyncio.gather(self.task, return_exceptions=True)
