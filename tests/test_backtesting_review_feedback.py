@@ -387,7 +387,10 @@ def vision_archive(url: str) -> bytes:
     csv = pd.DataFrame([row]).to_csv(index=False, header=False).encode()
     output = io.BytesIO()
     with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as archive_file:
-        archive_file.writestr(member, csv)
+        archive_file.writestr(
+            zipfile.ZipInfo(member, date_time=(2026, 1, 1, 0, 0, 0)),
+            csv, compress_type=zipfile.ZIP_DEFLATED,
+        )
     return output.getvalue()
 
 
