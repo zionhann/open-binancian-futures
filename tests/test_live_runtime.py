@@ -156,7 +156,7 @@ async def test_snapshot_authority_duplicate_partial_fills_and_stale_new(tmp_path
     assert runner.balance.available==100 and not list(runner.orders[SYMBOL])
     calls=len(adapter.calls)
     streams[-1].emit({'e':'ORDER_TRADE_UPDATE','o':{'s':'ETHUSDT','i':1}})
-    await asyncio.sleep(.01); assert len(adapter.calls)==calls
+    await asyncio.sleep(.01); assert len(adapter.calls)==calls+1
     runner.close(); await task
 
 

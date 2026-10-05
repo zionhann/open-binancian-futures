@@ -2,6 +2,7 @@
 
 import asyncio
 import math
+import time
 from collections.abc import Callable, Sequence
 from dataclasses import replace
 from decimal import ROUND_DOWN, ROUND_HALF_UP, Decimal
@@ -27,10 +28,14 @@ class ManagedOrderGateway:
         symbols: Sequence[str],
         config: ExecutionConfig,
         report: Callable[[str], None],
+        *,
+        clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self.adapter, self.journal = adapter, journal
         self.symbols, self.config = tuple(symbols), config
         self.report = report
+        self.clock = clock
+        self._account_updated_at = float("-inf")
         self.active = False
         self.can_send: Callable[[], bool] = lambda: True
         self.request_recovery: Callable[[], None] = lambda: None
@@ -53,7 +58,7 @@ class ManagedOrderGateway:
     def is_algo(intent: OrderIntent) -> bool:
         return intent.order_type not in {OrderType.MARKET, OrderType.LIMIT}
 
-    def reconcile(self) -> None:
+    def reconcile(self, *, event: str | None = None) -> None:
         """Queries precede a fresh snapshot; unknown reservations survive both."""
         records = self.journal.pending()
         outcomes: dict[str, OrderReceipt] = {}
@@ -77,7 +82,24 @@ class ManagedOrderGateway:
                 self.report(
                     f"Order outcome unknown: {record.intent.symbol} {record.client_order_id}"
                 )
-        state = self.adapter.snapshot(self.symbols, self.config)
+        refresh = getattr(self.adapter, "refresh_snapshot", None)
+        observed_at = self.clock()
+        if (
+            refresh is not None
+            and self.state is not None
+            and event in {"ACCOUNT_UPDATE", "ORDER_TRADE_UPDATE", "ALGO_UPDATE"}
+            and not blocked
+            and all(record.state == "accepted" for record in records)
+        ):
+            state = refresh(
+                self.state,
+                self.symbols,
+                self.config,
+                account_only=event == "ACCOUNT_UPDATE",
+            )
+        else:
+            # Legacy adapters and uncertain outcomes retain full reconciliation.
+            state = self.adapter.snapshot(self.symbols, self.config)
         # A successful lookup is insufficient without an authoritative account snapshot.
         for record in records:
             outcome = outcomes.get(record.client_order_id)
@@ -99,6 +121,7 @@ class ManagedOrderGateway:
                         "accepted" if outstanding else "resolved",
                     )
         self.state, self.blocked = state, blocked
+        self._account_updated_at = observed_at
         self.on_snapshot(state)
 
     def _leverage_for_entry(self, symbol: str) -> int:
@@ -294,6 +317,20 @@ class ManagedOrderGateway:
                 raise OrderOutcomeUnknown("Managed runtime is paused")
             if intent.symbol in self.blocked:
                 self._refresh_for_protection(intent)
+            if (
+                not (intent.reduce_only or intent.close_position)
+                and self.clock() - self._account_updated_at >= 15
+            ):
+                try:
+                    self.reconcile(event="ACCOUNT_UPDATE")
+                except Exception as error:
+                    self.active = False
+                    self.request_recovery()
+                    raise OrderOutcomeUnknown(
+                        "Entry requires a fresh available balance"
+                    ) from error
+                if intent.symbol in self.blocked:
+                    raise OrderOutcomeUnknown(f"Unresolved order blocks {intent.symbol}")
             protecting_blocked = intent.symbol in self.blocked
             intent, reference = self._prepare_intent(intent)
             if protecting_blocked:

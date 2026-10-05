@@ -246,18 +246,37 @@ class BinanceExchangeAdapter:
     def snapshot(
         self, symbols: Sequence[str], execution_config: ExecutionConfig
     ) -> ExchangeSnapshot:
-        leverages = {symbol: self.leverage(symbol) for symbol in symbols}
+        return self.refresh_snapshot(None, symbols, execution_config)
+
+    def refresh_snapshot(
+        self,
+        state: ExchangeSnapshot | None,
+        symbols: Sequence[str],
+        execution_config: ExecutionConfig,
+        *,
+        account_only: bool = False,
+    ) -> ExchangeSnapshot:
+        """Refresh dynamic account data, retaining filters and actual leverage."""
+        leverages = (
+            state.leverage
+            if state is not None
+            else {symbol: self.leverage(symbol) for symbol in symbols}
+        )
         positions = PositionBook(symbols=symbols)
         for symbol in symbols:
             positions[symbol] = exchange.init_positions(
                 leverages[symbol], symbols=[symbol], sdk_client=self.client
             )[symbol]
         return ExchangeSnapshot(
-            exchange.init_exchange_info(symbols, sdk_client=self.client),
+            state.exchange_info
+            if state is not None
+            else exchange.init_exchange_info(symbols, sdk_client=self.client),
             exchange.init_balance(execution_config, sdk_client=self.client),
-            exchange.init_orders(symbols, sdk_client=self.client),
+            state.orders
+            if state is not None and account_only
+            else exchange.init_orders(symbols, sdk_client=self.client),
             positions,
-            leverages,
+            dict(leverages),
         )
 
     def history(

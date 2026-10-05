@@ -69,6 +69,14 @@ Snapshots query actual per-symbol leverage from `symbol_configuration`; existing
 regular orders retain reduce-only and remaining quantity. Managed contexts preserve
 position leverage when configuring strategy execution defaults.
 
+Adapters may additionally implement
+`refresh_snapshot(state, symbols, execution_config, *, account_only=False)` for
+event-triggered reads. The Binance adapter retains snapshot filters and leverage,
+refreshes balance/positions, and refreshes orders unless `account_only=True`.
+Adapters without this optional method continue to use full `snapshot()` reads.
+Startup, reconnect, configuration changes and uncertain outcomes always use full
+snapshots; active runtimes also perform a full safety read every five minutes.
+
 ## Supervised execution
 
 `ExchangeStreams` declares async `connect`, `subscribe_klines`, `subscribe_user`,
