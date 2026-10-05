@@ -65,7 +65,21 @@ the exchange may already reserve that money. This can temporarily understate fre
 balance, deliberately preventing reuse while the outcome remains unresolved.
 Accepted orders/positions instead use exchange-reported available balance.
 
-Every account/order event triggers an authoritative REST snapshot. Event `cw`
+Startup and reconnect use full REST snapshots. While active, a full safety snapshot
+runs every five minutes; only prepared/unknown/cancel-unknown outcomes require the
+15-second recovery check. New exposure refreshes account state if its last read
+started at least 15 seconds ago, and a failed refresh pauses submission.
+
+Account/order events trigger scoped authoritative REST reads: balance and positions
+are refreshed, and order events also refresh regular and algo open orders. Account
+events also refresh orders while managed journal records are pending, so lookup
+results cannot resolve a record or discover a partial fill while retaining stale
+open orders. Exchange
+filters and actual leverage are retained until a full snapshot; account configuration
+events force a full snapshot. Orders in untracked symbols still refresh account-wide
+free margin. Identical consecutive order updates skip repeated reads after state is
+confirmed; a NEW event absent from the snapshot remains eligible for a later retry.
+Uncertain lookups always use full snapshots. Event `cw`
 (cross-wallet balance) never replaces free balance. Event order quantities never
 replace snapshot quantities. Regular and algo event IDs have separate namespaces in version, progress and hook
 tracking, including matching NEW events against adopted order types. Per-order

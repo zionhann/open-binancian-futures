@@ -104,6 +104,8 @@ class LiveTrading:
         self._trade_progress: dict[tuple[str, str, int], float] = {}
         self._trade_ids: set[tuple[str, str, int, int]] = set()
         self._versions: dict[tuple[str, str, int], int] = {}
+        # ponytail: cache one update; widen only if interleaved duplicates cause REST load.
+        self._last_order_update: tuple[tuple[str, str, int], int, dict[str, Any]] | None = None
         self._hook_events: set[tuple[str, str, int, str]] = set()
         self._notified: set[str] = set()
         self._last_market = {
@@ -422,12 +424,17 @@ class LiveTrading:
         assert self.gateway is not None
         event = data.get("e")
         hook_data: tuple[str, dict[str, Any], str, int] | None = None
-        if event not in {"ORDER_TRADE_UPDATE", "ALGO_UPDATE", "ACCOUNT_UPDATE"}:
+        if event not in {
+            "ORDER_TRADE_UPDATE", "ALGO_UPDATE", "ACCOUNT_UPDATE", "ACCOUNT_CONFIG_UPDATE"
+        }:
             return
         if event in {"ORDER_TRADE_UPDATE", "ALGO_UPDATE"}:
             order = data.get("o", {})
             symbol = order.get("s")
             if symbol not in self.symbols:
+                if isinstance(symbol, str):
+                    # Free margin is account-wide, even for untracked symbols.
+                    self.gateway.reconcile(event="ACCOUNT_UPDATE")
                 return
             identifier = int(order.get("i", order.get("aid", 0)))
             key = (event, symbol, identifier)
@@ -453,14 +460,18 @@ class LiveTrading:
             self._trade_progress[key] = cumulative
             self._versions[key] = version
             status = str(order.get("X", order.get("status", "")))
+            if self._last_order_update == (key, version, order):
+                return
             hook_data = (symbol, order, status, identifier)
-        elif not any(
-            p.get("s") in self.symbols for p in data.get("a", {}).get("P", [])
-        ) and not data.get("a", {}).get("B"):
+        elif (
+            event == "ACCOUNT_UPDATE"
+            and not any(p.get("s") in self.symbols for p in data.get("a", {}).get("P", []))
+            and not data.get("a", {}).get("B")
+        ):
             return
         # cw is cross-wallet balance, NOT available balance. Never apply it or
         # stale event quantities over an account snapshot. No side-effect hooks.
-        self.gateway.reconcile()
+        self.gateway.reconcile(event=event)
         if hook_data is not None and not self.failed:
             symbol, order, status, identifier = hook_data
             hook_key = (event, symbol, identifier, status)
@@ -480,6 +491,8 @@ class LiveTrading:
                 == (event == "ORDER_TRADE_UPDATE")
                 for item in self.orders[symbol]
             )
+            if status != "NEW" or present:
+                self._last_order_update = (key, version, dict(order))
             method = getattr(self.strategy, name, None) if name is not None else None
             if (
                 method is not None
@@ -524,6 +537,7 @@ class LiveTrading:
     async def _watch(self) -> None:
         last_keepalive = self.clock()
         last_reconcile = self.clock()
+        last_full_reconcile = self.clock()
         while not self.stop_event.is_set():
             await self.sleep(1)
             stream = self.streams
@@ -546,7 +560,14 @@ class LiveTrading:
                     raise ConnectionError("Stream disconnected or stale")
                 if self.active and self.clock() - last_reconcile >= 15:
                     assert self.gateway is not None
-                    self.gateway.reconcile()
+                    assert self.journal is not None
+                    full = self.clock() - last_full_reconcile >= 5 * 60
+                    if full or any(
+                        record.state != "accepted" for record in self.journal.pending()
+                    ):
+                        self.gateway.reconcile()
+                        if full:
+                            last_full_reconcile = self.clock()
                     last_reconcile = self.clock()
                 if self.clock() - last_keepalive >= 50 * 60:
                     assert self.listen_key is not None
@@ -631,6 +652,7 @@ class LiveTrading:
                 self.symbols,
                 self.execution_config,
                 self.report,
+                clock=self.clock,
             )
             self.gateway.on_snapshot = self._bind_snapshot
             self.gateway.can_send = self._transport_ready
