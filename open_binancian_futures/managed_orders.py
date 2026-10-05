@@ -239,7 +239,7 @@ class ManagedOrderGateway:
 
     def _size_intent(
         self, intent: OrderIntent, reference: float, leverage: int
-    ) -> tuple[OrderIntent, float]:
+    ) -> tuple[OrderIntent, float] | None:
         quantity = intent.quantity
         if quantity is None and not intent.close_position:
             state = self.snapshot()
@@ -258,6 +258,12 @@ class ManagedOrderGateway:
             if quantity <= 0 or (
                 not intent.reduce_only and quantity * reference < rule.min_notional
             ):
+                if not intent.reduce_only:
+                    self.report(
+                        f"Auto-sized entry skipped: {intent.symbol} quantity={quantity} "
+                        f"reference_price={reference} min_notional={rule.min_notional}"
+                    )
+                    return None
                 raise ValueError("Order quantity violates exchange filters")
         normalized = replace(intent, quantity=quantity)
         margin = (
@@ -269,7 +275,7 @@ class ManagedOrderGateway:
 
     def _normalize(
         self, intent: OrderIntent, leverage: int
-    ) -> tuple[OrderIntent, float]:
+    ) -> tuple[OrderIntent, float] | None:
         prepared, reference = self._prepare_intent(intent)
         return self._size_intent(prepared, reference, leverage)
 
@@ -341,7 +347,10 @@ class ManagedOrderGateway:
                 if intent.reduce_only or intent.close_position
                 else self._leverage_for_entry(intent.symbol)
             )
-            intent, margin = self._size_intent(intent, reference, leverage)
+            sized = self._size_intent(intent, reference, leverage)
+            if sized is None:
+                return False
+            intent, margin = sized
             state = self.snapshot()
             if margin > state.balance.available:
                 return False
