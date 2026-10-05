@@ -1,3 +1,4 @@
+import logging
 import traceback
 
 import typer
@@ -7,7 +8,7 @@ from .constants import settings
 from .runners import Backtesting, LiveTrading
 
 app = typer.Typer(help="Open Binancian Futures CLI")
-logger = logging_config.init(__name__)
+logger = logging.getLogger(__name__)
 
 
 @app.command()
@@ -60,6 +61,7 @@ def run(
     if data_dir is not None:
         settings.backtest_data_dir = data_dir
 
+    logging_config.init(__name__)
     logger.info("Boot process initiated. Preparing to start the application...")
 
     # Select runner based on configuration
