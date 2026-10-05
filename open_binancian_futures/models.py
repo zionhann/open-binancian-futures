@@ -4,6 +4,7 @@ import math
 import uuid
 from collections.abc import Hashable, Iterable
 from dataclasses import dataclass, field
+from enum import Enum
 from typing import TypeVar
 
 from binance_sdk_derivatives_trading_usds_futures.rest_api.models import (
@@ -164,11 +165,13 @@ class OrderIntent:
     close_position: bool = False
     activation_price: float | None = None
     callback_rate: float | None = None
-    time_in_force: str | None = None
+    time_in_force: str | Enum | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "side", PositionSide(self.side))
         object.__setattr__(self, "order_type", OrderType(self.order_type))
+        if isinstance(self.time_in_force, Enum):
+            object.__setattr__(self, "time_in_force", str(self.time_in_force.value))
 
 
 @dataclass
