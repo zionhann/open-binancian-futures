@@ -97,7 +97,9 @@ awaits; custom callbacks should reread synchronized state after waiting.
 
 An external account refresh invalidates an in-flight callback's entry decision.
 The gateway rejects new/additional exposure from that callback until a new decision
-starts; its own submission refreshes keep it current. New exposure also waits for
+starts; its own submission refreshes keep the callback and its child tasks current.
+Retiring a connection discards its queued events before the next generation starts.
+New exposure also waits for
 queued account events to be processed. Reduce-only/close-position
 requests still use the existing protection checks, and connection generations
 continue to block all submissions from a pre-disconnection callback. REST calls
@@ -122,6 +124,9 @@ Async hook results are awaited inside the owned event worker; protective orders
 can therefore use `await submit_order(...)` in an async fill hook.
 Custom hooks should use the provided synchronized state rather than replay event
 quantities. Hook/load/run errors latch failure until a fresh runtime is started.
+After a strategy failure, account reconciliation continues to observe orders and
+positions already on the exchange, while all strategy hooks and submissions remain
+disabled. Stop the runtime explicitly if account monitoring is no longer needed.
 
 A trailing or market intent without an explicit reference `price` uses the latest
 closed candle of the first configured interval for sizing/filter checks. This is

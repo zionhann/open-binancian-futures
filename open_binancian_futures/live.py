@@ -93,7 +93,7 @@ class LiveTrading:
         self.listen_key: str | None = None
         self.generation = 0
         self._snapshot_revision = 0
-        self._decision_generation: ContextVar[tuple[int, int] | None] = ContextVar(
+        self._decision_generation: ContextVar[list[int] | None] = ContextVar(
             "live_decision_generation", default=None
         )
         self._connecting = False
@@ -163,9 +163,9 @@ class LiveTrading:
         previous = self._snapshot_revision
         self._snapshot_revision += 1
         decision = self._decision_generation.get()
-        # Keep the submitting callback current through its own account refreshes.
+        # Child tasks inherit this decision's shared revision, not a tuple copy.
         if decision is not None and decision[1] == previous:
-            self._decision_generation.set((decision[0], self._snapshot_revision))
+            decision[1] = self._snapshot_revision
         self.exchange_info, self.balance = snapshot.exchange_info, snapshot.balance
         self.orders, self.positions = snapshot.orders, snapshot.positions
         if self.strategy is not None:
@@ -284,6 +284,9 @@ class LiveTrading:
     async def _retire(self) -> None:
         self._pause()
         self.generation += 1
+        for queue in (self.queue, self.user_queue):
+            while not queue.empty():
+                queue.get_nowait()
         streams, self.streams = self.streams, None
         key, self.listen_key = self.listen_key, None
         try:
@@ -376,7 +379,7 @@ class LiveTrading:
     async def _call_strategy(self, callback: Callable[..., Any], *args: Any) -> None:
         # Preserve connection generation and account revision across awaits and
         # child tasks. Recovery cannot authorize a pre-disconnection decision.
-        token = self._decision_generation.set((self.generation, self._snapshot_revision))
+        token = self._decision_generation.set([self.generation, self._snapshot_revision])
         try:
             result = callback(*args)
             if inspect.isawaitable(result):

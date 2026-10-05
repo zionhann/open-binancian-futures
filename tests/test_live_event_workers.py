@@ -151,6 +151,78 @@ async def test_own_order_refresh_keeps_current_decision_eligible(tmp_path):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('delegation', ['child_then_parent', 'gather'])
+async def test_callback_owned_refresh_is_shared_with_parent_and_sibling_tasks(tmp_path, delegation):
+    runner, streams = runtime(tmp_path)
+    completed = asyncio.Event()
+
+    async def decision(*args):
+        if delegation == 'gather':
+            assert all(await asyncio.gather(
+                runner.gateway.submit_order(INTENT), runner.gateway.submit_order(INTENT)
+            ))
+        else:
+            assert await asyncio.create_task(runner.gateway.submit_order(INTENT))
+            assert await runner.gateway.submit_order(INTENT)
+        completed.set()
+
+    runner.strategy.run = decision
+    task = asyncio.create_task(runner.run_async())
+    try:
+        await eventually(lambda: runner.active)
+        streams[-1].emit(candle())
+        await eventually(completed.is_set)
+        assert len(runner.adapter.receipts) == 2 and not runner.failed
+    finally:
+        runner.close()
+        await task
+
+
+@pytest.mark.asyncio
+async def test_retirement_drops_old_queued_events_before_next_entry(tmp_path):
+    runner, streams = runtime(tmp_path)
+    task = asyncio.create_task(runner.run_async())
+    try:
+        await eventually(lambda: runner.active)
+        old_generation = runner.generation
+        runner.user_queue.put_nowait((old_generation, {'e': 'ACCOUNT_UPDATE'}))
+        runner.queue.put_nowait((old_generation, candle()))
+        await runner._retire()
+        assert runner.user_queue.empty() and runner.queue.empty()
+        assert runner._entry_ready()
+        streams[0].emit({'e': 'ACCOUNT_UPDATE'})
+        assert runner.user_queue.empty()
+    finally:
+        runner.close()
+        await task
+
+
+@pytest.mark.asyncio
+async def test_strategy_failure_keeps_account_monitoring_without_hooks_or_orders(tmp_path):
+    runner, streams = runtime(tmp_path)
+    runner.strategy.fail = True
+    hooks = []
+    runner.strategy.on_filled_order = lambda event: hooks.append(event)
+    task = asyncio.create_task(runner.run_async())
+    try:
+        await eventually(lambda: runner.active)
+        streams[-1].emit(candle())
+        await eventually(lambda: runner.failed)
+        runner.adapter.state.balance = Balance(42)
+        streams[-1].emit({'e': 'ORDER_TRADE_UPDATE', 'T': 20, 'o': {
+            's': SYMBOL, 'i': 7, 't': 12, 'z': '1', 'rp': '0', 'X': 'FILLED',
+            'o': 'LIMIT', 'S': 'BUY', 'q': '1', 'p': '100',
+        }})
+        await eventually(lambda: runner.balance.available == 42)
+        with pytest.raises(OrderOutcomeUnknown, match='paused'):
+            await runner.gateway.submit_order(INTENT)
+        assert not hooks and not runner.adapter.receipts and not runner.active
+    finally:
+        runner.close()
+        await task
+
+
+@pytest.mark.asyncio
 async def test_suspended_protection_can_use_updated_confirmed_position(tmp_path):
     runner, streams = runtime(tmp_path)
     entered, release, completed = asyncio.Event(), asyncio.Event(), asyncio.Event()
