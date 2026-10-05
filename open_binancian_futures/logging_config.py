@@ -37,5 +37,6 @@ def init(name: str) -> logging.Logger:
     for handler in (file_handler, stream_handler):
         handler.setFormatter(formatter)
     root.addHandler(file_handler)
-    root.setLevel(int(os.getenv("LOGGING_LEVEL", logging.INFO)))
+    level = os.getenv("LOGGING_LEVEL", str(logging.INFO)).strip()
+    root.setLevel(int(level) if level.lstrip("+-").isdigit() else level.upper())
     return logging.getLogger(name)

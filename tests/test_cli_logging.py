@@ -38,3 +38,17 @@ def test_cli_network_override_and_reinitialization_preserve_external_handlers(tm
                    for handler in root.handlers) == 1
     finally:
         root.removeHandler(external)
+
+
+def test_named_and_numeric_log_levels(tmp_path, monkeypatch):
+    monkeypatch.setattr(logging_config, 'BASE_DIR', str(tmp_path))
+    root = logging.getLogger()
+    previous = root.level
+    try:
+        for value, expected in [('DEBUG', logging.DEBUG), ('warning', logging.WARNING),
+                                ('20', logging.INFO), ('+10', logging.DEBUG), ('-1', -1)]:
+            monkeypatch.setenv('LOGGING_LEVEL', value)
+            logging_config.init(__name__)
+            assert root.level == expected
+    finally:
+        root.setLevel(previous)
