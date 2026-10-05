@@ -116,9 +116,16 @@ class AsyncWebhook(Webhook):
             finally:
                 self.queue.task_done()
 
-    async def close(self) -> None:
+    async def close(self, final_message: str | None = None) -> None:
         self._closed = True
-        drain = asyncio.create_task(self.queue.join())
+
+        async def finish() -> None:
+            await self.queue.join()
+            if final_message is not None:
+                self.queue.put_nowait((final_message, {}))
+                await self.queue.join()
+
+        drain = asyncio.create_task(finish())
         try:
             await asyncio.wait({drain, self.task}, return_when=asyncio.FIRST_COMPLETED)
         finally:

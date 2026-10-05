@@ -88,3 +88,29 @@ async def test_shutdown_does_not_hang_if_notification_worker_is_cancelled():
     hook.send_message('undeliverable notice')
     await asyncio.sleep(0)
     await asyncio.wait_for(hook.close(), timeout=.5)
+
+
+@pytest.mark.asyncio
+async def test_full_backlog_keeps_final_shutdown_notice():
+    entered, release = threading.Event(), threading.Event()
+    messages = []
+    def send(message):
+        entered.set()
+        assert release.wait(2)
+        messages.append(message)
+    hook = AsyncWebhook(SimpleNamespace(send_message=send))
+    try:
+        hook.send_message('in flight')
+        await eventually(entered.is_set)
+        for _ in range(128):
+            hook.send_message('queued')
+        await asyncio.sleep(0)
+        assert hook.queue.full()
+        closing = asyncio.create_task(hook.close('shutdown'))
+        await asyncio.sleep(.01)
+        release.set()
+        await closing
+        assert messages == ['in flight'] + ['queued'] * 128 + ['shutdown']
+    finally:
+        release.set()
+        await hook.close()

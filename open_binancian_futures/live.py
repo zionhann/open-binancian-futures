@@ -773,9 +773,12 @@ class LiveTrading:
             if self.journal is not None:
                 self.journal.close()
             self.running = False
-            self.report("Live runtime stopped; exchange orders and positions preserved")
+            message = "Live runtime stopped; exchange orders and positions preserved"
             if self._notifications is not None:
-                await self._notifications.close()
+                LOGGER.warning(message)
+                await self._notifications.close(message)
+            else:
+                self.report(message)
 
     def __enter__(self) -> "LiveTrading":
         return self
