@@ -86,12 +86,14 @@ class LiveTrading:
         self.recovery = asyncio.Event()
         self._ready = asyncio.Event()
         self.queue: asyncio.Queue[tuple[int, dict[str, Any]]] = asyncio.Queue()
+        self.user_queue: asyncio.Queue[tuple[int, dict[str, Any]]] = asyncio.Queue()
         self.tasks: set[asyncio.Task[Any]] = set()
         self.streams: ExchangeStreams | None = None
         self.journal: OrderJournal | None = None
         self.listen_key: str | None = None
         self.generation = 0
-        self._decision_generation: ContextVar[int | None] = ContextVar(
+        self._snapshot_revision = 0
+        self._decision_generation: ContextVar[tuple[int, int] | None] = ContextVar(
             "live_decision_generation", default=None
         )
         self._connecting = False
@@ -132,13 +134,20 @@ class LiveTrading:
 
     def _transport_ready(self) -> bool:
         decision_generation = self._decision_generation.get()
-        if decision_generation is not None and decision_generation != self.generation:
+        if decision_generation is not None and decision_generation[0] != self.generation:
             return False
         if self.streams is None or self._connecting or self.recovery.is_set():
             return False
         signal = getattr(self.streams, "recovery", None)
         healthy = getattr(self.streams, "healthy", lambda: True)
         return not (signal is not None and signal.is_set()) and healthy()
+
+    def _entry_ready(self) -> bool:
+        # ponytail: every external refresh invalidates entries; compare state if skips matter.
+        decision = self._decision_generation.get()
+        return self.user_queue.empty() and (
+            decision is None or decision[1] == self._snapshot_revision
+        )
 
     def _request_recovery(self) -> None:
         self._pause()
@@ -151,6 +160,12 @@ class LiveTrading:
             self.gateway.active = False
 
     def _bind_snapshot(self, snapshot: ExchangeSnapshot) -> None:
+        previous = self._snapshot_revision
+        self._snapshot_revision += 1
+        decision = self._decision_generation.get()
+        # Keep the submitting callback current through its own account refreshes.
+        if decision is not None and decision[1] == previous:
+            self._decision_generation.set((decision[0], self._snapshot_revision))
         self.exchange_info, self.balance = snapshot.exchange_info, snapshot.balance
         self.orders, self.positions = snapshot.orders, snapshot.positions
         if self.strategy is not None:
@@ -238,7 +253,8 @@ class LiveTrading:
                 self._last_market[key] = self.clock()
                 if not candle["x"]:
                     return
-            self.queue.put_nowait((generation, data))
+            queue = self.queue if data.get("e") == "kline" else self.user_queue
+            queue.put_nowait((generation, data))
         except Exception:
             self._pause()
             self.recovery.set()
@@ -358,9 +374,9 @@ class LiveTrading:
         # identities at/before the recovery cutoff are already consumed as history.
 
     async def _call_strategy(self, callback: Callable[..., Any], *args: Any) -> None:
-        # Preserve the decision's generation across awaits (and tasks the strategy
-        # itself spawns). A recovered transport cannot authorize an old decision.
-        token = self._decision_generation.set(self.generation)
+        # Preserve connection generation and account revision across awaits and
+        # child tasks. Recovery cannot authorize a pre-disconnection decision.
+        token = self._decision_generation.set((self.generation, self._snapshot_revision))
         try:
             result = callback(*args)
             if inspect.isawaitable(result):
@@ -517,9 +533,9 @@ class LiveTrading:
                 except Exception as error:
                     self._strategy_failed(error)
 
-    async def _events(self) -> None:
+    async def _events(self, queue: asyncio.Queue[tuple[int, dict[str, Any]]]) -> None:
         while not self.stop_event.is_set():
-            generation, data = await self.queue.get()
+            generation, data = await queue.get()
             if not self.active and not self.failed:
                 await self._ready.wait()
             if generation != self.generation:
@@ -656,6 +672,7 @@ class LiveTrading:
             )
             self.gateway.on_snapshot = self._bind_snapshot
             self.gateway.can_send = self._transport_ready
+            self.gateway.can_enter = self._entry_ready
             self.gateway.request_recovery = self._request_recovery
             self.gateway.reference_price = lambda symbol: float(
                 self.indicators[symbol][self.intervals[0]]["Close"].iloc[-1]
@@ -682,7 +699,10 @@ class LiveTrading:
                     delay = min(60.0, delay * 2)
             if self.stop_event.is_set():
                 return
-            for coroutine in (self._events(), self._watch(), self._supervise()):
+            for coroutine in (
+                self._events(self.queue), self._events(self.user_queue),
+                self._watch(), self._supervise(),
+            ):
                 task = asyncio.create_task(coroutine)
                 self.tasks.add(task)
                 task.add_done_callback(self._task_finished)

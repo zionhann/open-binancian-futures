@@ -109,7 +109,13 @@ not been validated against authenticated mainnet events or a testnet account.
 Required symbol/interval subscriptions each track their own last update, including
 forming-candle heartbeats. A new subscription generation gets a fresh first-update
 grace period. Forming candles update freshness but never enter the strategy event
-queue; closed candles and user events retain their arrival order.
+queue. Closed candles and user events have separate sequential consumers, so a
+strategy awaiting external work does not delay account synchronization or fill
+hooks. An external snapshot invalidates the suspended callback's entry decision;
+new/additional exposure requires a new decision. Its own order refreshes preserve
+eligibility, and risk-reducing requests retain the existing protection path.
+Ordering is preserved within each queue. Synchronous REST and callback work can
+still delay both consumers.
 
 On receiver exit/error, stale market transport, listen-key expiry/keepalive failure,
 or scheduled rotation, decisions pause. A fresh SDK stream instance is created;

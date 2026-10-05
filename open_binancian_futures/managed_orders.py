@@ -38,6 +38,7 @@ class ManagedOrderGateway:
         self._account_updated_at = float("-inf")
         self.active = False
         self.can_send: Callable[[], bool] = lambda: True
+        self.can_enter: Callable[[], bool] = lambda: True
         self.request_recovery: Callable[[], None] = lambda: None
         self.failed = False
         self.blocked: set[str] = set()
@@ -316,6 +317,8 @@ class ManagedOrderGateway:
         async with self._mutex:
             if not self.active or self.failed or not self.can_send():
                 raise OrderOutcomeUnknown("Managed runtime is paused")
+            if not (intent.reduce_only or intent.close_position) and not self.can_enter():
+                raise OrderOutcomeUnknown("Account update pending or decision stale; wait for a new entry decision")
             if intent.symbol in self.blocked:
                 self._refresh_for_protection(intent)
             if (

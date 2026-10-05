@@ -84,7 +84,7 @@ async def test_duplicate_order_event_does_not_repeat_rest_or_hook(tmp_path):
         before = runner.adapter.calls.count('snapshot')
         streams[-1].emit(event)
         streams[-1].emit(event)
-        await eventually(lambda: runner.queue.empty())
+        await eventually(lambda: runner.user_queue.empty())
         assert runner.adapter.calls.count('snapshot') == before + 1
         assert runner.strategy.pnl == 3
     finally:
