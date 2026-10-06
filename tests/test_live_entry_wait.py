@@ -271,3 +271,37 @@ async def test_price_change_in_rest_dispatch_slot_resizes_unsent_market_entry(tm
             runner.gateway.rest._mutex.release()
         runner.close()
         await task
+
+
+@pytest.mark.asyncio
+async def test_own_acceptance_does_not_adopt_external_position_for_second_entry(tmp_path):
+    runner, streams = runtime(tmp_path, config=ExecutionConfig(leverage=10))
+    entered, release = threading.Event(), threading.Event()
+    results = []
+    original = runner.adapter.submit
+
+    def slow(*args):
+        entered.set()
+        assert release.wait(2)
+        return original(*args)
+
+    async def entry(*args):
+        results.append(await runner.gateway.submit_order(INTENT))
+        results.append(await runner.gateway.submit_order(INTENT))
+
+    runner.strategy.run = entry
+    task = asyncio.create_task(runner.run_async())
+    try:
+        await eventually(lambda: runner.active)
+        runner.adapter.submit = slow
+        streams[-1].emit(candle())
+        await eventually(entered.is_set)
+        runner.adapter.state.positions[SYMBOL].update_positions([Position(SYMBOL, 100, 1, PositionSide.BUY, 10)])
+        streams[-1].emit({'e': 'ACCOUNT_UPDATE', 'a': {'P': [{'s': SYMBOL, 'pa': '1'}]}})
+        release.set()
+        await eventually(lambda: len(results) == 2)
+        assert results == [True, False] and len(runner.adapter.receipts) == 1
+    finally:
+        release.set()
+        runner.close()
+        await task

@@ -57,7 +57,8 @@ class ManagedOrderGateway:
         self.state: ExchangeSnapshot | None = None
         self.reference_price: Callable[[str], float] | None = None
         self.on_snapshot: Callable[[ExchangeSnapshot], None] = lambda state: None
-        self.on_submission: Callable[[], None] = lambda: None
+        self.on_submission: Callable[[OrderIntent, OrderReceipt], None] = lambda intent, receipt: None
+        self._confirmed_receipts: dict[str, OrderReceipt] = {}
         self._mutex = asyncio.Lock()
         self._refresh_waiters = 0
         self.rest = RestCalls()
@@ -140,6 +141,7 @@ class ManagedOrderGateway:
         blocked: set[str], state: ExchangeSnapshot, observed_at: float,
     ) -> None:
         # A successful lookup is insufficient without an authoritative account snapshot.
+        self._confirmed_receipts = outcomes
         for record in records:
             outcome = outcomes.get(record.client_order_id)
             if outcome is None:
@@ -476,7 +478,7 @@ class ManagedOrderGateway:
         def authorize() -> None:
             nonlocal dispatched
             self._check_submission(intent)
-            if intent.price is None and self.reference_price is not None:
+            if not (intent.reduce_only or intent.close_position) and intent.price is None and self.reference_price is not None:
                 if self.reference_price(intent.symbol) != reference:
                     raise _EntryPending("reference_price_changed")
             dispatched = True
@@ -524,7 +526,7 @@ class ManagedOrderGateway:
             raise OrderOutcomeUnknown(
                 f"Accepted order {identifier} requires account reconciliation"
             ) from error
-        self.on_submission()
+        self.on_submission(intent, self._confirmed_receipts.get(identifier, receipt))
         return True
 
     async def cancel_order(self, client_order_id: str) -> None:

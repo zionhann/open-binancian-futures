@@ -27,6 +27,7 @@ from .exchange_adapter import (
     ExchangeSnapshot,
     ExchangeStreams,
     OrderOutcomeUnknown,
+    OrderReceipt,
     RestCalls,
     response_data,
 )
@@ -230,11 +231,44 @@ class LiveTrading:
             for name in ("exchange_info", "balance", "orders", "positions"):
                 setattr(self.strategy, name, getattr(self, name))
 
-    def _adopt_submission(self) -> None:
+    def _adopt_submission(self, intent: OrderIntent, receipt: OrderReceipt) -> None:
         decision = self._decision_generation.get()
-        if decision is not None:
-            decision.revision = self._snapshot_revision
-            decision.exposure = {s: self._exposure(s) for s in self.symbols}
+        if decision is None:
+            return
+        decision.revision = self._snapshot_revision
+        positions, orders = decision.exposure[intent.symbol]
+        current_positions, current_orders = self._exposure(intent.symbol)
+        algo = intent.order_type not in {OrderType.MARKET, OrderType.LIMIT}
+
+        def own(order: tuple[Any, ...]) -> bool:
+            return order[0] == receipt.order_id and (
+                order[1] not in {OrderType.MARKET.value, OrderType.LIMIT.value}
+            ) == algo
+
+        orders = tuple(sorted(tuple(o for o in orders if not own(o)) +
+                              tuple(o for o in current_orders if own(o))))
+        # Adopt a position only if this confirmed execution alone explains it.
+        filled = receipt.executed_quantity or 0.
+        if not algo and filled > 0 and len(positions) <= 1:
+            signed = positions[0][1] * (1 if positions[0][0].value == "BUY" else -1) if positions else 0.
+            expected = signed + filled * (1 if intent.side.value == "BUY" else -1)
+            if abs(expected) < 1e-12 and not current_positions:
+                positions = ()
+            elif len(current_positions) == 1:
+                side, amount, price = current_positions[0]
+                actual = amount * (1 if side.value == "BUY" else -1)
+                fill_price = receipt.average_price
+                if fill_price and (not positions or signed * expected <= 0):
+                    expected_price = fill_price
+                elif positions and signed * (expected - signed) < 0 and signed * expected > 0:
+                    expected_price = positions[0][2]
+                elif positions and fill_price:
+                    expected_price = (abs(signed) * positions[0][2] + filled * fill_price) / abs(expected)
+                else:
+                    expected_price = None
+                if expected_price is not None and math.isclose(actual, expected) and math.isclose(price, expected_price):
+                    positions = current_positions
+        decision.exposure[intent.symbol] = (positions, orders)
 
     def _strategy_failed(self, error: Exception) -> None:
         self.failed = True
