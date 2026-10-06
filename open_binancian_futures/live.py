@@ -202,9 +202,9 @@ class LiveTrading:
         return (f"decision_bar={decision.bar} revision={decision.revision} "
                 f"required_revision={self._snapshot_revision}") if decision else "decision=standalone"
 
-    def _observe_time(self, server_ms: int) -> None:
+    def _observe_time(self, server_ms: int, *, force: bool = False) -> None:
         estimated = self._server_ms + int((self.clock() - self._server_at) * 1000)
-        self._server_ms = max(server_ms, estimated)
+        self._server_ms = server_ms if force else max(server_ms, estimated)
         self._server_at = self.clock()
 
     def _request_recovery(self) -> None:
@@ -468,7 +468,7 @@ class LiveTrading:
             await self.gateway.initialize_leverage()
             await self.gateway.reconcile_async()
         cutoff = await self.rest.call(self.adapter.server_time)
-        self._observe_time(cutoff)
+        self._observe_time(cutoff, force=True)
         if initial:
             self.indicators = await self.rest.call(
                 self.adapter.initial_indicators,

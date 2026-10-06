@@ -305,3 +305,22 @@ async def test_own_acceptance_does_not_adopt_external_position_for_second_entry(
         release.set()
         runner.close()
         await task
+
+
+@pytest.mark.asyncio
+async def test_recovery_server_time_corrects_a_fast_local_estimate(tmp_path):
+    now = [0.]
+    runner, streams = runtime(tmp_path, clock=lambda: now[0], config=ExecutionConfig(leverage=10))
+    runner.strategy.trade = True
+    task = asyncio.create_task(runner.run_async())
+    try:
+        await eventually(lambda: runner.active)
+        now[0] = 120.
+        runner.recovery.set()
+        await eventually(lambda: len(streams) == 2 and runner.active)
+        streams[-1].emit(candle())
+        await eventually(lambda: bool(runner.adapter.receipts))
+        assert len(runner.adapter.receipts) == 1
+    finally:
+        runner.close()
+        await task
