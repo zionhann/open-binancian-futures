@@ -1,5 +1,6 @@
 import asyncio
 import copy
+import logging
 from types import SimpleNamespace
 
 import pandas as pd
@@ -95,6 +96,42 @@ def test_constructor_no_remote_calls(tmp_path):
     adapter=Adapter(); runner,_=runtime(tmp_path,adapter)
     assert not adapter.calls and not adapter.mutations and not runner.journal_path.exists()
     runner.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('interval,opened', [('1m', 60000), ('15m', 900000)])
+@pytest.mark.parametrize('level', [logging.INFO, logging.WARNING])
+async def test_closed_bar_logs_updated_indicators(tmp_path, caplog, monkeypatch, interval, opened, level):
+    runner,_=runtime(tmp_path,config=ExecutionConfig(timezone='Asia/Seoul'))
+    runner.intervals=(interval,)
+    runner.indicators=Indicator({SYMBOL:{interval:runner.adapter.initial_indicators()[SYMBOL]['1m']}})
+    runner.last_bars[(SYMBOL,interval)]=0
+    runner.streams=Streams()
+    runner.active=True
+    runner.strategy.load=lambda frame:frame.assign(TEST_IND=frame.Close * 2)
+    caplog.set_level(level,logger='open_binancian_futures.live')
+    if level == logging.WARNING:
+        def no_formatting(*args, **kwargs):
+            raise AssertionError('Disabled INFO must not format indicator tables')
+        monkeypatch.setattr(pd.DataFrame,'to_string',no_formatting)
+    data=candle(opened)
+    data['k']['i']=interval
+    data['k']['x']=False
+    await runner._market(data)
+    assert not caplog.records and not runner.strategy.calls
+    data['k']['x']=True
+    await runner._market(data)
+    assert runner.strategy.calls==[(SYMBOL,interval)] and not runner.failed
+    messages=[record.getMessage() for record in caplog.records]
+    if level == logging.INFO:
+        assert len(messages)==1
+        assert messages[0].startswith(f'Updated indicators for {SYMBOL} [{interval}]:\n')
+        assert 'TEST_IND' in messages[0] and '+09:00' in messages[0]
+    else:
+        assert not messages
+    await runner._market(data)
+    assert len(caplog.records)==len(messages) and runner.strategy.calls==[(SYMBOL,interval)]
+    await runner.aclose()
 
 
 @pytest.mark.asyncio
@@ -534,10 +571,10 @@ async def test_gateway_infrastructure_failure_recovers_without_strategy_latch(tm
         return original_leverage(*args)
     if failure=='post_submit_snapshot': adapter.snapshot=snapshot
     else: adapter.set_leverage=leverage
-    streams[-1].emit(candle());await asyncio.sleep(.02)
+    streams[-1].emit(candle())
     try:
+        await eventually(lambda:runner.recovery.is_set() or len(streams)>1)
         assert not runner.failed
-        assert runner.recovery.is_set() or len(streams)>1
         if failure=='post_submit_snapshot':
             assert len(adapter.receipts)==1 and runner.journal.pending()
         broken=False

@@ -445,6 +445,13 @@ class LiveTrading:
                 load(frame) if load is not None else frame
             )
             self.strategy.indicators = self.indicators
+            if LOGGER.isEnabledFor(logging.INFO):
+                LOGGER.info(
+                    "Updated indicators for %s [%s]:\n%s",
+                    symbol,
+                    interval,
+                    self.indicators[symbol][interval].tail().to_string(index=False),
+                )
             await self._call_strategy(self.strategy.run, symbol, interval)
         except OrderOutcomeUnknown as error:
             self.report(str(error))
