@@ -570,10 +570,10 @@ async def test_gateway_infrastructure_failure_recovers_without_strategy_latch(tm
         return original_leverage(*args)
     if failure=='post_submit_snapshot': adapter.snapshot=snapshot
     else: adapter.set_leverage=leverage
-    streams[-1].emit(candle());await asyncio.sleep(.02)
+    streams[-1].emit(candle())
     try:
+        await eventually(lambda:runner.recovery.is_set() or len(streams)>1)
         assert not runner.failed
-        assert runner.recovery.is_set() or len(streams)>1
         if failure=='post_submit_snapshot':
             assert len(adapter.receipts)==1 and runner.journal.pending()
         broken=False
