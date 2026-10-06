@@ -78,13 +78,24 @@ position leverage when configuring strategy execution defaults.
 
 Adapters may additionally implement
 `refresh_snapshot(state, symbols, execution_config, *, account_only=False)` for
-event-triggered reads. The Binance adapter retains snapshot filters and leverage,
-refreshes balance/positions, and refreshes orders unless `account_only=True`.
-The gateway requests order refreshes whenever managed journal records are pending,
-including on account events, to keep lookup results and remaining quantities aligned.
-Adapters without this optional method continue to use full `snapshot()` reads.
-Startup, reconnect, configuration changes and uncertain outcomes always use full
-snapshots; active runtimes also perform a full safety read every five minutes.
+legacy/fallback event reads. Complete user events merge into the domain state without
+requiring this method. Binance also implements
+`refresh_event(state, symbols, execution_config, *, balance=False, positions=False,
+orders=False)`: it reads only requested information and returns a new snapshot without
+mutating supplied state. Balance is account-wide; position/open-order reads are
+restricted to the supplied symbols. The gateway restores unresolved reservations
+against fresh free balance while accepted orders use the exchange's margin deduction.
+
+Normal known acknowledgements and complete stream events update the journal without
+querying unrelated pending records. Missing result details query the original ID and
+read the affected symbol; a query/open-book disagreement remains held as unknown.
+Adapters without `refresh_event` retain full reads when information is missing.
+Wallet/cross-wallet stream values never establish available balance.
+`multi_assets_mode() -> bool` is optional for injected adapters and implemented by
+Binance. An unsupported mode pauses new entries without changing account settings.
+Hedge mode is checked at initial startup and every synchronization. Full snapshots
+remain on startup/reconnect and at five-minute safety intervals; unresolved orders
+retain fifteen-second reconciliation.
 
 ## Supervised execution
 
@@ -133,7 +144,7 @@ Strategy constructors and indicator `load()` methods must only initialize state.
 The default strategy factory receives `client=None`, complete synchronized domain
 objects, and a paused gateway. Raw SDK access binds after construction/load.
 Sync and async legacy order-notification hooks are called at most once per observed
-order/status after an authoritative snapshot; their base implementations no longer
+order/status after consistent event/snapshot state; their base implementations no longer
 mutate managed order books. Historical NEW events for absent orders are discarded.
 Async hook results are awaited by separate owned tasks, leaving the account
 consumer free; protective orders can therefore use `await submit_order(...)` in an async fill hook.

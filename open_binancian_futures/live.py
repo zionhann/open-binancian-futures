@@ -29,6 +29,7 @@ from .exchange_adapter import (
     OrderOutcomeUnknown,
     OrderReceipt,
     RestCalls,
+    normalize_receipt,
     response_data,
 )
 from .execution import ExecutionConfig
@@ -38,7 +39,7 @@ from .managed_orders import ManagedOrderGateway
 from .models import Indicator, OrderEvent, OrderIntent
 from .sdk_streams import BinanceStreams
 from .strategy import Strategy, StrategyContext
-from .types import OrderType
+from .types import OrderType, PositionSide
 from .webhook import AsyncWebhook, Webhook
 
 LOGGER = logging.getLogger(__name__)
@@ -126,8 +127,7 @@ class LiveTrading:
         self._trade_progress: dict[tuple[str, str, int], float] = {}
         self._trade_ids: set[tuple[str, str, int, int]] = set()
         self._versions: dict[tuple[str, str, int], int] = {}
-        # ponytail: cache one update; widen only if interleaved duplicates cause REST load.
-        self._last_order_update: tuple[tuple[str, str, int], int, dict[str, Any]] | None = None
+        self._last_order_updates: dict[tuple[str, str, int], tuple[int, dict[str, Any]]] = {}
         self._hook_events: set[tuple[str, str, int, str]] = set()
         self._notified: set[str] = set()
         self._last_market = {
@@ -172,7 +172,7 @@ class LiveTrading:
         state = self.gateway.snapshot()
         return (
             tuple((p.side, p.amount, p.price) for p in state.positions[symbol]),
-            tuple(sorted((o.order_id, o.type.value, o.side.value, o.quantity, o.price)
+            tuple(sorted((o.order_id, o.type.value, o.side.value, o.quantity, o.price, o.is_algo, o.trigger_price)
                          for o in state.orders[symbol] if not o.reduce_only)),
         )
 
@@ -242,9 +242,7 @@ class LiveTrading:
         algo = intent.order_type not in {OrderType.MARKET, OrderType.LIMIT}
 
         def own(order: tuple[Any, ...]) -> bool:
-            return order[0] == receipt.order_id and (
-                order[1] not in {OrderType.MARKET.value, OrderType.LIMIT.value}
-            ) == algo
+            return order[0] == receipt.order_id and order[5] == algo
 
         orders = tuple(sorted(tuple(o for o in orders if not own(o)) +
                               tuple(o for o in current_orders if own(o))))
@@ -368,6 +366,9 @@ class LiveTrading:
                 self._observe_time(int(candle["T"]) + 1)
                 self._seen_bars[key] = max(int(candle["t"]), self._seen_bars.get(key, -1))
             if self.gateway is not None:
+                if data.get("e") != "kline":
+                    data = dict(data)  # Receive sequence belongs to this queued message only.
+                    self.gateway.observe_received(data)
                 self.gateway.entry_changed.set()
             if data.get("e") != "kline":
                 self._account_activity += 1
@@ -469,6 +470,7 @@ class LiveTrading:
     async def _synchronize(self, *, initial: bool = False) -> None:
         assert self.gateway is not None
         await self.gateway.reconcile_async()
+        await self.gateway.check_account_modes()
         if initial:
             await self.gateway.initialize_leverage()
             await self.gateway.reconcile_async()
@@ -524,6 +526,12 @@ class LiveTrading:
         if generation != self.generation or self.stop_event.is_set():
             return
         try:
+            # Let already queued account state establish the fill before a scoped read.
+            await asyncio.sleep(0)
+            if self.gateway is not None:
+                await self.gateway.ensure_positions(event.symbol)
+            if generation != self.generation or self.recovery.is_set() or self.stop_event.is_set():
+                return
             await self._call_strategy(callback, event)
         except OrderOutcomeUnknown as error:
             self.report(str(error))
@@ -594,6 +602,9 @@ class LiveTrading:
         generation = self.generation
         event = data.get("e")
         hook_data: tuple[str, dict[str, Any], str, int] | None = None
+        if event in {"MARGIN_CALL", "CONDITIONAL_ORDER_TRIGGER_REJECT"}:
+            await self.gateway.risk_event(data)
+            return
         if event not in {
             "ORDER_TRADE_UPDATE", "ALGO_UPDATE", "ACCOUNT_UPDATE", "ACCOUNT_CONFIG_UPDATE"
         }:
@@ -604,13 +615,39 @@ class LiveTrading:
             if symbol not in self.symbols:
                 if isinstance(symbol, str):
                     # Free margin is account-wide, even for untracked symbols.
-                    await self.gateway.reconcile_async(event="ACCOUNT_UPDATE")
+                    if not await self.gateway.apply_event(data):
+                        await self.gateway.reconcile_event(data)
                 return
-            identifier = int(order.get("i", order.get("aid", 0)))
+            raw_identifier = order.get("i" if event == "ORDER_TRADE_UPDATE" else "aid")
+            identifier = self.gateway._integer(raw_identifier, positive=True) if raw_identifier is not None else 0
             key = (event, symbol, identifier)
-            version = int(order.get("T", data.get("T", data.get("E", 0))))
-            cumulative = float(order.get("z", 0))
-            trade_id = int(order.get("t", -1))
+            version = self.gateway._integer(order.get("T", data.get("T", data.get("E", 0))))
+            for field in ("E", "T"):
+                if field in data:
+                    self.gateway._integer(data[field])
+            cumulative = self.gateway._number(order.get("z", 0), nonnegative=True)
+            realized = self.gateway._number(order.get("rp", 0))
+            if cumulative > 0 and not identifier:
+                raise ValueError("Trade event requires a positive order identity")
+            if order.get("q") is not None and cumulative > self.gateway._number(order["q"], nonnegative=True):
+                raise ValueError("Cumulative fill exceeds original quantity")
+            if order.get("o") is not None:
+                OrderType(order["o"])
+            if order.get("S") is not None:
+                PositionSide(order["S"])
+            for field in ("p", "tp" if event == "ALGO_UPDATE" else "sp"):
+                if order.get(field) is not None:
+                    self.gateway._number(order[field], nonnegative=True)
+            if order.get("ps") is not None and order["ps"] != "BOTH":
+                raise ValueError("Unsupported order position side")
+            for flag in ("R", "cp"):
+                if order.get(flag) is not None and not isinstance(order[flag], bool):
+                    raise ValueError("Invalid order flag")
+            if identifier:
+                normalize_receipt({"orderId": identifier, "status": order.get("X", order.get("status")),
+                                   "executedQty": order.get("z"), "avgPrice": order.get("ap") or None})
+            raw_trade = order.get("t", -1)
+            trade_id = -1 if raw_trade == -1 and not isinstance(raw_trade, bool) else self.gateway._integer(raw_trade)
             trade_key = (*key, trade_id)
             if event == "ORDER_TRADE_UPDATE" and cumulative > 0 and not self.failed:
                 if trade_id >= 0 and trade_key not in self._trade_ids:
@@ -620,7 +657,7 @@ class LiveTrading:
                     )
                     if accumulate is not None:
                         try:
-                            accumulate(symbol, float(order.get("rp", 0)))
+                            accumulate(symbol, realized)
                         except Exception as error:
                             self._strategy_failed(error)
             if version < self._versions.get(
@@ -630,18 +667,23 @@ class LiveTrading:
             self._trade_progress[key] = cumulative
             self._versions[key] = version
             status = str(order.get("X", order.get("status", "")))
-            if self._last_order_update == (key, version, order):
+            previous = self._last_order_updates.get(key)
+            if previous == (version, order):
                 return
+            if previous is not None and previous[1].get("X") in {"FILLED", "CANCELED", "EXPIRED", "EXPIRED_IN_MATCH", "FINISHED", "REJECTED"}:
+                if order.get("X") in {"NEW", "PARTIALLY_FILLED", "TRIGGERING", "TRIGGERED"}:
+                    return
             hook_data = (symbol, order, status, identifier)
         elif (
             event == "ACCOUNT_UPDATE"
-            and not any(p.get("s") in self.symbols for p in data.get("a", {}).get("P", []))
+            and not data.get("a", {}).get("P")
             and not data.get("a", {}).get("B")
         ):
             return
-        # cw is cross-wallet balance, NOT available balance. Never apply it or
-        # stale event quantities over an account snapshot. No side-effect hooks.
-        await self.gateway.reconcile_async(event=event)
+        # Event wallet values never stand in for available balance. Complete state
+        # events merge first; REST fills only missing or uncertain information.
+        if not await self.gateway.apply_event(data):
+            await self.gateway.reconcile_event(data)
         if (
             generation != self.generation
             or self.recovery.is_set() or self.stop_event.is_set()
@@ -650,6 +692,10 @@ class LiveTrading:
         if hook_data is not None and not self.failed:
             symbol, order, status, identifier = hook_data
             hook_key = (event, symbol, identifier, status)
+            if status in {"NEW", "PARTIALLY_FILLED", "TRIGGERING", "TRIGGERED"} and (
+                str(event), f"{symbol}:{identifier}"
+            ) in self.gateway._terminal_orders:
+                return
             methods = {
                 "NEW": "on_new_order",
                 "FILLED": "on_filled_order",
@@ -662,12 +708,11 @@ class LiveTrading:
             # the fresh snapshot. Never invoke entry hooks for it.
             present = any(
                 item.order_id == identifier
-                and (item.type in {OrderType.LIMIT, OrderType.MARKET})
-                == (event == "ORDER_TRADE_UPDATE")
+                and item.is_algo == (event == "ALGO_UPDATE")
                 for item in self.orders[symbol]
             )
             if status != "NEW" or present:
-                self._last_order_update = (key, version, dict(order))
+                self._last_order_updates[key] = (version, dict(order))
             method = getattr(self.strategy, name, None) if name is not None else None
             if (
                 method is not None

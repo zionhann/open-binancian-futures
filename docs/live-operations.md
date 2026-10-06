@@ -68,25 +68,52 @@ runs every five minutes; only prepared/unknown/cancel-unknown outcomes require t
 15-second recovery check. New exposure refreshes account state if its last read
 started at least 15 seconds ago, and a failed refresh pauses submission.
 
-Account/order events trigger scoped authoritative REST reads: balance and positions
-are refreshed, and order events also refresh regular and algo open orders. Account
-events also refresh orders while managed journal records are pending, so lookup
-results cannot resolve a record or discover a partial fill while retaining stale
-open orders. Exchange
-filters and actual leverage are retained until a full snapshot; account configuration
-events force a full snapshot. Orders in untracked symbols still refresh account-wide
-free margin. Identical consecutive order updates skip repeated reads after state is
-confirmed; a NEW event absent from the snapshot remains eligible for a later retry.
-Uncertain lookups always use full snapshots. Event `cw`
-(cross-wallet balance) never replaces free balance. Event order quantities never
-replace snapshot quantities. Regular and algo event IDs have separate namespaces in version, progress and hook
-tracking, including matching NEW events against adopted order types. Per-order
-versions/cumulative progress reject backward
-state movement; trade IDs deduplicate realized-PNL notifications. Delayed distinct
-partial trades can contribute their own PNL once even when received out of order.
-No past trade notification is fabricated for fills missed entirely during downtime.
-Sync/async notification hooks observe fresh state and are deduplicated by status;
-base hooks do not overwrite it. Strategy trading remains driven by new closed bars.
+Complete `ACCOUNT_UPDATE` events merge only named wallet assets and one-way
+positions. Zero quantity removes that position. Wallet/cross-wallet values never
+replace available balance: funding, transfers, untracked-symbol activity and order
+changes mark free balance dirty. Multiple such events coalesce into one authoritative
+balance read before the next new margin reservation. `ACCOUNT_CONFIG_UPDATE.ac`
+updates actual leverage and adopted position metadata directly. Multi-assets mode
+and hedge mode block new exposure without changing the user's mode; position mode
+is checked again on reconnect. Independent mode holds cannot clear one another.
+
+Complete regular/algo order events update their remaining quantities and original-ID
+journal records. Normal known placement/cancel acknowledgements update the same
+journal without querying all pending orders. Partial or missing acknowledgement
+information uses original-ID lookup and affected-symbol reads. Query results never
+replace fresher open-order quantities. A query/snapshot disagreement retains an
+unknown hold. Unknown placement and unresolved cancellation retain conservative
+reservations and never trigger automatic placement/cancel retries.
+
+Order/entity time and receive-sequence tracking reject reversed or snapshot-covered
+updates, while distinct changes sharing a millisecond still apply. Interleaved
+`A → B → A` order duplicates produce neither another read nor another callback.
+An identical same-millisecond entity reversion cannot be distinguished from replay;
+that ambiguity reads only the affected position/order, free balance or configuration.
+A REST read fences only the entities it actually queried. Events received during the
+read merge afterward, so queued older data cannot replace the authoritative result.
+Terminal acknowledgements/events cannot be undone by a delayed NEW update. Regular
+and algo IDs have separate namespaces. Algo `ai` links the triggered parent to its
+actual order; trigger is not fill, and actual terminal execution resolves the parent
+regardless of which event domain arrives first. Realized profit is deduplicated by
+trade ID, including delayed distinct partial trades; nonfinite numeric fields cause
+recovery before poisoning strategy profit. `TRADE_LITE` is deliberately ignored,
+so it cannot double count the ordinary trade event.
+
+Hooks observe synchronized account state. Queued account events establish a fill's
+position first; if it is missing, only that symbol's positions are read before the
+hook. Protective rejection/trigger failure and `MARGIN_CALL` are explicitly reported
+and hold new exposure in affected managed symbols until the position is flat.
+Protection retains its risk-reducing route. State events still progress while hooks
+await their own orders. REST reason/scope, event application and each entry lifecycle
+are logged without raw payloads, credentials, signatures or listen keys.
+
+Incomplete events and legacy adapters keep authoritative reconciliation as a safety
+fallback. Startup/reconnect and the five-minute safety read retain full snapshots;
+uncertain records retain the fifteen-second recovery check. These optimizations do
+not alter strategy signal/stop rules, backtest visibility or callback invocation
+counts for a given observed order status. See the [issue #36 coverage map](issue-36-coverage.md)
+for the two PR scopes and executable acceptance cases.
 
 ### WebSocket routing
 

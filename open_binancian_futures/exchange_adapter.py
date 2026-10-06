@@ -2,6 +2,7 @@
 
 import asyncio
 import hashlib
+import math
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Any, Protocol, TypeVar
@@ -112,13 +113,23 @@ def normalize_receipt(value: Any) -> OrderReceipt:
             "FINISHED",
         }:
             raise ValueError("invalid order status")
+        numbers = {}
+        for name in ("executedQty", "avgPrice"):
+            value = data.get(name)
+            if value is not None:
+                if isinstance(value, bool):
+                    raise ValueError("boolean execution number")
+                number = float(value)
+                if not math.isfinite(number) or number < 0:
+                    raise ValueError("invalid execution number")
+                numbers[name] = number
         return OrderReceipt(
             int(identifier),
             data.get("clientOrderId", data.get("clientAlgoId")),
             data.get("symbol"),
             status,
-            float(data["executedQty"]) if data.get("executedQty") is not None else None,
-            float(data["avgPrice"]) if data.get("avgPrice") is not None else None,
+            numbers.get("executedQty"),
+            numbers.get("avgPrice"),
             data,
         )
     except (TypeError, ValueError, AttributeError) as error:
@@ -261,6 +272,12 @@ class BinanceExchangeAdapter:
             raise ValueError("Invalid account position mode")
         return mode
 
+    def multi_assets_mode(self) -> bool:
+        mode = response_data(self.rest.get_current_multi_assets_mode()).get("multiAssetsMargin")
+        if not isinstance(mode, bool):
+            raise ValueError("Invalid multi-assets account mode")
+        return mode
+
     def leverage(self, symbol: str) -> int:
         values = self.rest.symbol_configuration(symbol=symbol).data()
         for value in values:
@@ -312,6 +329,27 @@ class BinanceExchangeAdapter:
             else exchange.init_orders(symbols, sdk_client=self.client),
             positions,
             dict(leverages),
+        )
+
+    def refresh_event(
+        self, state: ExchangeSnapshot, symbols: Sequence[str],
+        execution_config: ExecutionConfig, *, balance: bool = False,
+        positions: bool = False, orders: bool = False,
+    ) -> ExchangeSnapshot:
+        """Read only missing event information; never mutate the supplied state."""
+        position_book = PositionBook(dict(state.positions), symbols=state.positions)
+        order_book = OrderBook(dict(state.orders), symbols=state.orders)
+        for symbol in symbols:
+            if positions:
+                position_book[symbol] = exchange.init_positions(
+                    state.leverage[symbol], symbols=[symbol], sdk_client=self.client,
+                )[symbol]
+            if orders:
+                order_book[symbol] = exchange.init_orders([symbol], sdk_client=self.client)[symbol]
+        return ExchangeSnapshot(
+            state.exchange_info,
+            exchange.init_balance(execution_config, sdk_client=self.client) if balance else state.balance,
+            order_book, position_book, dict(state.leverage),
         )
 
     def history(
