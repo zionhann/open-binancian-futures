@@ -1,6 +1,7 @@
 """Single-loop managed order gateway: record once, send once, reconcile by ID."""
 
 import asyncio
+import logging
 import math
 import time
 from collections.abc import Callable, Sequence
@@ -19,6 +20,16 @@ from .execution import ExecutionConfig
 from .live_journal import JournalOrder, OrderJournal
 from .models import OrderIntent
 from .types import OrderType
+
+LOGGER = logging.getLogger(__name__)
+
+
+class _EntryPending(RuntimeError):
+    """Nothing was sent; release locks and let account processing finish."""
+
+
+class _EntryCancelled(RuntimeError):
+    """The not-yet-sent decision is no longer eligible."""
 
 
 class ManagedOrderGateway:
@@ -46,9 +57,16 @@ class ManagedOrderGateway:
         self.state: ExchangeSnapshot | None = None
         self.reference_price: Callable[[str], float] | None = None
         self.on_snapshot: Callable[[ExchangeSnapshot], None] = lambda state: None
+        self.on_submission: Callable[[], None] = lambda: None
         self._mutex = asyncio.Lock()
         self._refresh_waiters = 0
         self.rest = RestCalls()
+        self.entry_changed = asyncio.Event()
+        self.entry_abort_reason: Callable[[OrderIntent], str | None] = lambda intent: None
+        self.entry_deadline: Callable[[], float | None] = lambda: None
+        self.entry_context: Callable[[], str] = lambda: "decision=standalone"
+        self.entry_counts = {"waits": 0, "cancelled": 0, "submitted": 0}
+        self._leverage_initialized: set[str] = set()
 
     def snapshot(self) -> ExchangeSnapshot:
         if self.state is None:
@@ -169,40 +187,35 @@ class ManagedOrderGateway:
                 await self._reconcile(event=event)
         finally:
             self._refresh_waiters -= 1
+            self.entry_changed.set()
 
     async def wait_idle(self) -> None:
         """Drain submissions from strategy-created tasks before closing the journal."""
         async with self._mutex:
             pass
 
-    async def _leverage_for_entry(self, symbol: str) -> int:
-        state = self.snapshot()
-        actual = state.leverage[symbol]
-        if state.positions[symbol].find_first() is not None:
-            return actual
-        if actual == self.config.leverage:
-            return actual
-        if any(not order.reduce_only for order in state.orders[symbol]):
-            self.report(f"Leverage transition waiting for old entry orders: {symbol}")
-            raise OrderOutcomeUnknown(
-                f"Existing entry orders block leverage transition: {symbol}"
-            )
-        try:
-            await self.rest.call(
-                self.adapter.set_leverage, symbol, self.config.leverage,
-                check=self._check_transport,
-            )
-            confirmed = await self.rest.call(self.adapter.leverage, symbol)
-        except Exception as error:
-            self.active = False
-            self.request_recovery()
-            raise OrderOutcomeUnknown(
-                f"Leverage synchronization requires recovery: {symbol}"
-            ) from error
-        if confirmed != self.config.leverage:
-            raise OrderOutcomeUnknown(f"Leverage change not confirmed: {symbol}")
-        state.leverage[symbol] = confirmed
-        return confirmed
+    async def initialize_leverage(self) -> None:
+        """Apply startup configuration once, retaining adopted exposure unchanged."""
+        async with self._mutex:
+            for symbol in self.symbols:
+                if symbol in self._leverage_initialized:
+                    continue
+                state = self.snapshot()
+                if (
+                    state.positions[symbol]
+                    or any(not order.reduce_only for order in state.orders[symbol])
+                    or symbol in self.blocked
+                ):
+                    self._leverage_initialized.add(symbol)
+                    continue
+                if state.leverage[symbol] != self.config.leverage:
+                    await self.rest.call(self.adapter.set_leverage, symbol, self.config.leverage)
+                    confirmed = await self.rest.call(self.adapter.leverage, symbol)
+                    if confirmed != self.config.leverage:
+                        raise OrderOutcomeUnknown(f"Leverage change not confirmed: {symbol}")
+                    state.leverage[symbol] = confirmed
+                self._leverage_initialized.add(symbol)
+            self.on_snapshot(self.snapshot())
 
     def _prepare_intent(self, intent: OrderIntent) -> tuple[OrderIntent, float]:
         """Validate and normalize fields without using any leverage-dependent size."""
@@ -370,103 +383,149 @@ class ManagedOrderGateway:
             raise OrderOutcomeUnknown("Managed runtime is paused")
 
     def _check_submission(self, intent: OrderIntent) -> None:
+        entry = not (intent.reduce_only or intent.close_position)
+        if entry:
+            reason = self.entry_abort_reason(intent)
+            if reason is not None:
+                raise _EntryCancelled(reason)
         self._check_transport()
-        if not (intent.reduce_only or intent.close_position) and (
-            self._refresh_waiters or not self.can_enter()
-        ):
-            raise OrderOutcomeUnknown(
-                "Account update pending or decision stale; wait for a new entry decision"
-            )
+        if entry and (self._refresh_waiters or not self.can_enter()):
+            raise _EntryPending("account_refresh" if self._refresh_waiters else "account_events")
+
+    def _log_entry(self, action: str, intent: OrderIntent, started: float, reason: str) -> None:
+        LOGGER.info(
+            "Entry %s: stage=%s symbol=%s reason=%s %s wait_seconds=%.3f counts=%s",
+            action, "confirmed" if action == "submitted" else "pre_dispatch", intent.symbol, reason, self.entry_context(), self.clock() - started,
+            self.entry_counts,
+        )
 
     async def submit_order(self, intent: OrderIntent) -> bool:
-        async with self._mutex:
-            self._check_submission(intent)
-            if intent.symbol in self.blocked:
-                await self._refresh_for_protection(intent)
-            if (
-                not (intent.reduce_only or intent.close_position)
-                and self.clock() - self._account_updated_at >= 15
-            ):
-                try:
-                    await self._reconcile(event="ACCOUNT_UPDATE")
-                except Exception as error:
-                    self.active = False
-                    self.request_recovery()
-                    raise OrderOutcomeUnknown(
-                        "Entry requires a fresh available balance"
-                    ) from error
-                if intent.symbol in self.blocked:
-                    raise OrderOutcomeUnknown(f"Unresolved order blocks {intent.symbol}")
-            protecting_blocked = intent.symbol in self.blocked
-            intent, reference = self._prepare_intent(intent)
-            if protecting_blocked:
-                self._validate_protection_position(intent)
-            leverage = (
-                self.effective_leverage(intent.symbol)
-                if intent.reduce_only or intent.close_position
-                else await self._leverage_for_entry(intent.symbol)
-            )
-            self._check_submission(intent)
-            sized = self._size_intent(intent, reference, leverage)
-            if sized is None:
-                return False
-            intent, margin = sized
-            state = self.snapshot()
-            if margin > state.balance.available:
-                return False
-            identifier = self.journal.prepare(intent, margin)
-            state.balance.reserve_margin(identifier, margin)
-            already_blocked = intent.symbol in self.blocked
-            self.blocked.add(intent.symbol)
-            dispatched = False
-
-            def authorize() -> None:
-                nonlocal dispatched
+        started = self.clock()
+        deadline = self.entry_deadline()
+        if deadline is None:
+            deadline = started + 15  # Non-candle callers have a bounded wait, no replay.
+        waited = False
+        while True:
+            self.entry_changed.clear()
+            try:
                 self._check_submission(intent)
-                dispatched = True
-
-            try:
-                receipt = await self.rest.call(
-                    self.adapter.submit, intent, identifier,
-                    check=authorize,
-                )
-                if receipt.status == "REJECTED":
-                    raise OrderRejected("Exchange receipt reports REJECTED")
-            except OrderRejected:
-                self.journal.update(identifier, "rejected")
-                state.balance.release_margin(identifier)
-                if not already_blocked:
-                    self.blocked.discard(intent.symbol)
+                async with self._mutex:
+                    result = await self._submit_order(intent)
+                if not (intent.reduce_only or intent.close_position):
+                    self.entry_counts["submitted" if result else "cancelled"] += 1
+                    self._log_entry("submitted" if result else "cancelled", intent, started,
+                                    "confirmed" if result else "validation")
+                return result
+            except _EntryCancelled as error:
+                self.entry_counts["cancelled"] += 1
+                self._log_entry("cancelled", intent, started, str(error))
                 return False
-            except BaseException as error:
-                if not dispatched:
-                    self.journal.update(identifier, "rejected")
-                    state.balance.release_margin(identifier)
-                    if not already_blocked:
-                        self.blocked.discard(intent.symbol)
-                    raise
-                self.blocked.add(intent.symbol)
-                self.report(f"Order outcome unknown: {intent.symbol} {identifier}")
-                self.journal.update(identifier, "unknown")
-                if isinstance(
-                    error, (KeyboardInterrupt, SystemExit, asyncio.CancelledError)
-                ):
-                    raise
-                raise OrderOutcomeUnknown(
-                    f"Reconcile {identifier}; do not resend"
-                ) from error
-            # Keep the reservation until query + snapshot establishes account state.
-            self.blocked.add(intent.symbol)
+            except _EntryPending as error:
+                if not waited:
+                    waited = True
+                    self.entry_counts["waits"] += 1
+                    self._log_entry("waiting", intent, started, str(error))
+                remaining = deadline - self.clock()
+                if remaining <= 0:
+                    self.entry_counts["cancelled"] += 1
+                    self._log_entry("cancelled", intent, started, "wait_limit")
+                    return False
+                try:
+                    # ponytail: 100ms fallback wakes standalone callers without runtime events.
+                    await asyncio.wait_for(self.entry_changed.wait(), min(.1, remaining))
+                except TimeoutError:
+                    pass
+
+    async def _submit_order(self, intent: OrderIntent) -> bool:
+        self._check_submission(intent)
+        if intent.symbol in self.blocked:
+            await self._refresh_for_protection(intent)
+        if (
+            not (intent.reduce_only or intent.close_position)
+            and self.clock() - self._account_updated_at >= 15
+        ):
             try:
-                self.journal.update(identifier, "accepted")
-                await self._reconcile()
+                await self._reconcile(event="ACCOUNT_UPDATE")
             except Exception as error:
                 self.active = False
                 self.request_recovery()
                 raise OrderOutcomeUnknown(
-                    f"Accepted order {identifier} requires account reconciliation"
+                    "Entry requires a fresh available balance"
                 ) from error
-            return True
+            if intent.symbol in self.blocked:
+                raise OrderOutcomeUnknown(f"Unresolved order blocks {intent.symbol}")
+        protecting_blocked = intent.symbol in self.blocked
+        intent, reference = self._prepare_intent(intent)
+        if protecting_blocked:
+            self._validate_protection_position(intent)
+        leverage = self.effective_leverage(intent.symbol)
+        self._check_submission(intent)
+        sized = self._size_intent(intent, reference, leverage)
+        if sized is None:
+            return False
+        intent, margin = sized
+        state = self.snapshot()
+        if margin > state.balance.available:
+            return False
+        identifier = self.journal.prepare(intent, margin)
+        state.balance.reserve_margin(identifier, margin)
+        already_blocked = intent.symbol in self.blocked
+        self.blocked.add(intent.symbol)
+        dispatched = False
+
+        def authorize() -> None:
+            nonlocal dispatched
+            self._check_submission(intent)
+            if intent.price is None and self.reference_price is not None:
+                if self.reference_price(intent.symbol) != reference:
+                    raise _EntryPending("reference_price_changed")
+            dispatched = True
+
+        try:
+            receipt = await self.rest.call(
+                self.adapter.submit, intent, identifier,
+                check=authorize,
+            )
+            if receipt.status == "REJECTED":
+                raise OrderRejected("Exchange receipt reports REJECTED")
+        except OrderRejected:
+            self.journal.update(identifier, "rejected")
+            state.balance.release_margin(identifier)
+            if not already_blocked:
+                self.blocked.discard(intent.symbol)
+            return False
+        except BaseException as error:
+            if not dispatched:
+                self.journal.update(identifier, "rejected")
+                state.balance.release_margin(identifier)
+                if not already_blocked:
+                    self.blocked.discard(intent.symbol)
+                raise
+            self.blocked.add(intent.symbol)
+            LOGGER.warning("Order unresolved: stage=dispatch_unknown symbol=%s client_order_id=%s",
+                           intent.symbol, identifier)
+            self.report(f"Order outcome unknown: {intent.symbol} {identifier}")
+            self.journal.update(identifier, "unknown")
+            if isinstance(
+                error, (KeyboardInterrupt, SystemExit, asyncio.CancelledError)
+            ):
+                raise
+            raise OrderOutcomeUnknown(
+                f"Reconcile {identifier}; do not resend"
+            ) from error
+        # Keep the reservation until query + snapshot establishes account state.
+        self.blocked.add(intent.symbol)
+        try:
+            self.journal.update(identifier, "accepted")
+            await self._reconcile()
+        except Exception as error:
+            self.active = False
+            self.request_recovery()
+            raise OrderOutcomeUnknown(
+                f"Accepted order {identifier} requires account reconciliation"
+            ) from error
+        self.on_submission()
+        return True
 
     async def cancel_order(self, client_order_id: str) -> None:
         async with self._mutex:

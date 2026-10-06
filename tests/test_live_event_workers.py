@@ -12,7 +12,7 @@ from open_binancian_futures.types import OrderType, PositionSide
 
 
 @pytest.mark.asyncio
-async def test_account_refresh_invalidates_suspended_entry_without_stopping_runtime(tmp_path):
+async def test_account_refresh_revalidates_suspended_entry_without_replaying_strategy(tmp_path):
     runner, streams = runtime(tmp_path, config=ExecutionConfig(leverage=10))
     entered, release, finished = asyncio.Event(), asyncio.Event(), asyncio.Event()
     rejected = []
@@ -39,13 +39,8 @@ async def test_account_refresh_invalidates_suspended_entry_without_stopping_runt
         assert not finished.is_set()
         release.set()
         await finished.wait()
-        assert rejected and not runner.adapter.receipts
+        assert not rejected and len(runner.adapter.receipts) == 1
         assert runner.active and not runner.failed
-        async def current_decision(*args):
-            await runner.gateway.submit_order(INTENT)
-        runner.strategy.run = current_decision
-        streams[-1].emit(candle(120000))
-        await eventually(lambda: bool(runner.adapter.receipts))
     finally:
         release.set()
         runner.close()

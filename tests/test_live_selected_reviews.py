@@ -18,7 +18,10 @@ from open_binancian_futures.types import OrderType, PositionSide
 @pytest.mark.asyncio
 async def test_regular_fill_does_not_suppress_algo_with_same_id(tmp_path):
     runner, _ = runtime(tmp_path)
-    runner.gateway = SimpleNamespace(reconcile_async=AsyncMock())
+    runner.gateway, journal = gateway(tmp_path, runner.adapter)
+    runner.gateway.reconcile_async = AsyncMock()
+    runner.gateway.on_snapshot = runner._bind_snapshot
+    runner._bind_snapshot(runner.gateway.snapshot())
     runner.orders = runner.adapter.state.orders
     hooks = []
     runner.strategy.on_triggered_algo = lambda event: hooks.append(event.source.value)
@@ -50,6 +53,7 @@ async def test_regular_fill_does_not_suppress_algo_with_same_id(tmp_path):
         }
     )
     assert hooks == ["ALGO_UPDATE"]
+    journal.close()
 
 
 @pytest.mark.asyncio
@@ -57,7 +61,10 @@ async def test_new_hooks_require_matching_order_domain_and_deduplicate_separatel
     tmp_path,
 ):
     runner, _ = runtime(tmp_path)
-    runner.gateway = SimpleNamespace(reconcile_async=AsyncMock())
+    runner.gateway, journal = gateway(tmp_path, runner.adapter)
+    runner.gateway.reconcile_async = AsyncMock()
+    runner.gateway.on_snapshot = runner._bind_snapshot
+    runner._bind_snapshot(runner.gateway.snapshot())
     runner.orders = runner.adapter.state.orders
     runner.orders[SYMBOL].add(
         Order(SYMBOL, 7, OrderType.LIMIT, PositionSide.BUY, 100, 1)
@@ -84,6 +91,7 @@ async def test_new_hooks_require_matching_order_domain_and_deduplicate_separatel
     await runner._user(regular)
     await runner._user(algo)
     assert hooks == ["ORDER_TRADE_UPDATE", "ALGO_UPDATE"]
+    journal.close()
 
 
 @pytest.mark.asyncio
@@ -139,6 +147,7 @@ async def test_flat_entry_sizes_after_target_leverage_confirmation(tmp_path):
         tmp_path, adapter, ExecutionConfig(leverage=20, position_size=0.1)
     )
     try:
+        await managed.initialize_leverage()
         assert await managed.submit_order(
             OrderIntent(SYMBOL, PositionSide.BUY, OrderType.LIMIT, 100)
         )

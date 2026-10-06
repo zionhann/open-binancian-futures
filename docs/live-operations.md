@@ -13,14 +13,12 @@ candles before activating strategy decisions. All existing target-symbol orders
 and positions are adopted without cancel/recreate. Other symbols are unmanaged.
 Hedge mode fails without automatically changing account mode or leverage.
 
-The existing position's actual symbol leverage also applies to additions and stop
-calculations. After the position becomes flat, old entry orders hold back a new
-leverage setting. Once those orders are gone, the next entry confirms the requested
-leverage at the exchange before it sends an order. Protective close-position algo
-orders count as reduce-only and do not hold back this transition.
-
-Intent fields and explicit quantities are validated before a leverage change;
-automatic sizing uses the confirmed effective leverage after any permitted transition.
+At each process start, flat symbols without existing entry orders or unresolved
+journal records confirm the configured leverage before activation. Existing positions
+and entry orders retain their actual leverage; closing an adopted position does not
+cause a later entry to reset it. Startup retries do not repeat confirmed changes,
+and reconnect never reapplies startup configuration. Manual leverage changes are
+adopted for subsequent sizing and stop calculations.
 
 The journal stores generated client IDs, normalized intents, margin and processing
 state in SQLite with FULL synchronous commits before each send. It stores no API
@@ -109,11 +107,23 @@ not been validated against authenticated mainnet events or a testnet account.
 Required symbol/interval subscriptions each track their own last update, including
 forming-candle heartbeats. A new subscription generation gets a fresh first-update
 grace period. Forming candles update freshness but never enter the strategy event
-queue. Closed candles and user events have separate sequential consumers, so a
+queue. Closed candles and user events have separate sequential state consumers, so a
 strategy awaiting external work does not delay account synchronization or fill
-hooks. An external snapshot invalidates the suspended callback's entry decision;
-new/additional exposure requires a new decision. Its own order refreshes preserve
-eligibility, and risk-reducing requests retain the existing protection path.
+hooks. A not-yet-sent entry waits inside the same submission call while account events or
+refreshes are pending, without holding the order/REST locks. It revalidates available
+balance, actual leverage, exchange filters and the latest received candle price.
+The candle decision expires at the next scheduled close or when that close arrives,
+even if the market worker is still awaiting the previous decision. A changed position
+or entry order, shutdown, or connection recovery cancels the decision with `False`.
+No strategy signal callback is replayed and no strategy-specific signal validator is
+added: the signal is assumed valid only inside that candle interval. Non-candle hooks
+have a 15-second deadline. Own confirmed submissions update the shared decision
+state, including child tasks. Risk-reducing orders bypass entry waits/expiry and retain
+protection checks. Account hooks run as owned tasks so a hook awaiting a new entry
+cannot block account processing or another protection hook. Hooks start in event
+order and may overlap across awaits; they must reread current synchronized state.
+Each entry wait/result is logged with its reason, decision/state versions, stage,
+elapsed time and counters; webhook deduplication does not hide these records.
 Ordering is preserved within each queue. REST waits run in serialized worker-thread
 calls; socket reception and timers continue while requests wait. Account updates
 and orders share a lock to preserve snapshot/reservation consistency. Synchronous

@@ -3,11 +3,13 @@
 import asyncio
 import inspect
 import logging
+import math
 import os
 import random
 import time
 from collections.abc import Awaitable, Callable, Sequence
 from contextvars import ContextVar
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -32,13 +34,22 @@ from .execution import ExecutionConfig
 from .live_history import next_open, recover_history
 from .live_journal import OrderJournal
 from .managed_orders import ManagedOrderGateway
-from .models import Indicator, OrderEvent
+from .models import Indicator, OrderEvent, OrderIntent
 from .sdk_streams import BinanceStreams
 from .strategy import Strategy, StrategyContext
 from .types import OrderType
 from .webhook import AsyncWebhook, Webhook
 
 LOGGER = logging.getLogger(__name__)
+
+
+@dataclass
+class _Decision:
+    generation: int
+    revision: int
+    deadline: float
+    bar: tuple[str, str, int] | None
+    exposure: dict[str, tuple[Any, ...]] = field(default_factory=dict)
 
 
 class LiveTrading:
@@ -95,9 +106,14 @@ class LiveTrading:
         self.listen_key: str | None = None
         self.generation = 0
         self._snapshot_revision = 0
-        self._decision_generation: ContextVar[list[int] | None] = ContextVar(
+        self._decision_generation: ContextVar[_Decision | None] = ContextVar(
             "live_decision_generation", default=None
         )
+        self._user_busy = 0
+        self._seen_bars: dict[tuple[str, str], int] = {}
+        self._reference_prices: dict[str, float] = {}
+        self._server_ms = 0
+        self._server_at = self.clock()
         self._connecting = False
         self.active = False
         self.failed = False
@@ -137,7 +153,7 @@ class LiveTrading:
 
     def _transport_ready(self) -> bool:
         decision_generation = self._decision_generation.get()
-        if decision_generation is not None and decision_generation[0] != self.generation:
+        if decision_generation is not None and decision_generation.generation != self.generation:
             return False
         if self.streams is None or self._connecting or self.recovery.is_set():
             return False
@@ -146,11 +162,49 @@ class LiveTrading:
         return not (signal is not None and signal.is_set()) and healthy()
 
     def _entry_ready(self) -> bool:
-        # ponytail: every external refresh invalidates entries; compare state if skips matter.
-        decision = self._decision_generation.get()
-        return self.user_queue.empty() and (
-            decision is None or decision[1] == self._snapshot_revision
+        return self.user_queue.empty() and not self._user_busy
+
+    def _exposure(self, symbol: str) -> tuple[Any, ...]:
+        if self.gateway is None or self.gateway.state is None:
+            return ()
+        state = self.gateway.snapshot()
+        return (
+            tuple((p.side, p.amount, p.price) for p in state.positions[symbol]),
+            tuple(sorted((o.order_id, o.type.value, o.side.value, o.quantity)
+                         for o in state.orders[symbol] if not o.reduce_only)),
         )
+
+    def _entry_abort_reason(self, intent: OrderIntent) -> str | None:
+        decision = self._decision_generation.get()
+        if decision is None:
+            return None
+        if self.stop_event.is_set() or self.closed:
+            return "shutdown"
+        if decision.generation != self.generation or self.recovery.is_set():
+            return "recovery"
+        if self.clock() >= decision.deadline:
+            return "signal_expired"
+        if decision.bar is not None:
+            symbol, interval, opened = decision.bar
+            if self._seen_bars.get((symbol, interval), opened) > opened:
+                return "next_bar"
+        if self._exposure(intent.symbol) != decision.exposure.get(intent.symbol):
+            return "state_conflict"
+        return None
+
+    def _entry_deadline(self) -> float | None:
+        decision = self._decision_generation.get()
+        return decision.deadline if decision is not None else None
+
+    def _entry_context(self) -> str:
+        decision = self._decision_generation.get()
+        return (f"decision_bar={decision.bar} revision={decision.revision} "
+                f"required_revision={self._snapshot_revision}") if decision else "decision=standalone"
+
+    def _observe_time(self, server_ms: int) -> None:
+        estimated = self._server_ms + int((self.clock() - self._server_at) * 1000)
+        self._server_ms = max(server_ms, estimated)
+        self._server_at = self.clock()
 
     def _request_recovery(self) -> None:
         self._pause()
@@ -161,19 +215,26 @@ class LiveTrading:
         self._ready.clear()
         if self.gateway is not None:
             self.gateway.active = False
+            self.gateway.entry_changed.set()
 
     def _bind_snapshot(self, snapshot: ExchangeSnapshot) -> None:
         previous = self._snapshot_revision
         self._snapshot_revision += 1
         decision = self._decision_generation.get()
         # Child tasks inherit this decision's shared revision, not a tuple copy.
-        if decision is not None and decision[1] == previous:
-            decision[1] = self._snapshot_revision
+        if decision is not None and decision.revision == previous:
+            decision.revision = self._snapshot_revision
         self.exchange_info, self.balance = snapshot.exchange_info, snapshot.balance
         self.orders, self.positions = snapshot.orders, snapshot.positions
         if self.strategy is not None:
             for name in ("exchange_info", "balance", "orders", "positions"):
                 setattr(self.strategy, name, getattr(self, name))
+
+    def _adopt_submission(self) -> None:
+        decision = self._decision_generation.get()
+        if decision is not None:
+            decision.revision = self._snapshot_revision
+            decision.exposure = {s: self._exposure(s) for s in self.symbols}
 
     def _strategy_failed(self, error: Exception) -> None:
         self.failed = True
@@ -262,8 +323,16 @@ class LiveTrading:
                 if not isinstance(candle.get("x"), bool):
                     raise ValueError("Malformed kline close flag")
                 self._last_market[key] = self.clock()
+                reference = float(candle["c"])
+                if not math.isfinite(reference) or reference <= 0:
+                    raise ValueError("Invalid market reference price")
+                self._reference_prices[key[0]] = reference
                 if not candle["x"]:
                     return
+                self._observe_time(int(candle["T"]) + 1)
+                self._seen_bars[key] = max(int(candle["t"]), self._seen_bars.get(key, -1))
+            if self.gateway is not None:
+                self.gateway.entry_changed.set()
             queue = self.queue if data.get("e") == "kline" else self.user_queue
             queue.put_nowait((generation, data))
         except Exception:
@@ -361,7 +430,11 @@ class LiveTrading:
     async def _synchronize(self, *, initial: bool = False) -> None:
         assert self.gateway is not None
         await self.gateway.reconcile_async()
+        if initial:
+            await self.gateway.initialize_leverage()
+            await self.gateway.reconcile_async()
         cutoff = await self.rest.call(self.adapter.server_time)
+        self._observe_time(cutoff)
         if initial:
             self.indicators = await self.rest.call(
                 self.adapter.initial_indicators,
@@ -388,16 +461,35 @@ class LiveTrading:
         # All buffered account events use another authoritative snapshot; candle
         # identities at/before the recovery cutoff are already consumed as history.
 
-    async def _call_strategy(self, callback: Callable[..., Any], *args: Any) -> None:
-        # Preserve connection generation and account revision across awaits and
-        # child tasks. Recovery cannot authorize a pre-disconnection decision.
-        token = self._decision_generation.set([self.generation, self._snapshot_revision])
+    async def _call_strategy(
+        self, callback: Callable[..., Any], *args: Any,
+        bar: tuple[str, str, int] | None = None,
+    ) -> None:
+        deadline = self.clock() + 15
+        if bar is not None:
+            _, interval, opened = bar
+            next_close = next_open(next_open(opened, interval), interval)
+            server_now = self._server_ms + int((self.clock() - self._server_at) * 1000)
+            deadline = self.clock() + max(0., (next_close - server_now) / 1000)
+        decision = _Decision(self.generation, self._snapshot_revision, deadline, bar,
+                             {s: self._exposure(s) for s in self.symbols})
+        token = self._decision_generation.set(decision)
         try:
             result = callback(*args)
             if inspect.isawaitable(result):
                 await result
         finally:
             self._decision_generation.reset(token)
+
+    async def _order_hook(self, callback: Callable[..., Any], event: OrderEvent, generation: int) -> None:
+        if generation != self.generation or self.stop_event.is_set():
+            return
+        try:
+            await self._call_strategy(callback, event)
+        except OrderOutcomeUnknown as error:
+            self.report(str(error))
+        except Exception as error:
+            self._strategy_failed(error)
 
     async def _market(self, data: dict[str, Any]) -> None:
         candle = data.get("k", {})
@@ -452,7 +544,7 @@ class LiveTrading:
                     interval,
                     self.indicators[symbol][interval].tail().to_string(index=False),
                 )
-            await self._call_strategy(self.strategy.run, symbol, interval)
+            await self._call_strategy(self.strategy.run, symbol, interval, bar=(symbol, interval, opened))
         except OrderOutcomeUnknown as error:
             self.report(str(error))
         except Exception as error:
@@ -555,7 +647,11 @@ class LiveTrading:
                         if event == "ORDER_TRADE_UPDATE"
                         else OrderEvent.from_algo_update(model)
                     )
-                    await self._call_strategy(method, notification)
+                    # Hooks may await submissions; they must not own the account consumer.
+                    task = asyncio.create_task(self._order_hook(method, notification, generation))
+                    self.tasks.add(task)
+                    task.add_done_callback(self.tasks.discard)
+                    await asyncio.sleep(0)
                 except OrderOutcomeUnknown as error:
                     self.report(str(error))
                 except Exception as error:
@@ -572,7 +668,13 @@ class LiveTrading:
                 if data.get("e") == "kline":
                     await self._market(data)
                 else:
-                    await self._user(data)
+                    self._user_busy += 1
+                    try:
+                        await self._user(data)
+                    finally:
+                        self._user_busy -= 1
+                        if self.gateway is not None:
+                            self.gateway.entry_changed.set()
             except Exception:
                 self._pause()
                 self.recovery.set()
@@ -707,11 +809,15 @@ class LiveTrading:
             )
             self.gateway.rest = self.rest
             self.gateway.on_snapshot = self._bind_snapshot
+            self.gateway.on_submission = self._adopt_submission
             self.gateway.can_send = self._transport_ready
             self.gateway.can_enter = self._entry_ready
+            self.gateway.entry_abort_reason = self._entry_abort_reason
+            self.gateway.entry_deadline = self._entry_deadline
+            self.gateway.entry_context = self._entry_context
             self.gateway.request_recovery = self._request_recovery
-            self.gateway.reference_price = lambda symbol: float(
-                self.indicators[symbol][self.intervals[0]]["Close"].iloc[-1]
+            self.gateway.reference_price = lambda symbol: self._reference_prices.get(
+                symbol, float(self.indicators[symbol][self.intervals[0]]["Close"].iloc[-1])
             )
             # Open streams first: snapshot/backfill runs behind a closed decision gate.
             delay = 1.0
