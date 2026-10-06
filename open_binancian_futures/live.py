@@ -107,6 +107,7 @@ class LiveTrading:
         self.listen_key: str | None = None
         self.generation = 0
         self._snapshot_revision = 0
+        self._account_activity = 0
         self._decision_generation: ContextVar[_Decision | None] = ContextVar(
             "live_decision_generation", default=None
         )
@@ -156,7 +157,7 @@ class LiveTrading:
         decision_generation = self._decision_generation.get()
         if decision_generation is not None and decision_generation.generation != self.generation:
             return False
-        if self.streams is None or self._connecting or self.recovery.is_set():
+        if self.streams is None or self._connecting or self.recovery.is_set() or self.stop_event.is_set() or self.closed:
             return False
         signal = getattr(self.streams, "recovery", None)
         healthy = getattr(self.streams, "healthy", lambda: True)
@@ -171,7 +172,7 @@ class LiveTrading:
         state = self.gateway.snapshot()
         return (
             tuple((p.side, p.amount, p.price) for p in state.positions[symbol]),
-            tuple(sorted((o.order_id, o.type.value, o.side.value, o.quantity)
+            tuple(sorted((o.order_id, o.type.value, o.side.value, o.quantity, o.price)
                          for o in state.orders[symbol] if not o.reduce_only)),
         )
 
@@ -367,6 +368,8 @@ class LiveTrading:
                 self._seen_bars[key] = max(int(candle["t"]), self._seen_bars.get(key, -1))
             if self.gateway is not None:
                 self.gateway.entry_changed.set()
+            if data.get("e") != "kline":
+                self._account_activity += 1
             queue = self.queue if data.get("e") == "kline" else self.user_queue
             queue.put_nowait((generation, data))
         except Exception:
@@ -398,6 +401,7 @@ class LiveTrading:
     async def _retire(self) -> None:
         self._pause()
         self.generation += 1
+        self._reference_prices.clear()
         for queue in (self.queue, self.user_queue):
             while not queue.empty():
                 queue.get_nowait()
@@ -849,6 +853,7 @@ class LiveTrading:
             self.gateway.entry_abort_reason = self._entry_abort_reason
             self.gateway.entry_deadline = self._entry_deadline
             self.gateway.entry_context = self._entry_context
+            self.gateway.account_activity = lambda: self._account_activity
             self.gateway.request_recovery = self._request_recovery
             self.gateway.reference_price = lambda symbol: self._reference_prices.get(
                 symbol, float(self.indicators[symbol][self.intervals[0]]["Close"].iloc[-1])

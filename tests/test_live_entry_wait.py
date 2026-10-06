@@ -8,7 +8,7 @@ import pytest
 from open_binancian_futures.execution import ExecutionConfig
 from open_binancian_futures.models import Balance, Order, Position
 from open_binancian_futures.types import OrderType, PositionSide
-from test_live_runtime import Adapter, INTENT, SYMBOL, candle, eventually, runtime
+from test_live_runtime import Adapter, INTENT, SYMBOL, candle, eventually, gateway, runtime
 
 
 @pytest.mark.asyncio
@@ -324,3 +324,177 @@ async def test_recovery_server_time_corrects_a_fast_local_estimate(tmp_path):
     finally:
         runner.close()
         await task
+
+
+@pytest.mark.asyncio
+async def test_shutdown_logs_cancelled_wait_and_drains_external_submission(tmp_path, caplog):
+    runner, _ = runtime(tmp_path, config=ExecutionConfig(leverage=10))
+    task = asyncio.create_task(runner.run_async())
+    child = None
+    try:
+        await eventually(lambda: runner.active)
+        caplog.set_level('INFO', logger='open_binancian_futures.managed_orders')
+        runner.gateway.can_enter = lambda: False
+        child = asyncio.create_task(runner.gateway.submit_order(INTENT))
+        await eventually(lambda: runner.gateway.entry_counts['waits'] == 1)
+        child.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await child
+        assert runner.gateway.entry_counts['cancelled'] == 1
+        assert 'reason=task_cancelled' in caplog.text
+        assert not runner.adapter.receipts and not runner.journal.pending()
+        # A second externally owned wait must leave before the journal closes.
+        child = asyncio.create_task(runner.gateway.submit_order(INTENT))
+        await eventually(lambda: runner.gateway.entry_counts['waits'] == 2)
+        runner.close()
+        await task
+
+        assert child.done() and not runner.gateway._submissions
+        assert not runner.adapter.receipts
+        await asyncio.gather(child, return_exceptions=True)
+    finally:
+        if child is not None:
+            await asyncio.gather(child, return_exceptions=True)
+        runner.close()
+        await task
+
+
+@pytest.mark.asyncio
+async def test_wait_idle_drains_submission_without_waiting_for_caller_lifetime(tmp_path):
+    from open_binancian_futures.exchange_adapter import OrderOutcomeUnknown
+
+    managed, journal = gateway(tmp_path, Adapter())
+    managed.can_enter = lambda: False
+    release, submitted = asyncio.Event(), asyncio.Event()
+
+    async def caller():
+        try:
+            await managed.submit_order(INTENT)
+        except OrderOutcomeUnknown:
+            pass
+        submitted.set()
+        await release.wait()
+
+    child = asyncio.create_task(caller())
+    draining = None
+    try:
+        await eventually(lambda: managed.entry_counts['waits'] == 1)
+        managed.active = False
+        draining = asyncio.create_task(managed.wait_idle())
+        await asyncio.sleep(.01)
+        managed.entry_changed.set()
+        await submitted.wait()
+        await asyncio.wait_for(asyncio.shield(draining), .2)
+        assert not child.done() and not managed._submissions
+    finally:
+        release.set()
+        await child
+        if draining is not None:
+            await draining
+        journal.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('during_read', [1, 2])
+async def test_external_position_arriving_during_startup_prevents_leverage_change(tmp_path, during_read):
+    adapter = Adapter()
+    runner, _ = runtime(tmp_path, adapter, config=ExecutionConfig(leverage=20), jitter=lambda delay: .01)
+    original = adapter.snapshot
+    reads = [0]
+
+    def external_position(*args):
+        state = original(*args)
+        reads[0] += 1
+        if reads[0] == during_read:
+            adapter.state.positions[SYMBOL].update_positions([Position(SYMBOL, 100, 1, PositionSide.BUY, 10)])
+            runner._enqueue(runner.generation, {'e': 'ACCOUNT_UPDATE', 'a': {'P': [{'s': SYMBOL, 'pa': '1'}]}})
+        return state
+
+    adapter.snapshot = external_position
+    task = asyncio.create_task(runner.run_async())
+    try:
+        await eventually(lambda: runner.active)
+        assert runner.gateway.effective_leverage(SYMBOL) == 10
+        assert ('leverage', 20) not in adapter.mutations
+        assert runner.positions[SYMBOL].find_first().amount == 1
+    finally:
+        runner.close()
+        await task
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('change', ['symbol', 'order_price'])
+async def test_callback_validates_symbols_and_repriced_entry_orders(tmp_path, change):
+    from open_binancian_futures.models import OrderIntent
+
+    adapter = Adapter()
+    adapter.state.orders[SYMBOL].add(Order(SYMBOL, 9, OrderType.LIMIT, PositionSide.BUY, 100, 1))
+    runner, streams = runtime(tmp_path, adapter, config=ExecutionConfig(leverage=10))
+    entered, release, finished = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    results = []
+
+    async def entry(*args):
+        entered.set()
+        await release.wait()
+        if change == 'symbol':
+            with pytest.raises(ValueError, match='outside'):
+                await runner.gateway.submit_order(OrderIntent('TYPO', PositionSide.BUY, OrderType.LIMIT, 100, 1))
+        else:
+            results.append(await runner.gateway.submit_order(INTENT))
+        finished.set()
+
+    runner.strategy.run = entry
+    task = asyncio.create_task(runner.run_async())
+    try:
+        await eventually(lambda: runner.active)
+        streams[-1].emit(candle())
+        await entered.wait()
+        if change == 'order_price':
+            adapter.state.orders[SYMBOL].orders[0].price = 101
+            streams[-1].emit({'e': 'ORDER_TRADE_UPDATE', 'T': 20, 'o': {'s': SYMBOL, 'i': 9, 'X': 'NEW'}})
+            await eventually(lambda: runner.orders[SYMBOL].orders[0].price == 101)
+        release.set()
+        await eventually(finished.is_set)
+        assert not adapter.receipts and not runner.failed
+        assert results == ([False] if change == 'order_price' else [])
+        assert 'TYPO' not in runner.orders and 'TYPO' not in runner.positions
+    finally:
+        release.set()
+        runner.close()
+        await task
+
+
+@pytest.mark.asyncio
+async def test_recovery_reference_price_uses_recovered_close_before_first_stream_price(tmp_path):
+    runner, streams = runtime(tmp_path, config=ExecutionConfig(leverage=10))
+    task = asyncio.create_task(runner.run_async())
+    try:
+        await eventually(lambda: runner.active)
+        forming = candle()
+        forming['k'].update(x=False, c='100')
+        streams[-1].emit(forming)
+        runner.adapter.cutoff = 180000
+        runner.adapter.history = lambda symbol, interval, start, end, limit=1000: [
+            [t, '200', '201', '199', '200', '1', t + 59999, 0, 0, 0, 0, 0]
+            for t in (60000, 120000) if t >= start]
+        runner.recovery.set()
+        await eventually(lambda: len(streams) == 2 and runner.active)
+        assert runner.gateway.reference_price(SYMBOL) == 200
+    finally:
+        runner.close()
+        await task
+
+
+@pytest.mark.asyncio
+async def test_exchange_rejection_log_is_confirmed_not_pre_dispatch(tmp_path, caplog):
+    from open_binancian_futures.exchange_adapter import OrderRejected
+
+    managed, journal = gateway(tmp_path, Adapter())
+    try:
+        caplog.set_level('INFO', logger='open_binancian_futures.managed_orders')
+        managed.adapter.submit_error = OrderRejected('margin')
+        assert not await managed.submit_order(INTENT)
+        assert 'reason=exchange_rejected' in caplog.text and 'stage=confirmed' in caplog.text
+        assert not journal.pending() and managed.snapshot().balance.reserved_margin == 0
+    finally:
+        journal.close()

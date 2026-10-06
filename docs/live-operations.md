@@ -124,6 +124,9 @@ cannot block account processing or another protection hook. Hooks start in event
 order and may overlap across awaits; they must reread current synchronized state.
 Each entry wait/result is logged with its reason, decision/state versions, stage,
 elapsed time and counters; webhook deduplication does not hide these records.
+Task cancellation propagates `CancelledError`; a pre-dispatch cancellation is logged
+without treating dispatched outcomes as definitive cancellation. Shutdown drains
+submission calls before closing the journal, without waiting for unrelated caller work.
 Ordering is preserved within each queue. REST waits run in serialized worker-thread
 calls; socket reception and timers continue while requests wait. Account updates
 and orders share a lock to preserve snapshot/reservation consistency. Synchronous

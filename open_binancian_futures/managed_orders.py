@@ -61,11 +61,15 @@ class ManagedOrderGateway:
         self._confirmed_receipts: dict[str, OrderReceipt] = {}
         self._mutex = asyncio.Lock()
         self._refresh_waiters = 0
+        self._submissions = 0
+        self._submissions_idle = asyncio.Event()
+        self._submissions_idle.set()
         self.rest = RestCalls()
         self.entry_changed = asyncio.Event()
         self.entry_abort_reason: Callable[[OrderIntent], str | None] = lambda intent: None
         self.entry_deadline: Callable[[], float | None] = lambda: None
         self.entry_context: Callable[[], str] = lambda: "decision=standalone"
+        self.account_activity: Callable[[], int] = lambda: 0
         self.entry_counts = {"waits": 0, "cancelled": 0, "submitted": 0}
         self._leverage_initialized: set[str] = set()
 
@@ -195,6 +199,8 @@ class ManagedOrderGateway:
         """Drain submissions from strategy-created tasks before closing the journal."""
         async with self._mutex:
             pass
+        while self._submissions:
+            await self._submissions_idle.wait()
 
     async def initialize_leverage(self) -> None:
         """Apply startup configuration once, retaining adopted exposure unchanged."""
@@ -203,6 +209,12 @@ class ManagedOrderGateway:
                 if symbol in self._leverage_initialized:
                     continue
                 state = self.snapshot()
+                if state.leverage[symbol] != self.config.leverage:
+                    revision = self.account_activity()
+                    await self._reconcile()
+                    state = self.snapshot()
+                else:
+                    revision = self.account_activity()
                 if (
                     state.positions[symbol]
                     or any(not order.reduce_only for order in state.orders[symbol])
@@ -211,7 +223,12 @@ class ManagedOrderGateway:
                     self._leverage_initialized.add(symbol)
                     continue
                 if state.leverage[symbol] != self.config.leverage:
-                    await self.rest.call(self.adapter.set_leverage, symbol, self.config.leverage)
+                    def authorize() -> None:
+                        # ponytail: any account event invalidates startup; use symbol revisions if traffic stalls it.
+                        if revision != self.account_activity() or not self.can_send():
+                            raise _EntryPending("Startup account activity requires fresh synchronization")
+
+                    await self.rest.call(self.adapter.set_leverage, symbol, self.config.leverage, check=authorize)
                     confirmed = await self.rest.call(self.adapter.leverage, symbol)
                     if confirmed != self.config.leverage:
                         raise OrderOutcomeUnknown(f"Leverage change not confirmed: {symbol}")
@@ -221,8 +238,6 @@ class ManagedOrderGateway:
 
     def _prepare_intent(self, intent: OrderIntent) -> tuple[OrderIntent, float]:
         """Validate and normalize fields without using any leverage-dependent size."""
-        if intent.symbol not in self.symbols:
-            raise ValueError("Order symbol is outside managed symbols")
         if intent.order_type == OrderType.LIQUIDATION:
             raise ValueError("Liquidation is not a placement order type")
         if intent.order_type == OrderType.MARKET and (
@@ -385,6 +400,8 @@ class ManagedOrderGateway:
             raise OrderOutcomeUnknown("Managed runtime is paused")
 
     def _check_submission(self, intent: OrderIntent) -> None:
+        if intent.symbol not in self.symbols:
+            raise ValueError("Order symbol is outside managed symbols")
         entry = not (intent.reduce_only or intent.close_position)
         if entry:
             reason = self.entry_abort_reason(intent)
@@ -394,15 +411,33 @@ class ManagedOrderGateway:
         if entry and (self._refresh_waiters or not self.can_enter()):
             raise _EntryPending("account_refresh" if self._refresh_waiters else "account_events")
 
-    def _log_entry(self, action: str, intent: OrderIntent, started: float, reason: str) -> None:
+    def _log_entry(self, action: str, intent: OrderIntent, started: float, reason: str, *, dispatched: bool = False) -> None:
+        self.entry_counts["waits" if action == "waiting" else action] += 1
         LOGGER.info(
             "Entry %s: stage=%s symbol=%s reason=%s %s wait_seconds=%.3f counts=%s",
-            action, "confirmed" if action == "submitted" else "pre_dispatch", intent.symbol, reason, self.entry_context(), self.clock() - started,
+            action, "confirmed" if dispatched or action == "submitted" else "pre_dispatch", intent.symbol, reason, self.entry_context(), self.clock() - started,
             self.entry_counts,
         )
 
     async def submit_order(self, intent: OrderIntent) -> bool:
+        self._submissions += 1
+        self._submissions_idle.clear()
+        try:
+            return await self._submit_when_ready(intent)
+        finally:
+            self._submissions -= 1
+            if not self._submissions:
+                self._submissions_idle.set()
+            self.entry_changed.set()
+
+    async def _submit_when_ready(self, intent: OrderIntent) -> bool:
         started = self.clock()
+        dispatched = False
+
+        def on_dispatch() -> None:
+            nonlocal dispatched
+            dispatched = True
+
         deadline = self.entry_deadline()
         if deadline is None:
             deadline = started + 15  # Non-candle callers have a bounded wait, no replay.
@@ -412,24 +447,29 @@ class ManagedOrderGateway:
             try:
                 self._check_submission(intent)
                 async with self._mutex:
-                    result = await self._submit_order(intent)
+                    result = await self._submit_order(intent, on_dispatch)
                 if not (intent.reduce_only or intent.close_position):
-                    self.entry_counts["submitted" if result else "cancelled"] += 1
                     self._log_entry("submitted" if result else "cancelled", intent, started,
-                                    "confirmed" if result else "validation")
+                                    "confirmed" if result else "exchange_rejected" if dispatched else "validation",
+                                    dispatched=dispatched)
                 return result
+            except OrderOutcomeUnknown:
+                if not dispatched and not self.active and not (intent.reduce_only or intent.close_position):
+                    self._log_entry("cancelled", intent, started, "runtime_paused")
+                raise
+            except asyncio.CancelledError:
+                if not dispatched and not (intent.reduce_only or intent.close_position):
+                    self._log_entry("cancelled", intent, started, "task_cancelled")
+                raise
             except _EntryCancelled as error:
-                self.entry_counts["cancelled"] += 1
                 self._log_entry("cancelled", intent, started, str(error))
                 return False
             except _EntryPending as error:
                 if not waited:
                     waited = True
-                    self.entry_counts["waits"] += 1
                     self._log_entry("waiting", intent, started, str(error))
                 remaining = deadline - self.clock()
                 if remaining <= 0:
-                    self.entry_counts["cancelled"] += 1
                     self._log_entry("cancelled", intent, started, "wait_limit")
                     return False
                 try:
@@ -437,8 +477,11 @@ class ManagedOrderGateway:
                     await asyncio.wait_for(self.entry_changed.wait(), min(.1, remaining))
                 except TimeoutError:
                     pass
+                except asyncio.CancelledError:
+                    self._log_entry("cancelled", intent, started, "task_cancelled")
+                    raise
 
-    async def _submit_order(self, intent: OrderIntent) -> bool:
+    async def _submit_order(self, intent: OrderIntent, on_dispatch: Callable[[], None]) -> bool:
         self._check_submission(intent)
         if intent.symbol in self.blocked:
             await self._refresh_for_protection(intent)
@@ -482,6 +525,7 @@ class ManagedOrderGateway:
                 if self.reference_price(intent.symbol) != reference:
                     raise _EntryPending("reference_price_changed")
             dispatched = True
+            on_dispatch()
 
         try:
             receipt = await self.rest.call(
