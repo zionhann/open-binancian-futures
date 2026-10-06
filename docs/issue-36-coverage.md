@@ -36,6 +36,12 @@ only the affected entity. REST fences exclude cached leverage, mode or orders if
 the read did not query them. Actual algo-child execution resolves its parent even
 when execution arrives before linkage. Trigger alone never fabricates a fill.
 `TRADE_LITE` is ignored so it cannot duplicate ordinary realized-profit accounting.
+Order namespace follows the event/REST source, including regular liquidation orders.
+Conditional limit price and trigger price remain separate and participate in exposure checks.
+Invalid position sides, trigger prices and timestamps are rejected before profit mutation.
+An authoritative flat-position read clears the protection hold; a balance-only read cannot.
+Untracked position-only events also invalidate account-wide free balance.
+These boundaries are covered by `tests/test_live_review_merge.py`.
 
 Run the focused cases with:
 

@@ -172,7 +172,7 @@ class LiveTrading:
         state = self.gateway.snapshot()
         return (
             tuple((p.side, p.amount, p.price) for p in state.positions[symbol]),
-            tuple(sorted((o.order_id, o.type.value, o.side.value, o.quantity, o.price)
+            tuple(sorted((o.order_id, o.type.value, o.side.value, o.quantity, o.price, o.is_algo, o.trigger_price)
                          for o in state.orders[symbol] if not o.reduce_only)),
         )
 
@@ -242,9 +242,7 @@ class LiveTrading:
         algo = intent.order_type not in {OrderType.MARKET, OrderType.LIMIT}
 
         def own(order: tuple[Any, ...]) -> bool:
-            return order[0] == receipt.order_id and (
-                order[1] not in {OrderType.MARKET.value, OrderType.LIMIT.value}
-            ) == algo
+            return order[0] == receipt.order_id and order[5] == algo
 
         orders = tuple(sorted(tuple(o for o in orders if not own(o)) +
                               tuple(o for o in current_orders if own(o))))
@@ -623,7 +621,10 @@ class LiveTrading:
             raw_identifier = order.get("i" if event == "ORDER_TRADE_UPDATE" else "aid")
             identifier = self.gateway._integer(raw_identifier, positive=True) if raw_identifier is not None else 0
             key = (event, symbol, identifier)
-            version = int(order.get("T", data.get("T", data.get("E", 0))))
+            version = self.gateway._integer(order.get("T", data.get("T", data.get("E", 0))))
+            for field in ("E", "T"):
+                if field in data:
+                    self.gateway._integer(data[field])
             cumulative = self.gateway._number(order.get("z", 0), nonnegative=True)
             realized = self.gateway._number(order.get("rp", 0))
             if cumulative > 0 and not identifier:
@@ -634,8 +635,11 @@ class LiveTrading:
                 OrderType(order["o"])
             if order.get("S") is not None:
                 PositionSide(order["S"])
-            if order.get("p") is not None:
-                self.gateway._number(order["p"], nonnegative=True)
+            for field in ("p", "tp" if event == "ALGO_UPDATE" else "sp"):
+                if order.get(field) is not None:
+                    self.gateway._number(order[field], nonnegative=True)
+            if order.get("ps") is not None and order["ps"] != "BOTH":
+                raise ValueError("Unsupported order position side")
             for flag in ("R", "cp"):
                 if order.get(flag) is not None and not isinstance(order[flag], bool):
                     raise ValueError("Invalid order flag")
@@ -672,7 +676,7 @@ class LiveTrading:
             hook_data = (symbol, order, status, identifier)
         elif (
             event == "ACCOUNT_UPDATE"
-            and not any(p.get("s") in self.symbols for p in data.get("a", {}).get("P", []))
+            and not data.get("a", {}).get("P")
             and not data.get("a", {}).get("B")
         ):
             return
@@ -704,8 +708,7 @@ class LiveTrading:
             # the fresh snapshot. Never invoke entry hooks for it.
             present = any(
                 item.order_id == identifier
-                and (item.type in {OrderType.LIMIT, OrderType.MARKET})
-                == (event == "ORDER_TRADE_UPDATE")
+                and item.is_algo == (event == "ALGO_UPDATE")
                 for item in self.orders[symbol]
             )
             if status != "NEW" or present:

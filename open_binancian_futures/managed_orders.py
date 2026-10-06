@@ -192,6 +192,7 @@ class ManagedOrderGateway:
         self._account_updated_at = observed_at
         self._account_dirty = False
         self._positions_dirty.clear()
+        self._risk_symbols.difference_update(s for s in self.symbols if not state.positions[s])
         self.on_snapshot(state)
 
     def reconcile(self, *, event: str | None = None) -> None:
@@ -306,6 +307,7 @@ class ManagedOrderGateway:
             self._account_updated_at = observed_at
         if positions:
             self._positions_dirty.difference_update(symbols)
+            self._risk_symbols.difference_update(s for s in symbols if not state.positions[s])
         self.state = state
         for key, version in fence.items():
             if ((balance and key[0] == "balance") or
@@ -353,7 +355,7 @@ class ManagedOrderGateway:
         book = state.orders[intent.symbol]
         algo = self.is_algo(intent)
         existing = [o for o in book if o.order_id == receipt.order_id and
-                    (o.type not in {OrderType.MARKET, OrderType.LIMIT}) == algo]
+                    o.is_algo == algo]
         if not update_order and bool(existing) != outstanding:
             record = next(r for r in self.journal.pending() if r.client_order_id == identifier)
             self.journal.update(identifier, "cancel_unknown" if record.state == "cancel_unknown" else "unknown")
@@ -366,7 +368,8 @@ class ManagedOrderGateway:
             if outstanding:
                 book.add(Order(intent.symbol, receipt.order_id, intent.order_type, intent.side,
                                intent.price or 0., max(0., (intent.quantity or 0.) - (receipt.executed_quantity or 0.)),
-                               reduce_only=intent.reduce_only or intent.close_position, gtd=intent.gtd))
+                               reduce_only=intent.reduce_only or intent.close_position, gtd=intent.gtd,
+                               algo=algo, trigger_price=intent.price if algo else None))
         self.journal.update(identifier, "accepted" if outstanding else "resolved")
         if not outstanding:
             self._terminal_orders.add(("ALGO_UPDATE" if algo else "ORDER_TRADE_UPDATE", f"{intent.symbol}:{receipt.order_id}"))
@@ -514,7 +517,11 @@ class ManagedOrderGateway:
                 side = PositionSide(value["S"])
                 quantity = self._number(value["q"], nonnegative=True)
                 filled = self._number(value.get("z", 0), nonnegative=True)
-                price = self._number(value.get("tp", value["p"]) if algo else value["p"], nonnegative=True)
+                price = self._number(value["p"], nonnegative=True)
+                raw_trigger = value.get("tp" if algo else "sp")
+                trigger = self._number(raw_trigger, nonnegative=True) if raw_trigger is not None else 0.
+                if algo and not price:
+                    price = trigger
                 if filled > quantity or value["ps"] != "BOTH" or not isinstance(value["R"], bool) or not isinstance(value.get("cp", False), bool):
                     raise ValueError("Invalid order event")
                 status = str(value["X"])
@@ -524,7 +531,7 @@ class ManagedOrderGateway:
                 key = (str(event), f"{symbol}:{order_id}")
                 if outstanding and key in self._terminal_orders:
                     return True
-                signature = (quantity, filled, price, kind, side, status, value["R"], value.get("cp", False),
+                signature = (quantity, filled, price, trigger, kind, side, status, value["R"], value.get("cp", False),
                              str(value.get(client_field)), str(value.get("ai")), str(value.get("t")),
                              self._integer(data.get("T", version)))
                 if not await self._accept_entity(key, version, data, signature):
@@ -537,10 +544,11 @@ class ManagedOrderGateway:
                 if symbol in self.symbols:
                     book = state.orders[symbol]
                     book.orders[:] = [o for o in book if not (o.order_id == order_id and
-                                     (o.type not in {OrderType.MARKET, OrderType.LIMIT}) == algo)]
+                                     o.is_algo == algo)]
                     if outstanding:
                         book.add(Order(symbol, order_id, kind, side, price, quantity - filled,
-                                       reduce_only=value["R"] or bool(value.get("cp")), gtd=value.get("gtd")))
+                                       reduce_only=value["R"] or bool(value.get("cp")), gtd=value.get("gtd"),
+                                       algo=algo, trigger_price=trigger or None))
                     if not algo and filled > 0 and self._integer(value.get("T", data.get("T", version))) > self._position_transactions.get(symbol, -1):
                         self._positions_dirty.add(symbol)
                     if algo and value.get("ai"):
@@ -585,7 +593,7 @@ class ManagedOrderGateway:
             state = self.snapshot()
             self._terminal_orders.add(("ALGO_UPDATE", f"{symbol}:{parent}"))
             state.orders[symbol].orders[:] = [o for o in state.orders[symbol] if not
-                (o.order_id == parent and o.type not in {OrderType.MARKET, OrderType.LIMIT})]
+                (o.order_id == parent and o.is_algo)]
             identifier = self._order_ids.get((symbol, True, parent))
             record = next((r for r in self.journal.pending() if r.client_order_id == identifier), None)
             if record is not None:

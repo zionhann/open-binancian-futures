@@ -88,6 +88,8 @@ def _create_order_from_regular(item: AllOrdersResponse, symbol: str) -> Order:
         quantity=max(0.0, float(get_or_raise(item.orig_qty)) - float(item.executed_qty or 0)),
         reduce_only=bool(item.reduce_only),
         gtd=item.good_till_date,
+        algo=False,
+        trigger_price=float(item.stop_price or 0) or None,
     )
 
 
@@ -105,6 +107,8 @@ def _create_order_from_algo(
         quantity=float(item.quantity or 0),
         reduce_only=bool(item.reduce_only or item.close_position),
         gtd=item.good_till_date,
+        algo=True,
+        trigger_price=float(item.trigger_price or 0) or None,
     )
 
 

@@ -186,6 +186,14 @@ class Order:
     created_at: Timestamp | None = None
     reduce_only: bool = False
     stop_triggered: bool = False
+    algo: bool | None = None
+    trigger_price: float | None = None
+
+    @property
+    def is_algo(self) -> bool:
+        return self.algo if self.algo is not None else self.type not in {
+            OrderType.MARKET, OrderType.LIMIT, OrderType.LIQUIDATION,
+        }
 
     def __repr__(self) -> str:
         return (
@@ -411,6 +419,8 @@ class OrderEvent:
             quantity=self.quantity or 0.0,
             gtd=self.gtd or None,
             reduce_only=bool(self.is_reduce_only),
+            algo=self.source == EventType.ALGO_UPDATE,
+            trigger_price=self.stop_price,
         )
 
     def can_convert_to_order(self) -> bool:
