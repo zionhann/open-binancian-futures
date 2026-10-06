@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from test_live_runtime import Adapter, Streams, SYMBOL, candle, gateway, runtime
+from test_live_runtime import Adapter, Streams, SYMBOL, candle, eventually, gateway, runtime
 from open_binancian_futures.execution import ExecutionConfig
 from open_binancian_futures.models import Balance, Order, OrderIntent
 from open_binancian_futures.types import OrderType, PositionSide
@@ -52,7 +52,7 @@ async def test_regular_fill_does_not_suppress_algo_with_same_id(tmp_path):
             },
         }
     )
-    assert hooks == ["ALGO_UPDATE"]
+    await eventually(lambda: hooks == ["ALGO_UPDATE"])
     journal.close()
 
 
@@ -90,7 +90,7 @@ async def test_new_hooks_require_matching_order_domain_and_deduplicate_separatel
     await runner._user(algo)
     await runner._user(regular)
     await runner._user(algo)
-    assert hooks == ["ORDER_TRADE_UPDATE", "ALGO_UPDATE"]
+    await eventually(lambda: hooks == ["ORDER_TRADE_UPDATE", "ALGO_UPDATE"])
     journal.close()
 
 

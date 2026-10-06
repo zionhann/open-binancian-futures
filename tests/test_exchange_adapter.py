@@ -26,6 +26,13 @@ def test_receipt_real_model_flat_and_envelope():
             normalize_receipt(raw)
 
 
+@pytest.mark.parametrize('field,value', [('executedQty', 'nan'), ('avgPrice', 'inf'),
+                                        ('executedQty', True), ('avgPrice', -1)])
+def test_receipt_rejects_invalid_execution_numbers(field, value):
+    with pytest.raises(OrderOutcomeUnknown, match='Malformed'):
+        normalize_receipt({'orderId': 123, 'status': 'FILLED', field: value})
+
+
 def test_submit_once_unknown_and_explicit_rejection():
     rest = Mock()
     adapter = BinanceExchangeAdapter(SimpleNamespace(rest_api=rest))

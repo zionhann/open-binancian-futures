@@ -7,8 +7,10 @@ import time
 from collections.abc import Callable, Sequence
 from dataclasses import replace
 from decimal import ROUND_DOWN, ROUND_HALF_UP, Decimal
+from typing import Any
 
 from .exchange_adapter import (
+    BinanceExchangeAdapter,
     ExchangeAdapter,
     ExchangeSnapshot,
     OrderOutcomeUnknown,
@@ -18,8 +20,8 @@ from .exchange_adapter import (
 )
 from .execution import ExecutionConfig
 from .live_journal import JournalOrder, OrderJournal
-from .models import OrderIntent
-from .types import OrderType
+from .models import Order, OrderIntent, Position
+from .types import OrderType, PositionSide
 
 LOGGER = logging.getLogger(__name__)
 
@@ -72,6 +74,22 @@ class ManagedOrderGateway:
         self.account_activity: Callable[[], int] = lambda: 0
         self.entry_counts = {"waits": 0, "cancelled": 0, "submitted": 0}
         self._leverage_initialized: set[str] = set()
+        self._account_dirty = False
+        self._positions_dirty: set[str] = set()
+        self._entry_holds: set[str] = set()
+        self._risk_symbols: set[str] = set()
+        self._position_transactions: dict[str, int] = {}
+        self._received_position_transactions: dict[str, int] = {}
+        self._terminal_orders: set[tuple[str, str]] = set()
+        self._entity_versions: dict[tuple[str, str], int] = {}
+        self._received_versions: dict[tuple[str, str], int] = {}
+        self._receive_sequence = 0
+        self._received_sequences: dict[tuple[str, str], int] = {}
+        self._snapshot_sequences: dict[tuple[str, str], int] = {}
+        self._entity_updates: dict[tuple[str, str], tuple[int, set[tuple[Any, ...]], tuple[Any, ...]]] = {}
+        self._order_ids: dict[tuple[str, bool, int], str] = {}
+        self.algo_orders: dict[tuple[str, int], int] = {}
+        self.wallet_balances: dict[str, tuple[float, float]] = {}
 
     def snapshot(self) -> ExchangeSnapshot:
         if self.state is None:
@@ -97,6 +115,7 @@ class ManagedOrderGateway:
                     record.client_order_id,
                     algo=self.is_algo(record.intent),
                 )
+                BinanceExchangeAdapter._validate_identity(receipt, record.intent.symbol, record.client_order_id)
                 if receipt.status is None:
                     raise OrderOutcomeUnknown("Query missing status")
                 outcomes[record.client_order_id] = receipt
@@ -151,6 +170,9 @@ class ManagedOrderGateway:
             if outcome is None:
                 state.balance.restore_margin(record.client_order_id, record.margin)
             else:
+                self._order_ids[(record.intent.symbol, self.is_algo(record.intent), outcome.order_id)] = record.client_order_id
+                if outcome.status in {"FILLED", "CANCELED", "EXPIRED", "EXPIRED_IN_MATCH", "REJECTED", "FINISHED"}:
+                    self._terminal_orders.add(("ALGO_UPDATE" if self.is_algo(record.intent) else "ORDER_TRADE_UPDATE", f"{record.intent.symbol}:{outcome.order_id}"))
                 outstanding = outcome.status in {
                     "NEW",
                     "PARTIALLY_FILLED",
@@ -159,6 +181,7 @@ class ManagedOrderGateway:
                 }
                 if record.state == "cancel_unknown" and outstanding:
                     blocked.add(record.intent.symbol)
+                    state.balance.restore_margin(record.client_order_id, record.margin)
                     self.journal.update(record.client_order_id, "cancel_unknown")
                 else:
                     self.journal.update(
@@ -167,6 +190,8 @@ class ManagedOrderGateway:
                     )
         self.state, self.blocked = state, blocked
         self._account_updated_at = observed_at
+        self._account_dirty = False
+        self._positions_dirty.clear()
         self.on_snapshot(state)
 
     def reconcile(self, *, event: str | None = None) -> None:
@@ -180,11 +205,27 @@ class ManagedOrderGateway:
 
     async def _reconcile(self, *, event: str | None = None) -> None:
         records = self.journal.pending()
+        LOGGER.info("Account REST: reason=%s symbols=%s pending_orders=%s", event or "full_reconciliation", self.symbols, len(records))
         outcomes, blocked = await self.rest.call(self._query_pending, records)
         self._record_unknown(records, outcomes)
         observed_at = self.clock()
+        scoped = (hasattr(self.adapter, "refresh_snapshot") and self.state is not None and
+                  event in {"ACCOUNT_UPDATE", "ORDER_TRADE_UPDATE", "ALGO_UPDATE"} and
+                  not blocked and all(r.state == "accepted" for r in records))
+        orders_read = not scoped or event != "ACCOUNT_UPDATE" or bool(records)
+        fence = {k: v for k, v in self._received_versions.items() if
+                 k[0] in {"position", "balance"} or
+                 (k[0] in {"ORDER_TRADE_UPDATE", "ALGO_UPDATE"} and orders_read) or
+                 (k[0] == "leverage" and not scoped)}
+        transactions = dict(self._received_position_transactions)
+        sequences = dict(self._received_sequences)
         state = await self.rest.call(self._read_snapshot, records, blocked, event)
         self._apply_reconciliation(records, outcomes, blocked, state, observed_at)
+        for key, version in fence.items():
+            self._entity_versions[key] = max(version, self._entity_versions.get(key, -1))
+            self._snapshot_sequences[key] = max(sequences.get(key, 0), self._snapshot_sequences.get(key, 0))
+            if key[0] == "position":
+                self._position_transactions[key[1]] = max(transactions.get(key[1], 0), self._position_transactions.get(key[1], 0))
 
     async def reconcile_async(self, *, event: str | None = None) -> None:
         self._refresh_waiters += 1
@@ -194,6 +235,435 @@ class ManagedOrderGateway:
         finally:
             self._refresh_waiters -= 1
             self.entry_changed.set()
+
+    @staticmethod
+    def _number(value: Any, *, nonnegative: bool = False) -> float:
+        if isinstance(value, bool):
+            raise ValueError("Boolean in numeric event field")
+        result = float(value)
+        if not math.isfinite(result) or (nonnegative and result < 0):
+            raise ValueError("Invalid numeric event field")
+        return result
+
+    @staticmethod
+    def _integer(value: Any, *, positive: bool = False) -> int:
+        if isinstance(value, bool) or not isinstance(value, (int, str)):
+            raise ValueError("Invalid integer event field")
+        result = int(value)
+        if str(result) != str(value) or result < (1 if positive else 0):
+            raise ValueError("Invalid integer event field")
+        return result
+
+    @staticmethod
+    def _event_entities(data: dict[str, Any]) -> list[tuple[str, str]]:
+        event = data.get("e")
+        if event == "ACCOUNT_UPDATE":
+            account = data.get("a", {})
+            return [("balance", str(b["a"])) for b in account.get("B", [])] + [
+                ("position", str(p["s"])) for p in account.get("P", [])]
+        if event == "ACCOUNT_CONFIG_UPDATE":
+            return ([("leverage", str(data["ac"]["s"]))] if "ac" in data else []) + (
+                [("mode", "multi_asset")] if "ai" in data else [])
+        if event in {"ORDER_TRADE_UPDATE", "ALGO_UPDATE"}:
+            order = data.get("o", {})
+            identifier = order.get("i") if event == "ORDER_TRADE_UPDATE" else order.get("aid")
+            return [(str(event), f"{order.get('s')}:{identifier}")]
+        return []
+
+    def observe_received(self, data: dict[str, Any]) -> None:
+        self._receive_sequence += 1
+        data["__obf_sequence"] = self._receive_sequence
+        version = self._integer(data.get("E", data.get("T", 0)))
+        for key in self._event_entities(data):
+            self._received_sequences[key] = self._receive_sequence
+            if version >= self._received_versions.get(key, -1):
+                self._received_versions[key] = version
+                if key[0] == "position":
+                    self._received_position_transactions[key[1]] = self._integer(data.get("T", version))
+
+    async def _refresh_event(
+        self, symbols: Sequence[str], *, balance: bool = False,
+        positions: bool = False, orders: bool = False, reason: str,
+        confirmed: set[str] | None = None,
+    ) -> None:
+        refresh = getattr(self.adapter, "refresh_event", None)
+        LOGGER.info("Account REST: reason=%s symbols=%s balance=%s positions=%s orders=%s",
+                    reason, tuple(symbols), balance, positions, orders)
+        if refresh is None:
+            await self._reconcile()
+            return
+        fence = dict(self._received_versions)
+        transactions = dict(self._received_position_transactions)
+        sequences = dict(self._received_sequences)
+        observed_at = self.clock()
+        state = await self.rest.call(refresh, self.snapshot(), symbols, self.config,
+                                     balance=balance, positions=positions, orders=orders)
+        if balance:
+            for record in self.journal.pending():
+                if record.state in {"prepared", "unknown", "cancel_unknown"} and record.client_order_id not in (confirmed or set()):
+                    state.balance.restore_margin(record.client_order_id, record.margin)
+            self._account_dirty = False
+            self._account_updated_at = observed_at
+        if positions:
+            self._positions_dirty.difference_update(symbols)
+        self.state = state
+        for key, version in fence.items():
+            if ((balance and key[0] == "balance") or
+                (positions and key[0] == "position" and key[1] in symbols) or
+                (orders and key[0] in {"ORDER_TRADE_UPDATE", "ALGO_UPDATE"} and key[1].split(":")[0] in symbols)):
+                self._entity_versions[key] = max(version, self._entity_versions.get(key, -1))
+                self._snapshot_sequences[key] = max(sequences.get(key, 0), self._snapshot_sequences.get(key, 0))
+                if key[0] == "position":
+                    self._position_transactions[key[1]] = max(transactions.get(key[1], 0), self._position_transactions.get(key[1], 0))
+        self.on_snapshot(state)
+
+    async def check_account_modes(self) -> None:
+        position_mode = await self.rest.call(self.adapter.account_mode)
+        if not isinstance(position_mode, bool):
+            raise ValueError("Invalid account position mode")
+        if position_mode:
+            self._entry_holds.add("unsupported_position_mode")
+            raise ValueError("Hedge mode is unsupported; use one-way account mode")
+        self._entry_holds.discard("unsupported_position_mode")
+        query = getattr(self.adapter, "multi_assets_mode", None)
+        if query is None:
+            return
+        key = ("mode", "multi_asset")
+        fence = self._received_versions.get(key, -1)
+        sequence = self._received_sequences.get(key, 0)
+        mode = await self.rest.call(query)
+        if not isinstance(mode, bool):
+            raise ValueError("Invalid multi-assets account mode")
+        if mode:
+            self._entry_holds.add("unsupported_multi_asset_mode")
+            self.report("Multi-assets mode is unsupported; new entries paused")
+        else:
+            self._entry_holds.discard("unsupported_multi_asset_mode")
+        self._entity_versions[key] = max(fence, self._entity_versions.get(key, -1))
+        self._snapshot_sequences[key] = max(sequence, self._snapshot_sequences.get(key, 0))
+
+    def _apply_receipt(
+        self, intent: OrderIntent, identifier: str, receipt: OrderReceipt, *, update_order: bool = True,
+    ) -> None:
+        """Known acknowledgement changes the journal, never fabricates free balance."""
+        outstanding = receipt.status in {"NEW", "PARTIALLY_FILLED", "TRIGGERING", "TRIGGERED"}
+        self._order_ids[(intent.symbol, self.is_algo(intent), receipt.order_id)] = identifier
+        self._confirmed_receipts[identifier] = receipt
+        state = self.snapshot()
+        book = state.orders[intent.symbol]
+        algo = self.is_algo(intent)
+        existing = [o for o in book if o.order_id == receipt.order_id and
+                    (o.type not in {OrderType.MARKET, OrderType.LIMIT}) == algo]
+        if not update_order and bool(existing) != outstanding:
+            record = next(r for r in self.journal.pending() if r.client_order_id == identifier)
+            self.journal.update(identifier, "cancel_unknown" if record.state == "cancel_unknown" else "unknown")
+            self.blocked.add(intent.symbol)
+            state.balance.restore_margin(identifier, record.margin)
+            self.report(f"Order state inconsistent: {intent.symbol} {identifier}; reconcile original ID")
+            return
+        if update_order:
+            book.orders[:] = [o for o in book if o not in existing]
+            if outstanding:
+                book.add(Order(intent.symbol, receipt.order_id, intent.order_type, intent.side,
+                               intent.price or 0., max(0., (intent.quantity or 0.) - (receipt.executed_quantity or 0.)),
+                               reduce_only=intent.reduce_only or intent.close_position, gtd=intent.gtd))
+        self.journal.update(identifier, "accepted" if outstanding else "resolved")
+        if not outstanding:
+            self._terminal_orders.add(("ALGO_UPDATE" if algo else "ORDER_TRADE_UPDATE", f"{intent.symbol}:{receipt.order_id}"))
+            state.balance.consume_margin(identifier, state.balance.reserved_margin_for(identifier))
+        if not any(r.intent.symbol == intent.symbol and r.state in {"prepared", "unknown", "cancel_unknown"}
+                   for r in self.journal.pending()):
+            self.blocked.discard(intent.symbol)
+        if receipt.status == "REJECTED" and (intent.reduce_only or intent.close_position):
+            self._risk_symbols.add(intent.symbol)
+            self.report(f"Protection order rejected: {intent.symbol} order_id={receipt.order_id}")
+        self._account_dirty = True
+        if not algo and (receipt.status in {"PARTIALLY_FILLED", "FILLED"} or (receipt.executed_quantity or 0) > 0):
+            self._positions_dirty.add(intent.symbol)
+        self.on_snapshot(state)
+
+    async def _accept_entity(
+        self, key: tuple[str, str], version: int, data: dict[str, Any], signature: tuple[Any, ...],
+    ) -> bool:
+        sequence = data.get("__obf_sequence")
+        if ((sequence is not None and sequence <= self._snapshot_sequences.get(key, 0)) or
+            version < self._entity_versions.get(key, -1)):
+            return False
+        cached_version, seen, latest = self._entity_updates.get(key, (version, set(), ()))
+        if cached_version != version:
+            seen = set()
+        if signature in seen:
+            if signature != latest:
+                # Identical reversions and replay are indistinguishable within one ms.
+                kind, entity = key
+                if kind == "position" and entity in self.symbols:
+                    await self._refresh_event([entity], positions=True, reason="same_time_position_ambiguity")
+                elif kind == "balance":
+                    await self._refresh_event((), balance=True, reason="same_time_balance_ambiguity")
+                elif kind == "leverage" and entity in self.symbols:
+                    self.snapshot().leverage[entity] = await self.rest.call(self.adapter.leverage, entity)
+                    for position in self.snapshot().positions[entity]:
+                        position.leverage = self.snapshot().leverage[entity]
+                    self._account_dirty = True
+                    self.on_snapshot(self.snapshot())
+                elif kind == "mode":
+                    await self.check_account_modes()
+                    self._account_dirty = True
+                elif kind in {"ORDER_TRADE_UPDATE", "ALGO_UPDATE"}:
+                    symbol = entity.split(":")[0]
+                    if symbol in self.symbols:
+                        await self._refresh_event([symbol], orders=True, reason="same_time_order_ambiguity")
+            return False
+        seen.add(signature)
+        self._entity_updates[key] = (version, seen, signature)
+        self._entity_versions[key] = version
+        return True
+
+    async def apply_event(self, data: dict[str, Any]) -> bool:
+        """Apply complete events under the same lock as reservations and REST reads."""
+        event = data.get("e")
+        if "E" not in data and "T" not in data:
+            return False
+        version = self._integer(data.get("E", data.get("T", 0)))
+        async with self._mutex:
+            state = self.snapshot()
+            changed = False
+            signature: tuple[Any, ...]
+            if event == "ACCOUNT_UPDATE":
+                account = data.get("a", {})
+                for asset in account.get("B", []):
+                    if not {"a", "wb", "cw"} <= asset.keys():
+                        return False
+                for position in account.get("P", []):
+                    if not {"s", "pa", "ep", "ps"} <= position.keys():
+                        return False
+                for asset in account.get("B", []):
+                    name = str(asset["a"])
+                    key = ("balance", name)
+                    values = (self._number(asset["wb"]), self._number(asset["cw"]))
+                    signature = (*values, self._number(asset.get("bc", 0)), self._integer(data.get("T", version)))
+                    if not await self._accept_entity(key, version, data, signature):
+                        continue
+                    self.wallet_balances[name] = values
+                    changed = self._account_dirty = True
+                for value in account.get("P", []):
+                    symbol = str(value["s"])
+                    key = ("position", symbol)
+                    amount = self._number(value["pa"])
+                    price = self._number(value["ep"], nonnegative=True)
+                    bep = self._number(value.get("bep", price))
+                    if value["ps"] != "BOTH":
+                        self._entry_holds.add("unsupported_position_mode")
+                        raise ValueError("Hedge position event in one-way account")
+                    if amount and price <= 0:
+                        raise ValueError("Position has no entry price")
+                    signature = (amount, price, bep, self._number(value.get("cr", 0)),
+                                 self._number(value.get("up", 0)), self._number(value.get("iw", 0)),
+                                 str(value.get("mt")), self._integer(data.get("T", version)))
+                    if not await self._accept_entity(key, version, data, signature):
+                        continue
+                    state = self.snapshot()
+                    self._position_transactions[symbol] = self._integer(data.get("T", version))
+                    changed = self._account_dirty = True
+                    if symbol in self.symbols:
+                        state.positions[symbol].update_positions(
+                            [Position(symbol, price, abs(amount), PositionSide.BUY if amount > 0 else PositionSide.SELL,
+                                      state.leverage[symbol], break_even_price=bep)] if amount else [])
+                        state.positions[symbol].entry_count = int(bool(amount))
+                        self._positions_dirty.discard(symbol)
+                        if not amount:
+                            self._risk_symbols.discard(symbol)
+            elif event == "ACCOUNT_CONFIG_UPDATE":
+                if "ac" in data:
+                    config = data["ac"]
+                    symbol = str(config["s"])
+                    leverage = self._integer(config["l"], positive=True)
+                    key = ("leverage", symbol)
+                    if await self._accept_entity(key, version, data, (leverage, self._integer(data.get("T", version)))):
+                        state = self.snapshot()
+                        if symbol in self.symbols:
+                            state.leverage[symbol] = leverage
+                            for position in state.positions[symbol]:
+                                position.leverage = leverage
+                        changed = self._account_dirty = True
+                if "ai" in data:
+                    mode = data["ai"].get("j")
+                    if not isinstance(mode, bool):
+                        raise ValueError("Invalid multi-assets mode event")
+                    key = ("mode", "multi_asset")
+                    if await self._accept_entity(key, version, data, (mode, self._integer(data.get("T", version)))):
+                        if mode:
+                            self._entry_holds.add("unsupported_multi_asset_mode")
+                        else:
+                            self._entry_holds.discard("unsupported_multi_asset_mode")
+                        if mode:
+                            self.report("Multi-assets mode is unsupported; new entries paused")
+                        changed = self._account_dirty = True
+            elif event in {"ORDER_TRADE_UPDATE", "ALGO_UPDATE"}:
+                value = data.get("o", {})
+                algo = event == "ALGO_UPDATE"
+                id_field, client_field = ("aid", "caid") if algo else ("i", "c")
+                required = {"s", id_field, "X", "o", "S", "q", "p", "R", "ps"}
+                if not algo:
+                    required.add("z")
+                if not required <= value.keys() or any(value[name] is None for name in required):
+                    return False
+                symbol = str(value["s"])
+                order_id = self._integer(value[id_field], positive=True)
+                kind = OrderType(value["o"])
+                side = PositionSide(value["S"])
+                quantity = self._number(value["q"], nonnegative=True)
+                filled = self._number(value.get("z", 0), nonnegative=True)
+                price = self._number(value.get("tp", value["p"]) if algo else value["p"], nonnegative=True)
+                if filled > quantity or value["ps"] != "BOTH" or not isinstance(value["R"], bool) or not isinstance(value.get("cp", False), bool):
+                    raise ValueError("Invalid order event")
+                status = str(value["X"])
+                outstanding = status in {"NEW", "PARTIALLY_FILLED", "TRIGGERING", "TRIGGERED"}
+                if status not in {"NEW", "PARTIALLY_FILLED", "FILLED", "CANCELED", "EXPIRED", "EXPIRED_IN_MATCH", "REJECTED", "TRIGGERING", "TRIGGERED", "FINISHED"}:
+                    raise ValueError("Invalid order status")
+                key = (str(event), f"{symbol}:{order_id}")
+                if outstanding and key in self._terminal_orders:
+                    return True
+                signature = (quantity, filled, price, kind, side, status, value["R"], value.get("cp", False),
+                             str(value.get(client_field)), str(value.get("ai")), str(value.get("t")),
+                             self._integer(data.get("T", version)))
+                if not await self._accept_entity(key, version, data, signature):
+                    return True
+                if not outstanding:
+                    self._terminal_orders.add(key)
+                state = self.snapshot()
+                changed = self._account_dirty = True
+                identifier = value.get(client_field) or self._order_ids.get((symbol, algo, order_id))
+                if symbol in self.symbols:
+                    book = state.orders[symbol]
+                    book.orders[:] = [o for o in book if not (o.order_id == order_id and
+                                     (o.type not in {OrderType.MARKET, OrderType.LIMIT}) == algo)]
+                    if outstanding:
+                        book.add(Order(symbol, order_id, kind, side, price, quantity - filled,
+                                       reduce_only=value["R"] or bool(value.get("cp")), gtd=value.get("gtd")))
+                    if not algo and filled > 0 and self._integer(value.get("T", data.get("T", version))) > self._position_transactions.get(symbol, -1):
+                        self._positions_dirty.add(symbol)
+                    if algo and value.get("ai"):
+                        self.algo_orders[(symbol, order_id)] = self._integer(value["ai"], positive=True)
+                if algo and status == "REJECTED" and (value["R"] or value.get("cp")):
+                    self._risk_symbols.add(symbol)
+                    self.report(f"Protection order rejected: {symbol} order_id={order_id}")
+                record = next((r for r in self.journal.pending() if r.client_order_id == identifier and self.is_algo(r.intent) == algo), None)
+                if record is not None:
+                    if record.intent.symbol != symbol:
+                        raise ValueError("Event identity conflicts with journal")
+                    self._order_ids[(symbol, algo, order_id)] = record.client_order_id
+                    if record.state == "cancel_unknown" and outstanding:
+                        self.blocked.add(symbol)
+                    else:
+                        self.journal.update(record.client_order_id, "accepted" if outstanding else "resolved")
+                        # Keep the optimistic deduction until authoritative free balance is read.
+                        state.balance.consume_margin(record.client_order_id, state.balance.reserved_margin_for(record.client_order_id))
+                        if not any(r.intent.symbol == symbol and r.state in {"prepared", "unknown", "cancel_unknown"} for r in self.journal.pending()):
+                            self.blocked.discard(symbol)
+                if not algo and not outstanding:
+                    self._finish_algo_child(symbol, order_id)
+                elif algo and value.get("ai"):
+                    child = self._integer(value["ai"], positive=True)
+                    if status == "FINISHED":
+                        self._terminal_orders.add(("ORDER_TRADE_UPDATE", f"{symbol}:{child}"))
+                    if ("ORDER_TRADE_UPDATE", f"{symbol}:{child}") in self._terminal_orders:
+                        self._finish_algo_child(symbol, child)
+            else:
+                return False
+            if changed:
+                LOGGER.info("Account event applied: event=%s version=%s entities=%s", event, version, self._event_entities(data))
+                self.on_snapshot(self.snapshot())
+            self.entry_changed.set()
+            return True
+
+    def _finish_algo_child(self, symbol: str, order_id: int) -> None:
+        # ponytail: linear lookup through observed links; index children if session volume warrants it.
+        for (parent_symbol, parent), child in self.algo_orders.items():
+            if parent_symbol != symbol or child != order_id:
+                continue
+            state = self.snapshot()
+            self._terminal_orders.add(("ALGO_UPDATE", f"{symbol}:{parent}"))
+            state.orders[symbol].orders[:] = [o for o in state.orders[symbol] if not
+                (o.order_id == parent and o.type not in {OrderType.MARKET, OrderType.LIMIT})]
+            identifier = self._order_ids.get((symbol, True, parent))
+            record = next((r for r in self.journal.pending() if r.client_order_id == identifier), None)
+            if record is not None:
+                self.journal.update(record.client_order_id, "resolved")
+                state.balance.consume_margin(record.client_order_id, state.balance.reserved_margin_for(record.client_order_id))
+                if not any(r.intent.symbol == symbol and r.state in {"prepared", "unknown", "cancel_unknown"} for r in self.journal.pending()):
+                    self.blocked.discard(symbol)
+            LOGGER.info("Algo child finished: symbol=%s algo_id=%s order_id=%s", symbol, parent, child)
+
+    async def _reconcile_event_locked(self, symbol: str | None, identifier: str | None, *, reason: str) -> None:
+        symbols = [symbol] if symbol in self.symbols else []
+        records = [r for r in self.journal.pending() if r.intent.symbol in symbols and
+                   (r.client_order_id == identifier or r.state != "accepted" or
+                    (reason in {"MARGIN_CALL", "CONDITIONAL_ORDER_TRIGGER_REJECT"} and
+                     (r.intent.reduce_only or r.intent.close_position)))]
+        outcomes, blocked = await self.rest.call(self._query_pending, records)
+        self._record_unknown(records, outcomes)
+        confirmed = {r.client_order_id for r in records if r.client_order_id in outcomes and not (
+            r.state == "cancel_unknown" and outcomes[r.client_order_id].status in
+            {"NEW", "PARTIALLY_FILLED", "TRIGGERING", "TRIGGERED"})}
+        await self._refresh_event(symbols, balance=True, positions=bool(symbols), orders=bool(symbols),
+                                  reason=reason, confirmed=confirmed)
+        for record in records:
+            outcome = outcomes.get(record.client_order_id)
+            if outcome is None:
+                self.blocked.add(record.intent.symbol)
+            elif record.state == "cancel_unknown" and outcome.status in {"NEW", "PARTIALLY_FILLED", "TRIGGERING", "TRIGGERED"}:
+                self.blocked.add(record.intent.symbol)
+            else:
+                self._apply_receipt(record.intent, record.client_order_id, outcome, update_order=False)
+        self._account_dirty = False
+        self._positions_dirty.difference_update(symbols)
+        self.blocked.update(blocked)
+
+    async def reconcile_event(self, data: dict[str, Any], *, reason: str = "event_incomplete") -> None:
+        if not hasattr(self.adapter, "refresh_event"):
+            await self.reconcile_async(event=str(data.get("e")))
+            return
+        value = data.get("o", data.get("or", {}))
+        symbol = value.get("s")
+        identifier = value.get("c", value.get("caid"))
+        if identifier is None:
+            algo = data.get("e") == "ALGO_UPDATE"
+            order_id = value.get("aid" if algo else "i")
+            identifier = self._order_ids.get((symbol, algo, int(order_id or 0)))
+        self._refresh_waiters += 1
+        try:
+            async with self._mutex:
+                if data.get("e") == "ACCOUNT_UPDATE":
+                    symbols = [p["s"] for p in data.get("a", {}).get("P", []) if p.get("s") in self.symbols]
+                    await self._refresh_event(symbols, balance=True, positions=bool(symbols), reason=reason)
+                else:
+                    await self._reconcile_event_locked(symbol, identifier, reason=reason)
+        finally:
+            self._refresh_waiters -= 1
+            self.entry_changed.set()
+
+    async def risk_event(self, data: dict[str, Any]) -> None:
+        event = str(data.get("e"))
+        values = data.get("p", []) if event == "MARGIN_CALL" else [data.get("or", {})]
+        symbols = {str(v["s"]) for v in values if v.get("s") in self.symbols}
+        self._risk_symbols.update(symbols)
+        self.report(f"Account risk: event={event} symbols={','.join(sorted(symbols))}")
+        if not symbols:
+            self._account_dirty = True
+            return
+        async with self._mutex:
+            for symbol in sorted(symbols):
+                await self._reconcile_event_locked(symbol, None, reason=event)
+                if not self.snapshot().positions[symbol]:
+                    self._risk_symbols.discard(symbol)
+
+    async def ensure_positions(self, symbol: str) -> None:
+        if symbol not in self._positions_dirty:
+            return
+        async with self._mutex:
+            if symbol in self._positions_dirty:
+                await self._refresh_event([symbol], positions=True, reason="fill_position_missing")
 
     async def wait_idle(self) -> None:
         """Drain submissions from strategy-created tasks before closing the journal."""
@@ -404,6 +874,10 @@ class ManagedOrderGateway:
             raise ValueError("Order symbol is outside managed symbols")
         entry = not (intent.reduce_only or intent.close_position)
         if entry:
+            if self._entry_holds and intent.symbol not in self.blocked:
+                raise _EntryCancelled(",".join(sorted(self._entry_holds)))
+            if intent.symbol in self._risk_symbols and intent.symbol not in self.blocked:
+                raise _EntryCancelled("position_risk_or_protection_failure")
             reason = self.entry_abort_reason(intent)
             if reason is not None:
                 raise _EntryCancelled(reason)
@@ -487,10 +961,16 @@ class ManagedOrderGateway:
             await self._refresh_for_protection(intent)
         if (
             not (intent.reduce_only or intent.close_position)
-            and self.clock() - self._account_updated_at >= 15
+            and (self._account_dirty or intent.symbol in self._positions_dirty or self.clock() - self._account_updated_at >= 15)
         ):
             try:
-                await self._reconcile(event="ACCOUNT_UPDATE")
+                if hasattr(self.adapter, "refresh_event"):
+                    dirty_position = intent.symbol in self._positions_dirty
+                    await self._refresh_event([intent.symbol] if dirty_position else (),
+                                              balance=self._account_dirty or self.clock() - self._account_updated_at >= 15,
+                                              positions=dirty_position, reason="entry_available_balance")
+                else:
+                    await self._reconcile(event="ACCOUNT_UPDATE")
             except Exception as error:
                 self.active = False
                 self.request_recovery()
@@ -532,9 +1012,13 @@ class ManagedOrderGateway:
                 self.adapter.submit, intent, identifier,
                 check=authorize,
             )
+            BinanceExchangeAdapter._validate_identity(receipt, intent.symbol, identifier)
             if receipt.status == "REJECTED":
                 raise OrderRejected("Exchange receipt reports REJECTED")
         except OrderRejected:
+            if intent.reduce_only or intent.close_position:
+                self._risk_symbols.add(intent.symbol)
+                self.report(f"Protection order rejected: {intent.symbol} client_order_id={identifier}")
             self.journal.update(identifier, "rejected")
             state.balance.release_margin(identifier)
             if not already_blocked:
@@ -563,7 +1047,16 @@ class ManagedOrderGateway:
         self.blocked.add(intent.symbol)
         try:
             self.journal.update(identifier, "accepted")
-            await self._reconcile()
+            if hasattr(self.adapter, "refresh_event") and receipt.status is not None and not (
+                receipt.status == "PARTIALLY_FILLED" and receipt.executed_quantity is None
+            ):
+                self._apply_receipt(intent, identifier, receipt)
+                if intent.symbol in self._positions_dirty:
+                    await self._refresh_event([intent.symbol], positions=True, reason="placement_fill_position")
+            elif hasattr(self.adapter, "refresh_event"):
+                await self._reconcile_event_locked(intent.symbol, identifier, reason="placement_ack_incomplete")
+            else:
+                await self._reconcile()
         except Exception as error:
             self.active = False
             self.request_recovery()
@@ -600,13 +1093,14 @@ class ManagedOrderGateway:
                 dispatched = True
 
             try:
-                await self.rest.call(
+                receipt = await self.rest.call(
                     self.adapter.cancel,
                     record.intent.symbol,
                     client_order_id,
                     algo=self.is_algo(record.intent),
                     check=authorize,
                 )
+                BinanceExchangeAdapter._validate_identity(receipt, record.intent.symbol, client_order_id)
             except BaseException:
                 if not dispatched:
                     self.journal.update(client_order_id, record.state)
@@ -618,7 +1112,12 @@ class ManagedOrderGateway:
                 )
                 raise
             try:
-                await self._reconcile()
+                if hasattr(self.adapter, "refresh_event") and receipt.status in {"CANCELED", "EXPIRED", "EXPIRED_IN_MATCH", "FILLED", "FINISHED", "REJECTED"}:
+                    self._apply_receipt(record.intent, client_order_id, receipt)
+                elif hasattr(self.adapter, "refresh_event"):
+                    await self._reconcile_event_locked(record.intent.symbol, client_order_id, reason="cancel_ack_incomplete")
+                else:
+                    await self._reconcile()
             except Exception as error:
                 self.active = False
                 self.request_recovery()
