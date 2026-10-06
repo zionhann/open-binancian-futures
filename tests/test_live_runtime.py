@@ -238,16 +238,15 @@ async def test_rejection_rollback_once_and_storage_failure_no_send(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_actual_leverage_additions_then_flat_transition_after_old_orders(tmp_path):
+async def test_adopted_leverage_remains_after_position_becomes_flat(tmp_path):
     adapter=Adapter();adapter.state.positions[SYMBOL].update_positions([Position(SYMBOL,1,100,PositionSide.BUY,leverage=10)])
     managed,journal=gateway(tmp_path,adapter,ExecutionConfig(leverage=20))
+    await managed.initialize_leverage()
     await managed.submit_order(INTENT)
-    assert ('leverage',20) not in adapter.mutations
     adapter.state.positions[SYMBOL].clear(); managed.reconcile()
-    with pytest.raises(OrderOutcomeUnknown,match='entry orders'): await managed.submit_order(INTENT)
     adapter.state.orders[SYMBOL].clear(); managed.reconcile()
     await managed.submit_order(INTENT)
-    assert ('leverage',20) in adapter.mutations and managed.effective_leverage(SYMBOL)==20
+    assert ('leverage',20) not in adapter.mutations and managed.effective_leverage(SYMBOL)==10
     journal.close()
 
 @pytest.mark.asyncio
@@ -282,7 +281,7 @@ async def test_response_rejected_rolls_back_once(tmp_path):
 async def test_leverage_confirmation_failure_never_sends(tmp_path):
     adapter=Adapter(); managed,journal=gateway(tmp_path,adapter,ExecutionConfig(leverage=20))
     adapter.set_leverage=lambda symbol,value:adapter.mutations.append(('leverage-attempt',value))
-    with pytest.raises(OrderOutcomeUnknown,match='not confirmed'): await managed.submit_order(INTENT)
+    with pytest.raises(OrderOutcomeUnknown,match='not confirmed'): await managed.initialize_leverage()
     assert not journal.pending() and adapter.mutations==[('leverage-attempt',20)]
     journal.close()
 
@@ -556,7 +555,7 @@ async def test_pre_disconnect_async_decision_cannot_send_after_recovery(tmp_path
         runner.close();await task
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('failure',['post_submit_snapshot','leverage_change'])
+@pytest.mark.parametrize('failure',['post_submit_snapshot'])
 async def test_gateway_infrastructure_failure_recovers_without_strategy_latch(tmp_path,failure):
     adapter=Adapter();strategy=TestStrategy();strategy.trade=True
     runner,streams=runtime(tmp_path,adapter,strategy,config=ExecutionConfig(leverage=20),jitter=lambda delay:.01)

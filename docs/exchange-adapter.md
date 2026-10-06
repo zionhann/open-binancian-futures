@@ -102,14 +102,16 @@ when a market callback awaits external work. Arrival order is preserved within
 each queue, not across both queues. Account hooks and `run` can overlap across
 awaits; custom callbacks should reread synchronized state after waiting.
 
-An external account refresh invalidates an in-flight callback's entry decision.
-The gateway rejects new/additional exposure from that callback until a new decision
-starts; its own submission refreshes keep the callback and its child tasks current.
-Retiring a connection discards its queued events before the next generation starts.
-New exposure also waits for
-queued account events to be processed. Reduce-only/close-position
-requests still use the existing protection checks, and connection generations
-continue to block all submissions from a pre-disconnection callback. REST calls
+A not-yet-sent entry waits for queued/in-progress account updates, revalidates
+framework order conditions, and returns `False` on candle expiry, exposure conflict,
+shutdown or recovery. Strategy signals remain strategy-owned; the minimal contract
+assumes the signal valid until the next close without replaying `run`. Own confirmed
+submissions keep parent/child decisions current. Retiring a connection discards its
+queued events; old generations cannot send. Reduce-only/close-position requests
+bypass entry waits and expiry while retaining protection checks. Standalone gateways
+use actual leverage; callers applying startup defaults must call
+`await initialize_leverage()` after initial reconciliation and before activation.
+REST calls
 run off the loop, while synchronous strategy callbacks and indicator processing
 still execute on the event loop. Account changes and order submissions are
 serialized, so a slow request can delay another REST operation without delaying
@@ -133,8 +135,8 @@ objects, and a paused gateway. Raw SDK access binds after construction/load.
 Sync and async legacy order-notification hooks are called at most once per observed
 order/status after an authoritative snapshot; their base implementations no longer
 mutate managed order books. Historical NEW events for absent orders are discarded.
-Async hook results are awaited inside the owned event worker; protective orders
-can therefore use `await submit_order(...)` in an async fill hook.
+Async hook results are awaited by separate owned tasks, leaving the account
+consumer free; protective orders can therefore use `await submit_order(...)` in an async fill hook.
 Custom hooks should use the provided synchronized state rather than replay event
 quantities. Hook/load/run errors latch failure until a fresh runtime is started.
 After a strategy failure, account reconciliation continues to observe orders and
@@ -142,6 +144,7 @@ positions already on the exchange, while all strategy hooks and submissions rema
 disabled. Stop the runtime explicitly if account monitoring is no longer needed.
 
 A trailing or market intent without an explicit reference `price` uses the latest
+received candle price (including forming-candle updates), falling back to the latest
 closed candle of the first configured interval for sizing/filter checks. This is
 not a fill-price guarantee. Explicit reference price remains supported; trailing
 activation and callback fields are forwarded independently.

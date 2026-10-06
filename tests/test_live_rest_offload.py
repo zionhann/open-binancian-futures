@@ -8,7 +8,7 @@ from test_live_runtime import Adapter, INTENT, SYMBOL, candle, eventually, gatew
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('operation', ['snapshot', 'submit', 'set_leverage'])
+@pytest.mark.parametrize('operation', ['snapshot', 'submit'])
 async def test_rest_wait_does_not_block_event_loop(tmp_path, operation):
     from open_binancian_futures.execution import ExecutionConfig
 
@@ -182,35 +182,25 @@ async def test_shutdown_drains_strategy_created_submission_before_journal_close(
 
 
 @pytest.mark.asyncio
-async def test_account_event_waiting_on_order_lock_prevents_entry_after_leverage_read(tmp_path):
+async def test_account_event_waiting_on_rest_lock_defers_entry_without_losing_signal(tmp_path):
     from open_binancian_futures.execution import ExecutionConfig
 
-    adapter = Adapter()
-    runner, streams = runtime(tmp_path, adapter, config=ExecutionConfig(leverage=20))
+    runner, streams = runtime(tmp_path, config=ExecutionConfig(leverage=10))
     runner.strategy.trade = True
     task = asyncio.create_task(runner.run_async())
     await eventually(lambda: runner.active)
-    entered, release = threading.Event(), threading.Event()
-    original = adapter.set_leverage
-
-    def slow(*args):
-        entered.set()
-        assert release.wait(2)
-        return original(*args)
-
-    adapter.set_leverage = slow
+    await runner.gateway.rest._mutex.acquire()
     try:
-        streams[-1].emit(candle())
-        await eventually(entered.is_set)
         streams[-1].emit({'e': 'ACCOUNT_UPDATE', 'a': {'B': [{'a': 'USDT'}]}})
         await eventually(lambda: runner.gateway._refresh_waiters == 1)
-        assert runner.user_queue.empty()
-        release.set()
-        await eventually(lambda: not runner.gateway._mutex.locked())
-        assert not adapter.receipts and not runner.journal.pending() and not runner.failed
-        streams[-1].emit(candle(120000))
-        await eventually(lambda: bool(adapter.receipts))
+        streams[-1].emit(candle())
+        await asyncio.sleep(.01)
+        assert not runner.adapter.receipts
+        runner.gateway.rest._mutex.release()
+        await eventually(lambda: len(runner.adapter.receipts) == 1)
+        assert not runner.failed and runner.gateway.entry_counts['waits'] == 1
     finally:
-        release.set()
+        if runner.gateway.rest._mutex.locked():
+            runner.gateway.rest._mutex.release()
         runner.close()
         await task
