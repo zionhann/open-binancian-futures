@@ -620,12 +620,14 @@ class LiveTrading:
                     if not await self.gateway.apply_event(data):
                         await self.gateway.reconcile_event(data)
                 return
-            raw_identifier = order.get("i", order.get("aid", 0))
-            identifier = self.gateway._integer(raw_identifier, positive=raw_identifier != 0)
+            raw_identifier = order.get("i" if event == "ORDER_TRADE_UPDATE" else "aid")
+            identifier = self.gateway._integer(raw_identifier, positive=True) if raw_identifier is not None else 0
             key = (event, symbol, identifier)
             version = int(order.get("T", data.get("T", data.get("E", 0))))
             cumulative = self.gateway._number(order.get("z", 0), nonnegative=True)
             realized = self.gateway._number(order.get("rp", 0))
+            if cumulative > 0 and not identifier:
+                raise ValueError("Trade event requires a positive order identity")
             if order.get("q") is not None and cumulative > self.gateway._number(order["q"], nonnegative=True):
                 raise ValueError("Cumulative fill exceeds original quantity")
             if order.get("o") is not None:

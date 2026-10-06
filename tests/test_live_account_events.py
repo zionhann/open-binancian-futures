@@ -418,7 +418,7 @@ async def test_nonfinite_trade_profit_recovers_without_poisoning_strategy_pnl(tm
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('field,value', [('q', 'nan'), ('i', True), ('o', 'UNSUPPORTED')])
+@pytest.mark.parametrize('field,value', [('q', 'nan'), ('i', True), ('i', 0), ('i', None), ('o', 'UNSUPPORTED')])
 async def test_malformed_order_is_validated_before_realized_profit(tmp_path, field, value):
     runner, streams, task = await start(tmp_path)
     try:
