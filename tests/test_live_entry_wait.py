@@ -308,6 +308,65 @@ async def test_own_acceptance_does_not_adopt_external_position_for_second_entry(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('price, amount, side, external_order, eligible', [
+    (1.6 / 3, 3, PositionSide.BUY, False, True),
+    (.53333333, 3, PositionSide.BUY, False, True),
+    (.53333335, 3, PositionSide.BUY, False, False),
+    (.53333333, 3.001, PositionSide.BUY, False, False),
+    (.53333333, 3, PositionSide.SELL, False, False),
+    (.53333333, 3, PositionSide.BUY, True, False),
+], ids=['exact', 'rounded', 'price', 'quantity', 'side', 'order'])
+async def test_own_filled_addition_adopts_rounding_but_rejects_conflicting_exposure(
+    tmp_path, price, amount, side, external_order, eligible,
+):
+    from open_binancian_futures.exchange_adapter import OrderReceipt
+    from open_binancian_futures.models import Filter, OrderIntent
+
+    adapter = Adapter()
+    adapter.state.exchange_info.filters[SYMBOL] = Filter(.0001, .001, .01)
+    adapter.state.positions[SYMBOL].update_positions([Position(SYMBOL, .5, 2, PositionSide.BUY, 10)])
+
+    def fill(intent, identifier):
+        number = len(adapter.receipts) + 1
+        if number == 1:
+            position = Position(SYMBOL, price, amount, side, 10)
+        else:
+            position = Position(SYMBOL, .55 if number == 2 else .56, number + 2, PositionSide.BUY, 10)
+        adapter.state.positions[SYMBOL].update_positions([position])
+        if external_order:
+            adapter.state.orders[SYMBOL].add(Order(SYMBOL, 99, OrderType.LIMIT, PositionSide.BUY, .6, 1))
+        receipt = OrderReceipt(number, identifier, SYMBOL, 'FILLED', 1, .6, {})
+        adapter.receipts[identifier] = receipt
+        return receipt
+
+    adapter.submit = fill
+    runner, streams = runtime(tmp_path, adapter, config=ExecutionConfig(leverage=10))
+    results = []
+
+    async def entry(*args):
+        intent = OrderIntent(SYMBOL, PositionSide.BUY, OrderType.MARKET, quantity=1)
+        results.append(await runner.gateway.submit_order(intent))
+        results.append(await runner.gateway.submit_order(intent))
+        # The second weighted addition also uses the first rounded entry price.
+        results.append(await runner.gateway.submit_order(intent))
+
+    runner.strategy.run = entry
+    task = asyncio.create_task(runner.run_async())
+    try:
+        await eventually(lambda: runner.active)
+        data = candle()
+        data['k'].update(o='.6', h='.6', l='.6', c='.6')
+        streams[-1].emit(data)
+        await eventually(lambda: len(results) == 3)
+        assert results == [True, eligible, eligible]
+        assert len(adapter.receipts) == (3 if eligible else 1)
+        assert not runner.failed
+    finally:
+        runner.close()
+        await task
+
+
+@pytest.mark.asyncio
 async def test_recovery_server_time_corrects_a_fast_local_estimate(tmp_path):
     now = [0.]
     runner, streams = runtime(tmp_path, clock=lambda: now[0], config=ExecutionConfig(leverage=10))

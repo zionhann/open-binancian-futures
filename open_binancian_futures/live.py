@@ -267,7 +267,8 @@ class LiveTrading:
                     expected_price = (abs(signed) * positions[0][2] + filled * fill_price) / abs(expected)
                 else:
                     expected_price = None
-                if expected_price is not None and math.isclose(actual, expected) and math.isclose(price, expected_price):
+                # ponytail: allow one 1e-8 rounding unit; retain raw decimal precision if coarser responses need adoption.
+                if expected_price is not None and math.isclose(actual, expected) and math.isclose(price, expected_price, rel_tol=0., abs_tol=1e-8):
                     positions = current_positions
         decision.exposure[intent.symbol] = (positions, orders)
 
